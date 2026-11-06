@@ -1,0 +1,8 @@
+[package]
+name = "graphml"
+version = "0.1.0"
+edition = "2024"
+description = "Read and write GraphML, with typed access to yEd graphics"
+
+[dependencies]
+quick-xml = "0.42"
