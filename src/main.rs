@@ -1,3 +1,5 @@
+mod menu;
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions::default();
 
@@ -14,6 +16,9 @@ struct DrwrApp {}
 
 impl eframe::App for DrwrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        menu::show(ui);
+
+        // The central panel must be added last, after all other panels.
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Hello, world!");
         });
