@@ -26,7 +26,12 @@ fn run_gui() -> eframe::Result {
     eframe::run_native(
         "drwr",
         options,
-        Box::new(|_cc| Ok(Box::new(DrwrApp::default()))),
+        Box::new(|cc| {
+            // egui can't decode images by itself; this lets it show the
+            // toolbar's SVG icons.
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(DrwrApp::default()))
+        }),
     )
 }
 
