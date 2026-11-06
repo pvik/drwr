@@ -1,6 +1,7 @@
 mod canvas;
 mod cli;
 mod menu;
+mod side_panel;
 mod status_bar;
 mod tool;
 mod toolbar;
@@ -47,14 +48,16 @@ struct DrwrApp {
 impl eframe::App for DrwrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Panels are laid out from the outside in, in the order they are added:
-        // the menu bar ends up above the toolbar, and the canvas (the central
-        // panel) must come last.
+        // the menu bar ends up above the toolbar, the side panel fits between
+        // the toolbar and the status bar, and the canvas (the central panel)
+        // must come last.
         //
         // The toolbar also comes before the status bar, so that a tool picked
         // with a click shows up in the status bar in that same frame.
         menu::show(ui);
         toolbar::show(ui, &mut self.tool);
         status_bar::show(ui, self.tool);
+        side_panel::show(ui);
         canvas::show(ui);
     }
 }
