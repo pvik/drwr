@@ -49,8 +49,7 @@ fn errors_name_the_offending_argument() {
     );
 }
 
-/// Arguments that aren't valid Unicode must produce an error, not a panic
-/// (which is what `std::env::args` would do).
+/// `std::env::args` would panic on non-Unicode arguments.
 #[cfg(unix)]
 #[test]
 fn non_unicode_argument_is_an_error() {

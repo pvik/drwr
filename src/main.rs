@@ -24,15 +24,12 @@ fn main() -> eframe::Result {
 }
 
 fn run_gui() -> eframe::Result {
-    let options = eframe::NativeOptions::default();
-
     // The app name doubles as the default window title and the Wayland app id.
     eframe::run_native(
         "drwr",
-        options,
+        eframe::NativeOptions::default(),
         Box::new(|cc| {
-            // egui can't decode images by itself; this lets it show the
-            // toolbar's SVG icons.
+            // Needed to render the toolbar's SVG icons.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(DrwrApp::default()))
         }),
@@ -41,19 +38,13 @@ fn run_gui() -> eframe::Result {
 
 #[derive(Default)]
 struct DrwrApp {
-    /// The tool selected in the toolbar.
     tool: Tool,
 }
 
 impl eframe::App for DrwrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Panels are laid out from the outside in, in the order they are added:
-        // the menu bar ends up above the toolbar, the side panel fits between
-        // the toolbar and the status bar, and the canvas (the central panel)
-        // must come last.
-        //
-        // The toolbar also comes before the status bar, so that a tool picked
-        // with a click shows up in the status bar in that same frame.
+        // Panels are laid out outside-in in the order they're added, so the
+        // canvas (the central panel) must come last.
         menu::show(ui);
         toolbar::show(ui, &mut self.tool);
         status_bar::show(ui, self.tool);

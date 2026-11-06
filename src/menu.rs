@@ -1,7 +1,4 @@
-/// Shows the application's top menu bar.
-///
-/// egui lays out panels in the order they are added, so call this before the
-/// [`egui::CentralPanel`].
+/// Shows the menu bar at the top of the window.
 pub fn show(ui: &mut egui::Ui) {
     egui::Panel::top("menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
