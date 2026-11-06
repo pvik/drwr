@@ -1,5 +1,8 @@
+mod canvas;
 mod cli;
 mod menu;
+mod status_bar;
+mod toolbar;
 
 fn main() -> eframe::Result {
     match cli::parse(std::env::args_os().skip(1)) {
@@ -32,11 +35,12 @@ struct DrwrApp {}
 
 impl eframe::App for DrwrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Panels are laid out from the outside in, in the order they are added:
+        // the menu bar ends up above the toolbar, and the canvas (the central
+        // panel) must come last.
         menu::show(ui);
-
-        // The central panel must be added last, after all other panels.
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Hello, world!");
-        });
+        toolbar::show(ui);
+        status_bar::show(ui);
+        canvas::show(ui);
     }
 }
