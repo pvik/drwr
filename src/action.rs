@@ -1,10 +1,10 @@
 use graphml::yed::Color;
 
-use crate::document::ColorProperty;
+use crate::document::{ColorProperty, LabelRef};
 use crate::tool::Tool;
 
 /// Something the user asked for, e.g. from the menu or a keyboard shortcut.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     New,
     Open,
@@ -14,4 +14,8 @@ pub enum Action {
     EditColor(ColorProperty),
     /// Sets a color of the selected node; `None` removes it.
     SetColor(ColorProperty, Option<Color>),
+    /// Edits the selected node's first label on the canvas.
+    EditLabel,
+    EditLabelInDialog(LabelRef),
+    SetLabel(LabelRef, String),
 }

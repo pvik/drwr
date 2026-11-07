@@ -15,7 +15,7 @@ pub fn show(ui: &mut egui::Ui, open_dialog: &OpenDialog) -> Option<Action> {
                     ("Open", Action::Open, !open_dialog.is_open()),
                     ("Save", Action::Save, true),
                 ] {
-                    if item(ui, name, action, enabled) {
+                    if item(ui, name, &action, enabled) {
                         clicked = Some(action);
                     }
                 }
@@ -33,7 +33,7 @@ pub fn show(ui: &mut egui::Ui, open_dialog: &OpenDialog) -> Option<Action> {
 }
 
 /// Adds an item showing `action`'s shortcut, returning whether it was clicked.
-fn item(ui: &mut egui::Ui, name: &str, action: Action, enabled: bool) -> bool {
+fn item(ui: &mut egui::Ui, name: &str, action: &Action, enabled: bool) -> bool {
     let mut button = Button::new(name);
     if let Some(shortcut) = shortcuts::text(ui.ctx(), action) {
         button = button.shortcut_text(shortcut);

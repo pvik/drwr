@@ -12,6 +12,8 @@ struct Harness {
     tool: Tool,
     graphml: GraphMl,
     selected: Option<String>,
+    /// What the canvas asked for, in order.
+    actions: Vec<Action>,
     time: f64,
     /// The canvas's top-left corner on screen.
     origin: Pos2,
@@ -25,6 +27,7 @@ impl Harness {
             tool,
             graphml: GraphMl::default(),
             selected: None,
+            actions: Vec::new(),
             time: 0.0,
             origin: Pos2::ZERO,
         };
@@ -43,8 +46,10 @@ impl Harness {
             ..RawInput::default()
         };
         let mut output = self.ctx.run_ui(input, |ui| {
-            self.canvas
-                .show(ui, self.tool, &mut self.graphml, &mut self.selected)
+            let actions = self
+                .canvas
+                .show(ui, self.tool, &mut self.graphml, &mut self.selected);
+            self.actions.extend(actions);
         });
         let shapes = std::mem::take(&mut output.shapes);
         output.drop_without_applying_deltas();
@@ -70,9 +75,55 @@ impl Harness {
         self.frame(vec![button(at, false)])
     }
 
+    /// Double-clicks a point relative to the canvas.
+    fn double_click(&mut self, at: Vec2) {
+        let at = self.origin + at;
+        self.frame(vec![Event::PointerMoved(at)]);
+        for pressed in [true, false, true, false] {
+            self.frame(vec![button(at, pressed)]);
+        }
+    }
+
+    fn press(&mut self, modifiers: Modifiers, key: Key) -> Vec<Shape> {
+        self.frame(vec![Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }])
+    }
+
+    fn type_text(&mut self, text: &str) -> Vec<Shape> {
+        self.frame(vec![Event::Text(text.to_owned())])
+    }
+
     /// Adds a box between two corners in graph coordinates, returning its id.
     fn add_box(&mut self, corner: Pos2, opposite: Pos2) -> String {
         document::add_node(&mut self.graphml, &new_box(corner, opposite))
+    }
+
+    /// Adds the box in [`NODE`] with `labels`, returning its id.
+    fn add_labelled_box(&mut self, labels: Vec<Label>) -> String {
+        let mut graphics = new_box(NODE.min, NODE.max);
+        graphics.labels = labels;
+        document::add_node(&mut self.graphml, &graphics)
+    }
+
+    /// Edits the first label of the node with id `id`.
+    fn edit(&mut self, id: &str) {
+        let label = first_label(id);
+        let text = document::label_text(&self.graphml, &label).unwrap();
+        self.canvas.edit_label(label, text);
+        // The editor takes the focus in its first frame, and Escape from the
+        // next.
+        self.frame(vec![]);
+        self.frame(vec![]);
+    }
+
+    /// Where the node in [`NODE`] is on screen.
+    fn node(&self) -> Rect {
+        NODE.translate(self.origin.to_vec2())
     }
 
     /// The geometry of each box in the document.
@@ -111,6 +162,61 @@ fn stroked_rects(shapes: &[Shape], color: Color32) -> Vec<Rect> {
             _ => None,
         })
         .collect()
+}
+
+/// A node's bounds in graph coordinates, for tests of its labels.
+const NODE: Rect = Rect::from_min_max(pos2(100.0, 50.0), pos2(250.0, 130.0));
+
+fn first_label(node: &str) -> LabelRef {
+    LabelRef {
+        node: node.to_owned(),
+        index: 0,
+    }
+}
+
+/// The texts painted, with where they were painted.
+fn texts(shapes: &[Shape]) -> Vec<(&str, Rect)> {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Text(text) => {
+                let rect = text.galley.rect.translate(text.pos.to_vec2());
+                Some((text.galley.text(), rect))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Where the text `text` was painted, if it was, once.
+fn painted(shapes: &[Shape], text: &str) -> Option<Rect> {
+    let found: Vec<_> = texts(shapes)
+        .into_iter()
+        .filter(|(t, _)| *t == text)
+        .collect();
+    assert!(
+        found.len() < 2,
+        "{text:?} was painted {} times",
+        found.len()
+    );
+    found.first().map(|(_, rect)| *rect)
+}
+
+/// The smallest rect painted around `inner`, i.e. the frame of the editor
+/// showing it.
+fn frame_around(shapes: &[Shape], inner: Rect) -> Rect {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(rect) if rect.rect.contains_rect(inner) => Some(rect.rect),
+            _ => None,
+        })
+        .min_by(|a, b| a.area().total_cmp(&b.area()))
+        .expect("a frame was painted around the text")
+}
+
+fn assert_near(a: Pos2, b: Pos2) {
+    assert!((a - b).length() <= 1.0, "{a:?} isn't near {b:?}");
 }
 
 fn geometry(x: f64, y: f64, width: f64, height: f64) -> yed::Rect {
@@ -344,4 +450,195 @@ fn the_selected_node_is_outlined_on_top() {
     harness.tool = Tool::Cursor;
     let painted = harness.click(vec2(500.0, 300.0));
     assert_eq!(stroked_rects(&painted, SELECTION.color), []);
+}
+
+#[test]
+fn labels_are_painted_where_yed_put_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let new = Label::new("New");
+    let mut placed = Label::new("Placed");
+    placed.bounds = geometry(10.0, 5.0, 60.0, 20.0);
+    placed.text_color = yed::Color::rgb(0xFF, 0x00, 0x00);
+    placed.font.size = 20;
+    let mut right = Label::new("Right");
+    right.bounds = geometry(0.0, 60.0, 150.0, 20.0);
+    right.alignment = Alignment::Right;
+    let mut hidden = Label::new("Hidden");
+    hidden.visible = false;
+    harness.add_labelled_box(vec![new, placed, right, hidden]);
+    let painted_now = harness.frame(vec![]);
+    let node = harness.node();
+
+    // New labels have no bounds yet, so they go in the middle of the node.
+    let new = painted(&painted_now, "New").unwrap();
+    assert_near(new.center(), node.center());
+    let placed = painted(&painted_now, "Placed").unwrap();
+    assert_near(placed.center(), node.min + vec2(40.0, 15.0));
+    let right = painted(&painted_now, "Right").unwrap();
+    assert_near(right.right_center(), node.min + vec2(150.0, 70.0));
+    assert_eq!(painted(&painted_now, "Hidden"), None);
+
+    let Some(Shape::Text(text)) = painted_now
+        .iter()
+        .find(|shape| matches!(shape, Shape::Text(text) if text.galley.text() == "Placed"))
+    else {
+        unreachable!();
+    };
+    let format = &text.galley.job.sections[0].format;
+    assert_eq!(format.color, Color32::from_rgb(0xFF, 0x00, 0x00));
+    assert_eq!(format.font_id.size, 20.0);
+}
+
+#[test]
+fn labels_of_size_0_are_painted_at_size_1() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut tiny = Label::new("Tiny");
+    tiny.font.size = 0;
+    let id = harness.add_labelled_box(vec![tiny]);
+    assert!(painted(&harness.frame(vec![]), "Tiny").is_some());
+    harness.edit(&id);
+    assert!(painted(&harness.frame(vec![]), "Tiny").is_some());
+}
+
+#[test]
+fn the_lines_of_a_label_line_up_by_its_alignment() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut left = Label::new("Left\naligned label");
+    left.alignment = Alignment::Left;
+    harness.add_labelled_box(vec![left, Label::new("Centered\nlabel")]);
+    let shapes = harness.frame(vec![]);
+    let halign = |label: &str| {
+        shapes.iter().find_map(|shape| match shape {
+            Shape::Text(text) if text.galley.text() == label => Some(text.galley.job.halign),
+            _ => None,
+        })
+    };
+    assert_eq!(halign("Left\naligned label"), Some(Align::LEFT));
+    assert_eq!(halign("Centered\nlabel"), Some(Align::Center));
+}
+
+#[test]
+fn double_clicking_a_node_asks_to_edit_its_label() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![]);
+    harness.double_click(vec2(150.0, 60.0));
+    assert_eq!(harness.actions, [Action::EditLabel]);
+    assert_eq!(harness.selected, Some(id));
+
+    harness.actions.clear();
+    harness.double_click(vec2(400.0, 300.0));
+    assert_eq!(harness.actions, []);
+    assert_eq!(harness.selected, None);
+}
+
+#[test]
+fn double_clicking_with_the_box_tool_edits_no_labels() {
+    let mut harness = Harness::new(Tool::Box);
+    harness.add_labelled_box(vec![]);
+    harness.double_click(vec2(150.0, 60.0));
+    assert_eq!(harness.actions, []);
+}
+
+#[test]
+fn enter_applies_the_label_typed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    // The label's text is selected, so typing replaces it.
+    harness.type_text("Stop");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(
+        harness.actions,
+        [Action::SetLabel(first_label(&id), "Stop".to_owned())]
+    );
+    assert!(harness.canvas.editor.is_none());
+}
+
+#[test]
+fn shift_enter_adds_a_line() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    harness.type_text("One");
+    harness.press(Modifiers::SHIFT, Key::Enter);
+    harness.type_text("Two");
+    assert_eq!(harness.actions, []);
+    harness.press(Modifiers::NONE, Key::Enter);
+    let applied = Action::SetLabel(first_label(&id), "One\nTwo".to_owned());
+    assert_eq!(harness.actions, [applied]);
+}
+
+#[test]
+fn escape_cancels_the_label_typed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    harness.type_text("Stop");
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.actions, []);
+    assert!(harness.canvas.editor.is_none());
+    let shapes = harness.frame(vec![]);
+    assert_eq!(painted(&shapes, "Stop"), None);
+    assert!(painted(&shapes, "Start").is_some());
+}
+
+#[test]
+fn clicking_elsewhere_applies_the_label_typed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    harness.type_text("Stop");
+    harness.click(vec2(400.0, 300.0));
+    assert_eq!(
+        harness.actions,
+        [Action::SetLabel(first_label(&id), "Stop".to_owned())]
+    );
+    assert_eq!(harness.selected, None);
+}
+
+#[test]
+fn the_label_edited_shows_only_in_its_editor() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    harness.type_text("Stop");
+    let shapes = harness.frame(vec![]);
+    assert_eq!(painted(&shapes, "Start"), None);
+
+    // Over the label and at least as wide as its node.
+    let stop = painted(&shapes, "Stop").expect("the editor shows the text typed");
+    assert_near(stop.center(), harness.node().center());
+    let editor = frame_around(&shapes, stop);
+    assert!(editor.width() >= NODE.width(), "{editor:?}");
+    assert!(editor.height() < NODE.height(), "{editor:?}");
+    assert_near(editor.center(), harness.node().center());
+}
+
+#[test]
+fn nodes_without_labels_get_one_typed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![]);
+    harness.edit(&id);
+    harness.type_text("Hello");
+    let shapes = harness.frame(vec![]);
+    assert_near(
+        painted(&shapes, "Hello").unwrap().center(),
+        harness.node().center(),
+    );
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(
+        harness.actions,
+        [Action::SetLabel(first_label(&id), "Hello".to_owned())]
+    );
+}
+
+#[test]
+fn the_editor_closes_when_its_node_is_gone() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    harness.graphml = GraphMl::default();
+    harness.frame(vec![]);
+    assert!(harness.canvas.editor.is_none());
+    assert_eq!(harness.actions, []);
 }

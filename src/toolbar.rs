@@ -36,7 +36,7 @@ pub fn show(ui: &mut egui::Ui, open_dialog: &OpenDialog, selected: Tool) -> Opti
                 (Action::Open, "Open", OPEN_ICON, !open_dialog.is_open()),
                 (Action::Save, "Save", SAVE_ICON, true),
             ] {
-                if add(ui, icon_button(icon, name), enabled, name, action) {
+                if add(ui, icon_button(icon, name), enabled, name, &action) {
                     clicked = Some(action);
                 }
             }
@@ -46,7 +46,7 @@ pub fn show(ui: &mut egui::Ui, open_dialog: &OpenDialog, selected: Tool) -> Opti
             for (tool, name, icon) in TOOLS {
                 let action = Action::SelectTool(tool);
                 let button = icon_button(icon, name).selected(selected == tool);
-                if add(ui, button, true, name, action) {
+                if add(ui, button, true, name, &action) {
                     clicked = Some(action);
                 }
             }
@@ -63,7 +63,7 @@ fn icon_button(icon: ImageSource<'static>, name: &str) -> Button<'static> {
 
 /// Adds `button` with a tooltip giving its name and `action`'s shortcut,
 /// returning whether it was clicked.
-fn add(ui: &mut egui::Ui, button: Button, enabled: bool, name: &str, action: Action) -> bool {
+fn add(ui: &mut egui::Ui, button: Button, enabled: bool, name: &str, action: &Action) -> bool {
     let tooltip = match shortcuts::text(ui.ctx(), action) {
         Some(shortcut) => format!("{name} ({shortcut})"),
         None => name.to_owned(),

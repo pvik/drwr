@@ -36,6 +36,7 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::N, Action::New),
         (CTRL, Key::O, Action::Open),
         (CTRL, Key::S, Action::Save),
+        (CTRL, Key::Enter, Action::EditLabel),
         (NONE, Key::Escape, Action::SelectTool(Tool::Cursor)),
         (NONE, Key::B, Action::SelectTool(Tool::Box)),
         (NONE, Key::C, Action::SelectTool(Tool::Circle)),
@@ -97,7 +98,7 @@ fn a_modal_dialog_keeps_the_keys() {
 fn text_reads_like_the_shortcut() {
     let ctx = Context::default();
     ctx.set_os(OperatingSystem::Nix);
-    assert_eq!(text(&ctx, Action::Open).as_deref(), Some("Ctrl+O"));
-    let cursor = text(&ctx, Action::SelectTool(Tool::Cursor));
+    assert_eq!(text(&ctx, &Action::Open).as_deref(), Some("Ctrl+O"));
+    let cursor = text(&ctx, &Action::SelectTool(Tool::Cursor));
     assert_eq!(cursor.as_deref(), Some("Escape"));
 }

@@ -4,11 +4,13 @@ mod cli;
 mod color_picker;
 mod document;
 mod error_dialog;
+mod label_field;
 mod menu;
 mod open_dialog;
 mod shortcuts;
 mod side_panel;
 mod status_bar;
+mod text_dialog;
 mod tool;
 mod toolbar;
 
@@ -17,9 +19,11 @@ use std::path::{Path, PathBuf};
 use action::Action;
 use canvas::Canvas;
 use color_picker::ColorPicker;
-use document::ColorProperty;
+use document::{ColorProperty, LabelRef};
 use graphml::GraphMl;
 use open_dialog::OpenDialog;
+use side_panel::SidePanel;
+use text_dialog::TextDialog;
 use tool::Tool;
 
 fn main() -> eframe::Result {
@@ -68,9 +72,11 @@ struct DrwrApp {
     /// The id of the selected node.
     selected: Option<String>,
     canvas: Canvas,
+    side_panel: SidePanel,
     open_dialog: OpenDialog,
     /// Picks the colors of the selected node.
     color_picker: ColorPicker<ColorProperty>,
+    label_dialog: TextDialog<LabelRef>,
     error: Option<String>,
 }
 
@@ -81,7 +87,11 @@ impl DrwrApp {
         self.graphml = GraphMl::read_file(&path)?;
         self.file = Some(path);
         self.selected = None;
+        // Labels being edited belong to the old graph.
+        self.canvas = Canvas::default();
+        self.side_panel = SidePanel::default();
         self.color_picker.close();
+        self.label_dialog.close();
         Ok(())
     }
 
@@ -112,6 +122,23 @@ impl DrwrApp {
                     });
                 }
             }
+            Action::EditLabel => {
+                if let Some(id) = &self.selected {
+                    let label = LabelRef {
+                        node: id.clone(),
+                        index: 0,
+                    };
+                    if let Some(text) = document::label_text(&self.graphml, &label) {
+                        self.canvas.edit_label(label, text);
+                    }
+                }
+            }
+            Action::EditLabelInDialog(label) => {
+                if let Some(text) = document::label_text(&self.graphml, &label) {
+                    self.label_dialog.open(label, "Label", text);
+                }
+            }
+            Action::SetLabel(label, text) => document::set_label(&mut self.graphml, &label, &text),
         }
     }
 }
@@ -140,14 +167,22 @@ impl eframe::App for DrwrApp {
             self.perform(action, ui.ctx(), frame);
         }
         status_bar::show(ui, self.tool, self.file.as_deref());
-        if let Some(action) = side_panel::show(ui, &self.graphml, self.selected.as_deref()) {
+        let selected = self.selected.as_deref();
+        for action in self.side_panel.show(ui, &self.graphml, selected) {
             self.perform(action, ui.ctx(), frame);
         }
-        self.canvas
+        let actions = self
+            .canvas
             .show(ui, self.tool, &mut self.graphml, &mut self.selected);
+        for action in actions {
+            self.perform(action, ui.ctx(), frame);
+        }
 
         if let Some((property, color)) = self.color_picker.show(ui.ctx()) {
             self.perform(Action::SetColor(property, color), ui.ctx(), frame);
+        }
+        if let Some((label, text)) = self.label_dialog.show(ui.ctx()) {
+            self.perform(Action::SetLabel(label, text), ui.ctx(), frame);
         }
         error_dialog::show(ui, &mut self.error);
     }

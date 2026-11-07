@@ -5,10 +5,11 @@ use crate::tool::Tool;
 
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 10] = [
+const SHORTCUTS: [(Modifiers, Key, Action); 11] = [
     (Modifiers::COMMAND, Key::N,      Action::New),
     (Modifiers::COMMAND, Key::O,      Action::Open),
     (Modifiers::COMMAND, Key::S,      Action::Save),
+    (Modifiers::COMMAND, Key::Enter,  Action::EditLabel),
     (Modifiers::NONE,    Key::Escape, Action::SelectTool(Tool::Cursor)),
     (Modifiers::NONE,    Key::B,      Action::SelectTool(Tool::Box)),
     (Modifiers::NONE,    Key::C,      Action::SelectTool(Tool::Circle)),
@@ -36,14 +37,17 @@ pub fn file_menu_pressed(ctx: &Context) -> bool {
 }
 
 /// How `action`'s shortcut reads, e.g. "Ctrl+O", if it has one.
-pub fn text(ctx: &Context, action: Action) -> Option<String> {
-    let (modifiers, key, _) = SHORTCUTS.into_iter().find(|&(.., a)| a == action)?;
+pub fn text(ctx: &Context, action: &Action) -> Option<String> {
+    let (modifiers, key, _) = SHORTCUTS.into_iter().find(|(.., a)| a == action)?;
     Some(ctx.format_shortcut(&KeyboardShortcut::new(modifiers, key)))
 }
 
-/// An open menu or modal dialog keeps the keys, e.g. Escape to close it.
+/// An open menu or modal dialog keeps the keys, e.g. Escape to close it, and
+/// so does a text field being typed in.
 fn blocked(ctx: &Context) -> bool {
-    Popup::is_any_open(ctx) || ctx.memory(|mem| mem.top_modal_layer()).is_some()
+    Popup::is_any_open(ctx)
+        || ctx.memory(|mem| mem.top_modal_layer()).is_some()
+        || ctx.text_edit_focused()
 }
 
 #[cfg(test)]

@@ -125,3 +125,82 @@ fn edit_graphics_skips_nodes_without_graphics() {
     }
     assert_eq!(doc, before);
 }
+
+fn label(node: &str, index: usize) -> LabelRef {
+    LabelRef {
+        node: node.to_owned(),
+        index,
+    }
+}
+
+#[test]
+fn label_text_reads_a_label_or_a_new_one() {
+    let mut doc = yed::new_document();
+    let mut graphics = rectangle();
+    graphics.labels = vec![Label::new("One"), Label::new("Two\nlines")];
+    let id = add_node(&mut doc, &graphics);
+
+    let texts = [0, 1, 2, 3].map(|index| label_text(&doc, &label(&id, index)));
+    let expected = [Some("One"), Some("Two\nlines"), Some(""), None];
+    assert_eq!(texts, expected.map(|text| text.map(str::to_owned)));
+    assert_eq!(label_text(&doc, &label("missing", 0)), None);
+}
+
+#[test]
+fn set_label_changes_only_the_text() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    set_label(&mut doc, &label("n2", 0), "Topic");
+
+    let text = doc.to_xml();
+    assert_eq!(text.lines().count(), FIXTURE.lines().count());
+    let changed: Vec<_> = FIXTURE
+        .lines()
+        .zip(text.lines())
+        .filter(|(before, after)| before != after)
+        .collect();
+    let [(before, after)] = changed.as_slice() else {
+        panic!("expected one line to change: {changed:?}");
+    };
+    assert_eq!(*after, before.replace(">Queue<", ">Topic<"));
+}
+
+#[test]
+fn set_label_to_the_same_text_changes_nothing() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    set_label(&mut doc, &label("n2", 0), "Queue");
+    assert_eq!(doc.to_xml(), FIXTURE);
+}
+
+#[test]
+fn set_label_adds_a_first_label() {
+    let mut doc = yed::new_document();
+    let id = add_node(&mut doc, &rectangle());
+    set_label(&mut doc, &label(&id, 0), "");
+    assert_eq!(graphics_of(&doc, &id).unwrap().labels, []);
+
+    set_label(&mut doc, &label(&id, 0), "Hello\nworld");
+    let labels = graphics_of(&doc, &id).unwrap().labels;
+    assert_eq!(labels.len(), 1);
+    assert_eq!(labels[0].text, "Hello\nworld");
+    let defaults = Label::new("Hello\nworld");
+    assert_eq!(labels[0].font, defaults.font);
+    assert_eq!(labels[0].alignment, defaults.alignment);
+}
+
+#[test]
+fn emptied_labels_are_kept() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    set_label(&mut doc, &label("n2", 0), "");
+    let labels = graphics_of(&doc, "n2").unwrap().labels;
+    assert_eq!(labels.len(), 1);
+    assert_eq!(labels[0].text, "");
+}
+
+#[test]
+fn set_label_skips_labels_that_are_missing() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    for missing in [label("n2", 2), label("missing", 0)] {
+        set_label(&mut doc, &missing, "Topic");
+    }
+    assert_eq!(doc.to_xml(), FIXTURE);
+}

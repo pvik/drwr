@@ -6,6 +6,9 @@ use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
 
 use super::*;
 
+/// Ctrl as egui-winit reports it outside macOS.
+const CTRL: Modifiers = Modifiers::CTRL.plus(Modifiers::COMMAND);
+
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/crates/graphml/tests/fixtures/yed.graphml"
@@ -67,6 +70,20 @@ impl Harness {
         self.click_at(at);
     }
 
+    /// Double-clicks a point relative to the canvas's top-left corner.
+    fn double_click(&mut self, at: Vec2) {
+        let at = canvas(&self.run(vec![])).min + at;
+        self.run(vec![Event::PointerMoved(at)]);
+        for pressed in [true, false, true, false] {
+            self.run(vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+    }
+
     fn click_at(&mut self, at: Pos2) {
         self.run(vec![Event::PointerMoved(at)]);
         for pressed in [true, false] {
@@ -104,6 +121,19 @@ impl Harness {
     /// The graphics of the node with id `id`.
     fn graphics(&self, id: &str) -> NodeGraphics {
         document::graphics_of(&self.app.graphml, id).expect("the node has graphics")
+    }
+
+    /// The text of the first label of the node with id `id`.
+    fn label(&self, id: &str) -> String {
+        let label = LabelRef {
+            node: id.to_owned(),
+            index: 0,
+        };
+        document::label_text(&self.app.graphml, &label).expect("the node exists")
+    }
+
+    fn type_text(&mut self, text: &str) {
+        self.run(vec![Event::Text(text.to_owned())]);
     }
 
     fn press(&mut self, modifiers: Modifiers, key: Key) {
@@ -279,8 +309,8 @@ fn the_side_panel_shows_the_clicked_node() {
         "Border",       "None",
         "Border width", "1",
         "Border style", "line",
-        "Label",        "Start",
-        "Label",        "Two\nlines",
+        "Label",        "...", "Start",
+        "Label",        "...", "Two\nlines",
     ]);
 
     harness.click(vec2(400.0, 300.0));
@@ -327,6 +357,7 @@ fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
         "Border",       "#000000",
         "Border width", "1",
         "Border style", "line",
+        "Label",        "...", "",
     ]);
 }
 
@@ -386,4 +417,220 @@ fn open_closes_the_color_picker() {
         .open(ColorProperty::Fill, "Fill color", None);
     app.open(Path::new(FIXTURE)).unwrap();
     assert!(!app.color_picker.is_open());
+}
+
+/// The box from [`new_box`], labelled `text`.
+fn labelled_box(text: &str) -> NodeGraphics {
+    let mut graphics = new_box();
+    graphics.labels = vec![yed::Label::new(text)];
+    graphics
+}
+
+/// Adds a box labelled `text`, then selects it and clicks its label's field in
+/// the side panel. Returns the box's id.
+fn type_in_label_field(harness: &mut Harness, text: &str) -> String {
+    let id = document::add_node(&mut harness.app.graphml, &labelled_box(text));
+    harness.click(vec2(150.0, 60.0));
+    // The side panel is painted first, so this is its field, not the canvas.
+    harness.click_text(text);
+    harness.press(CTRL, Key::A);
+    id
+}
+
+#[test]
+fn enter_in_the_side_panel_applies_the_label() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("Stop");
+    assert_eq!(harness.label(&id), "Start");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.label(&id), "Stop");
+    assert!(!harness.ctx.text_edit_focused());
+}
+
+#[test]
+fn shift_enter_in_the_side_panel_adds_a_line() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("One");
+    harness.press(Modifiers::SHIFT, Key::Enter);
+    harness.type_text("Two");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.label(&id), "One\nTwo");
+}
+
+#[test]
+fn escape_in_the_side_panel_keeps_the_label() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("Stop");
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.label(&id), "Start");
+    let side_panel = harness.side_panel();
+    assert!(side_panel.contains(&"Start".to_owned()), "{side_panel:?}");
+    assert!(!side_panel.contains(&"Stop".to_owned()), "{side_panel:?}");
+}
+
+#[test]
+fn clicking_away_from_the_side_panel_applies_the_label() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("Stop");
+    // The same click selects nothing, but the label still goes to the box.
+    harness.click(vec2(400.0, 300.0));
+    assert_eq!(harness.label(&id), "Stop");
+    assert_eq!(harness.app.selected, None);
+}
+
+#[test]
+fn a_node_without_labels_gets_one_from_the_side_panel() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    let shapes = harness.run(vec![]);
+    let side_panel = canvas(&shapes).max.x;
+    let field = shapes
+        .iter()
+        .find_map(|shape| match shape {
+            Shape::Text(text) if text.pos.x > side_panel && text.galley.text().is_empty() => {
+                Some(text.pos + text.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .expect("the side panel has an empty label field");
+    harness.click_at(field);
+    harness.type_text("Hello");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.graphics(&id).labels.len(), 1);
+    assert_eq!(harness.label(&id), "Hello");
+}
+
+#[test]
+fn typing_a_label_selects_no_tools() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.app.tool = Tool::Box;
+    // Each key is a tool's shortcut.
+    for (key, text) in [(Key::C, "c"), (Key::A, "a"), (Key::B, "b")] {
+        let press = Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        harness.run(vec![press, Event::Text(text.to_owned())]);
+    }
+    assert_eq!(harness.app.tool, Tool::Box);
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.app.tool, Tool::Box);
+    assert_eq!(harness.label(&id), "Start");
+}
+
+#[test]
+fn the_dots_button_edits_the_label_in_a_dialog() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    harness.click(vec2(150.0, 60.0));
+    harness.click_text("...");
+    assert!(harness.app.label_dialog.is_open());
+    harness.run(vec![]);
+    // The label's text is selected, so typing replaces it.
+    harness.type_text("Stop");
+    harness.press(Modifiers::NONE, Key::Enter);
+    harness.type_text("Go");
+    harness.click_text("OK");
+    assert!(!harness.app.label_dialog.is_open());
+    assert_eq!(harness.label(&id), "Stop\nGo");
+}
+
+#[test]
+fn the_dots_button_applies_the_label_being_typed_first() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("Stop");
+    harness.click_text("...");
+    assert_eq!(harness.label(&id), "Stop");
+    // The dialog opened on the text applied, so OK keeps it.
+    harness.run(vec![]);
+    harness.click_text("OK");
+    assert_eq!(harness.label(&id), "Stop");
+}
+
+#[test]
+fn double_clicking_a_node_edits_its_label_on_the_canvas() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    harness.double_click(vec2(150.0, 60.0));
+    harness.run(vec![]);
+    assert!(harness.ctx.text_edit_focused());
+    // The label's text is selected, so typing replaces it.
+    harness.type_text("Stop");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.label(&id), "Stop");
+    assert!(!harness.ctx.text_edit_focused());
+}
+
+#[test]
+fn ctrl_enter_edits_the_selected_nodes_label_on_the_canvas() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.press(CTRL, Key::Enter);
+    assert!(!harness.ctx.text_edit_focused());
+
+    harness.click(vec2(150.0, 60.0));
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    assert!(harness.ctx.text_edit_focused());
+    harness.type_text("Hello");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.label(&id), "Hello");
+}
+
+#[test]
+fn escape_on_the_canvas_keeps_the_label_and_the_tool() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    harness.click(vec2(150.0, 60.0));
+    harness.press(Modifiers::NONE, Key::B);
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    harness.type_text("Stop");
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.label(&id), "Start");
+    assert_eq!(harness.app.tool, Tool::Box);
+    assert!(!harness.ctx.text_edit_focused());
+}
+
+#[test]
+fn open_drops_the_labels_being_edited() {
+    let mut harness = Harness::new();
+    // The fixture has a node with the same id, n0.
+    type_in_label_field(&mut harness, "Start");
+    harness.type_text("Stop");
+    harness.app.open(Path::new(FIXTURE)).unwrap();
+    harness.run(vec![]);
+    harness.run(vec![]);
+    assert_eq!(harness.label("n0"), "Order\nservice");
+
+    harness.app.selected = Some("n0".to_owned());
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    harness.type_text("Stop");
+    harness.app.open(Path::new(FIXTURE)).unwrap();
+    harness.run(vec![]);
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.label("n0"), "Order\nservice");
+}
+
+#[test]
+fn open_closes_the_label_dialog() {
+    let mut app = DrwrApp::default();
+    let label = LabelRef {
+        node: "n0".to_owned(),
+        index: 0,
+    };
+    app.label_dialog.open(label, "Label", "Start");
+    app.open(Path::new(FIXTURE)).unwrap();
+    assert!(!app.label_dialog.is_open());
 }

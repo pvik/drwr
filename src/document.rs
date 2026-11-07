@@ -1,7 +1,15 @@
 use std::collections::HashSet;
 
-use graphml::yed::{Color, Keys, NodeGraphics};
+use graphml::yed::{Color, Keys, Label, NodeGraphics};
 use graphml::{Graph, GraphMl, Node};
+
+/// A label of a top-level node. The index one past its last label stands for
+/// a new label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelRef {
+    pub node: String,
+    pub index: usize,
+}
 
 /// A color of a node's graphics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +105,29 @@ pub fn edit_graphics(doc: &mut GraphMl, id: &str, edit: impl FnOnce(&mut NodeGra
         edit(&mut graphics);
         keys.set_node_graphics(node, &graphics);
     }
+}
+
+/// A label's text: empty for a new label, `None` if there's no such label.
+pub fn label_text(doc: &GraphMl, label: &LabelRef) -> Option<String> {
+    let labels = graphics_of(doc, &label.node)?.labels;
+    if label.index == labels.len() {
+        return Some(String::new());
+    }
+    labels.into_iter().nth(label.index).map(|label| label.text)
+}
+
+/// Sets a label's text. A new label is added with yEd's defaults, unless the
+/// text is empty.
+pub fn set_label(doc: &mut GraphMl, label: &LabelRef, text: &str) {
+    if label_text(doc, label).is_none_or(|old| old == text) {
+        return;
+    }
+    edit_graphics(doc, &label.node, |graphics| {
+        match graphics.labels.get_mut(label.index) {
+            Some(existing) => existing.text = text.to_owned(),
+            None => graphics.labels.push(Label::new(text)),
+        }
+    });
 }
 
 /// The first of yEd's ids n0, n1, … that no node in the document has.

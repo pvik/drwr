@@ -1,12 +1,15 @@
+use egui::text::{CCursorRange, LayoutJob};
 use egui::{
-    Color32, CursorIcon, Event, Painter, PointerButton, Pos2, Rect, Response, Sense, Stroke,
-    StrokeKind, Vec2,
+    Align, Align2, Color32, CursorIcon, Event, FontId, Id, Margin, Painter, PointerButton, Pos2,
+    Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2, Visuals, vec2,
 };
 use graphml::GraphMl;
-use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
+use graphml::yed::{self, Alignment, Label, NodeGraphics, NodeKind, ShapeType};
 
+use crate::action::Action;
 use crate::color_picker::color32;
-use crate::document;
+use crate::document::{self, LabelRef};
+use crate::label_field::{self, End};
 use crate::tool::Tool;
 
 /// White like paper, even in the dark theme.
@@ -19,23 +22,37 @@ const SELECTION: Stroke = Stroke {
 /// Between the selected node's bounds and its outline.
 const SELECTION_GAP: f32 = 2.0;
 
+const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
+const EDITOR_MIN_WIDTH: f32 = 60.0;
+
 /// The drawing canvas. Graph coordinates start at its top-left corner.
 #[derive(Default)]
 pub struct Canvas {
     /// The corner the box being drawn was started from, in graph coordinates.
     box_start: Option<Pos2>,
+    editor: Option<LabelEditor>,
+}
+
+/// A label being edited on the canvas, over where it's painted.
+struct LabelEditor {
+    label: LabelRef,
+    text: String,
+    /// Whether the editor has yet to take the focus.
+    focus: bool,
 }
 
 impl Canvas {
     /// Shows the canvas in the space left over by the other panels.
-    /// `selected` is the id of the selected node.
+    /// `selected` is the id of the selected node. Returns the actions asked
+    /// for.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         tool: Tool,
         graphml: &mut GraphMl,
         selected: &mut Option<String>,
-    ) {
+    ) -> Vec<Action> {
+        let mut actions = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
             let sense = match tool {
                 Tool::Cursor => Sense::click(),
@@ -49,9 +66,12 @@ impl Canvas {
                 // A shortcut can switch tools mid-drag, which drops the box.
                 self.box_start = None;
             }
+            let mut double_clicked = false;
             let drawing = match tool {
                 Tool::Cursor => {
                     select_clicked(&response, origin, graphml, selected);
+                    double_clicked =
+                        response.double_clicked_by(PointerButton::Primary) && selected.is_some();
                     None
                 }
                 Tool::Box => self.draw_box(response, origin, graphml, selected),
@@ -59,9 +79,14 @@ impl Canvas {
             };
 
             painter.rect_filled(rect, 0.0, BACKGROUND);
-            let nodes = document::node_graphics(graphml).map(|(_, graphics)| graphics);
-            for graphics in nodes.chain(drawing) {
-                paint(&painter, origin, &graphics);
+            let editing = self.editor.as_ref().map(|editor| &editor.label);
+            for (id, graphics) in document::node_graphics(graphml) {
+                // The label being edited shows in its editor instead.
+                let hidden = editing.filter(|label| label.node == id);
+                paint(&painter, origin, &graphics, hidden.map(|label| label.index));
+            }
+            if let Some(graphics) = drawing {
+                paint(&painter, origin, &graphics, None);
             }
             // Over the nodes, so one on top can't hide it.
             if let Some(graphics) = selected
@@ -74,7 +99,89 @@ impl Canvas {
             // Outlined, since the light theme's panels are nearly white too.
             let border = ui.visuals().widgets.noninteractive.bg_stroke;
             painter.rect_stroke(rect, 0.0, border, StrokeKind::Inside);
+
+            // Over the nodes. An edit it applies goes first, in case the
+            // double click is on the same label.
+            actions.extend(self.show_editor(ui, origin, graphml));
+            if double_clicked {
+                actions.push(Action::EditLabel);
+            }
         });
+        actions
+    }
+
+    /// Edits `label`, whose text is `text`, over where it's painted.
+    pub fn edit_label(&mut self, label: LabelRef, text: String) {
+        self.editor = Some(LabelEditor {
+            label,
+            text,
+            focus: true,
+        });
+    }
+
+    /// Shows the label being edited, if there is one. Returns the edit once
+    /// Enter or a click elsewhere applies it.
+    fn show_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        origin: Vec2,
+        graphml: &GraphMl,
+    ) -> Option<Action> {
+        let editor = self.editor.as_mut()?;
+        let Some(graphics) = document::graphics_of(graphml, &editor.label.node) else {
+            self.editor = None;
+            return None;
+        };
+        let label = graphics.labels.get(editor.label.index).cloned();
+        let label = label.unwrap_or_else(|| Label::new(""));
+        let font = label_font(&label);
+        let align = Align2([halign(&label.alignment), Align::Center]);
+        let text = ui
+            .painter()
+            .layout_no_wrap(editor.text.clone(), font.clone(), Color32::PLACEHOLDER)
+            .size();
+        let node = screen_rect(origin, &graphics);
+        // An em to spare, so the next letter typed doesn't wrap.
+        let width = text.x + font.size + EDITOR_MARGIN.sum().x;
+        let size = vec2(
+            width.max(node.width()).max(EDITOR_MIN_WIDTH),
+            text.y + EDITOR_MARGIN.sum().y,
+        );
+        let rect = align.align_size_within_rect(size, label_rect(node, &label));
+
+        let id = Id::unique("label_editor");
+        let mut output = ui
+            .scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                // White like the canvas, even in the dark theme.
+                ui.style_mut().visuals = Visuals::light();
+                label_field::text_edit(&mut editor.text)
+                    .id(id)
+                    .font(font)
+                    .margin(EDITOR_MARGIN)
+                    .desired_width(rect.width())
+                    .align(align)
+                    .show(ui)
+            })
+            .inner;
+        // Selected, so typing replaces it.
+        if std::mem::take(&mut editor.focus) {
+            output.response.response.request_focus();
+            let all = CCursorRange::select_all_str(&editor.text);
+            output.state.cursor.set_char_range(Some(all));
+            output.state.store(ui.ctx(), id);
+            return None;
+        }
+        let response = &output.response.response;
+        match label_field::end(ui, response) {
+            Some(End::Cancel) => {
+                self.editor = None;
+                return None;
+            }
+            None if response.has_focus() => return None,
+            Some(End::Apply) | None => {}
+        }
+        let editor = self.editor.take()?;
+        Some(Action::SetLabel(editor.label, editor.text))
     }
 
     /// Drags out a box with the primary button, adding it to `graphml` and
@@ -183,8 +290,9 @@ fn screen_rect(origin: Vec2, graphics: &NodeGraphics) -> Rect {
     )
 }
 
-/// Paints a node, unless it's a kind the canvas can't draw yet.
-fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics) {
+/// Paints a node with its labels, except the one at index `hidden`, unless
+/// it's a kind the canvas can't draw yet.
+fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Option<usize>) {
     if !drawable(graphics) {
         return;
     }
@@ -196,6 +304,54 @@ fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics) {
     });
     // yEd centers borders on the outline.
     painter.rect(rect, 0.0, fill, stroke, StrokeKind::Middle);
+
+    for (index, label) in graphics.labels.iter().enumerate() {
+        if label.visible && hidden != Some(index) {
+            paint_label(painter, rect, label);
+        }
+    }
+}
+
+/// Paints a label where yEd last put it, lined up by its alignment, in its
+/// color and size but not yet its font family or style.
+fn paint_label(painter: &Painter, node: Rect, label: &Label) {
+    let color = color32(label.text_color);
+    let mut job = LayoutJob::simple(label.text.clone(), label_font(label), color, f32::INFINITY);
+    job.halign = halign(&label.alignment);
+    let align = Align2([job.halign, Align::Center]);
+    let galley = painter.layout_job(job);
+    let rect = align.align_size_within_rect(galley.size(), label_rect(node, label));
+    painter.galley(rect.min - galley.rect.min.to_vec2(), galley, color);
+}
+
+/// Where yEd last put a label on screen, or the whole node for a new label.
+fn label_rect(node: Rect, label: &Label) -> Rect {
+    let yed::Rect {
+        x,
+        y,
+        width,
+        height,
+    } = label.bounds;
+    if width > 0.0 && height > 0.0 {
+        let min = node.min + vec2(x as f32, y as f32);
+        Rect::from_min_size(min, vec2(width as f32, height as f32))
+    } else {
+        node
+    }
+}
+
+/// At least a point in size, since egui can't draw text of size 0.
+fn label_font(label: &Label) -> FontId {
+    FontId::proportional(label.font.size.max(1) as f32)
+}
+
+/// How a label's lines line up.
+fn halign(alignment: &Alignment) -> Align {
+    match alignment {
+        Alignment::Left => Align::LEFT,
+        Alignment::Right => Align::RIGHT,
+        _ => Align::Center,
+    }
 }
 
 #[cfg(test)]
