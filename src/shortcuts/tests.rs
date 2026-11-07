@@ -45,7 +45,7 @@ fn shortcuts_pick_their_actions() {
         (NONE, Key::A, Action::SelectTool(Tool::Arrow)),
         (NONE, Key::T, Action::SelectTool(Tool::TextBox)),
     ] {
-        let picked = frame(&ctx, vec![key(modifiers, k)], pressed);
+        let picked = frame(&ctx, vec![key(modifiers, k)], |ctx| pressed(ctx, false));
         assert_eq!(picked, Some(action), "{modifiers:?} {k:?}");
     }
 }
@@ -54,7 +54,7 @@ fn shortcuts_pick_their_actions() {
 fn other_keys_pick_nothing() {
     let ctx = Context::default();
     for (modifiers, k) in [(NONE, Key::O), (CTRL, Key::B), (Modifiers::ALT, Key::F)] {
-        let picked = frame(&ctx, vec![key(modifiers, k)], pressed);
+        let picked = frame(&ctx, vec![key(modifiers, k)], |ctx| pressed(ctx, false));
         assert_eq!(picked, None, "{modifiers:?} {k:?}");
     }
 }
@@ -73,7 +73,23 @@ fn an_open_menu_keeps_the_keys() {
     let ctx = Context::default();
     frame(&ctx, vec![], |ctx| Popup::open_id(ctx, Id::unique("menu")));
     let (picked, escape_left) = frame(&ctx, vec![key(NONE, Key::Escape)], |ctx| {
-        (pressed(ctx), ctx.input(|i| i.key_pressed(Key::Escape)))
+        (
+            pressed(ctx, false),
+            ctx.input(|i| i.key_pressed(Key::Escape)),
+        )
+    });
+    assert_eq!(picked, None);
+    assert!(escape_left);
+}
+
+#[test]
+fn a_field_typed_in_last_frame_keeps_the_keys() {
+    let ctx = Context::default();
+    let (picked, escape_left) = frame(&ctx, vec![key(NONE, Key::Escape)], |ctx| {
+        (
+            pressed(ctx, true),
+            ctx.input(|i| i.key_pressed(Key::Escape)),
+        )
     });
     assert_eq!(picked, None);
     assert!(escape_left);
@@ -85,7 +101,7 @@ fn a_modal_dialog_keeps_the_keys() {
     let modal = |ctx: &Context| Modal::new(Id::unique("modal")).show(ctx, |_| {});
     frame(&ctx, vec![], modal);
     let picked = frame(&ctx, vec![key(NONE, Key::B)], |ctx| {
-        let picked = pressed(ctx);
+        let picked = pressed(ctx, false);
         modal(ctx);
         picked
     });

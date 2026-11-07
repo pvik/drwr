@@ -847,6 +847,31 @@ fn hovering_inside_the_selected_node_shows_it_moves() {
 }
 
 #[test]
+fn borders_are_painted_at_their_width_across_the_outline() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut graphics = new_box(NODE.min, NODE.max);
+    graphics.border.width = 6.5;
+    graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    document::add_node(&mut harness.graphml, &graphics);
+    let shapes = harness.frame(vec![]);
+
+    let nodes: Vec<_> = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(rect) if rect.fill == BOX_FILL => Some(rect),
+            _ => None,
+        })
+        .collect();
+    let [node] = nodes[..] else {
+        panic!("expected one node: {nodes:?}");
+    };
+    assert_eq!(node.rect, harness.node());
+    let red = Color32::from_rgb(0xFF, 0x00, 0x00);
+    assert_eq!(node.stroke, Stroke::new(6.5, red));
+    assert_eq!(node.stroke_kind, StrokeKind::Middle);
+}
+
+#[test]
 fn labels_are_painted_where_yed_put_them() {
     let mut harness = Harness::new(Tool::Cursor);
     let new = Label::new("New");

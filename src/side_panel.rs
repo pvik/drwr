@@ -1,6 +1,8 @@
+use std::ops::RangeInclusive;
+
 use egui::{
-    Align, Align2, Atom, Button, Grid, Id, Label, Layout, Response, Stroke, TextStyle, Ui, Vec2,
-    emath,
+    Align, Align2, Atom, Button, DragValue, Grid, Id, Key, Label, Layout, Response, Stroke,
+    TextStyle, Ui, Vec2, emath,
 };
 use graphml::GraphMl;
 use graphml::yed::{Color, NodeGraphics, NodeKind};
@@ -10,11 +12,17 @@ use crate::color_picker;
 use crate::document::{self, ColorProperty, LabelRef};
 use crate::label_field::{self, End};
 
+/// Capped, so typing "inf" can't make a border infinite.
+const BORDER_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
+
 /// A resizable panel right of the canvas with the properties of the selected
 /// node.
 #[derive(Default)]
 pub struct SidePanel {
     edit: Option<FieldEdit>,
+    /// Whether Escape just cancelled the border width typed, which egui 0.37
+    /// applies anyway a frame later.
+    width_cancelled: bool,
 }
 
 /// A label being typed in its field, applied once the field loses the focus.
@@ -28,13 +36,13 @@ impl SidePanel {
     /// Shows the properties of the node whose id is `selected`. Returns the
     /// actions asked for.
     pub fn show(&mut self, ui: &mut Ui, graphml: &GraphMl, selected: Option<&str>) -> Vec<Action> {
-        let mut clicked = None;
+        let mut actions = Vec::new();
         egui::Panel::right("side_panel").show(ui, |ui| {
             // Otherwise the panel shrinks to fit its contents, even after resizing.
             ui.take_available_width();
             let node = selected.and_then(|id| Some((id, document::graphics_of(graphml, id)?)));
             match node {
-                Some((id, graphics)) => clicked = self.properties(ui, id, &graphics),
+                Some((id, graphics)) => actions = self.properties(ui, id, &graphics),
                 None => {
                     ui.weak("Nothing selected");
                 }
@@ -47,10 +55,10 @@ impl SidePanel {
             .take_if(|edit| !ui.memory(|memory| memory.has_focus(edit.field)));
         let applied = left.map(|edit| Action::SetLabel(edit.label, edit.text));
         // First, so a dialog the same click opens shows the text applied.
-        applied.into_iter().chain(clicked).collect()
+        applied.into_iter().chain(actions).collect()
     }
 
-    fn properties(&mut self, ui: &mut Ui, id: &str, graphics: &NodeGraphics) -> Option<Action> {
+    fn properties(&mut self, ui: &mut Ui, id: &str, graphics: &NodeGraphics) -> Vec<Action> {
         Grid::new("properties")
             .num_columns(2)
             .striped(true)
@@ -68,15 +76,20 @@ impl SidePanel {
                 row(ui, "Y", &number(geometry.y));
                 row(ui, "Width", &number(geometry.width));
                 row(ui, "Height", &number(geometry.height));
-                let mut clicked = None;
+                // Two, when clicking a button also applies the border width
+                // typed.
+                let mut actions = Vec::new();
                 for property in ColorProperty::ALL {
                     ui.label(property.name());
                     if color_button(ui, property.get(graphics)).clicked() {
-                        clicked = Some(Action::EditColor(property));
+                        actions.push(Action::EditColor(property));
                     }
                     ui.end_row();
                 }
-                row(ui, "Border width", &number(border.width));
+                ui.label("Border width");
+                let width = self.border_width_field(ui, border.width);
+                actions.extend(width.map(Action::SetBorderWidth));
+                ui.end_row();
                 row(ui, "Border style", border.line_type.as_str());
                 // A node without labels gets a field that adds one.
                 for index in 0..graphics.labels.len().max(1) {
@@ -85,9 +98,9 @@ impl SidePanel {
                         node: id.to_owned(),
                         index,
                     };
-                    clicked = self.label_row(ui, label, text).or(clicked);
+                    actions.extend(self.label_row(ui, label, text));
                 }
-                clicked
+                actions
             })
             .inner
     }
@@ -125,6 +138,25 @@ impl SidePanel {
         });
         ui.end_row();
         clicked
+    }
+
+    /// Adds a field to drag or type a border width in. Returns the width set.
+    fn border_width_field(&mut self, ui: &mut Ui, mut width: f64) -> Option<f64> {
+        let field = DragValue::new(&mut width)
+            .range(BORDER_WIDTHS)
+            // Otherwise just showing a width out of range would change it.
+            .clamp_existing_to_range(false)
+            .speed(0.1)
+            // Unrounded, unlike the other numbers, so that entering it
+            // unchanged keeps it.
+            .custom_formatter(|width, _| width.to_string())
+            // As in a label's field, Enter or a click elsewhere applies the
+            // width typed, and Escape cancels it.
+            .update_while_editing(false);
+        let response = ui.add(field);
+        let escaped = response.lost_focus() && ui.input(|input| input.key_pressed(Key::Escape));
+        let cancelled = std::mem::replace(&mut self.width_cancelled, escaped);
+        (response.changed() && !cancelled).then_some(width)
     }
 }
 

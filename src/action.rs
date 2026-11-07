@@ -4,7 +4,7 @@ use crate::document::{ColorProperty, LabelRef};
 use crate::tool::Tool;
 
 /// Something the user asked for, e.g. from the menu or a keyboard shortcut.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     New,
     Open,
@@ -14,6 +14,8 @@ pub enum Action {
     EditColor(ColorProperty),
     /// Sets a color of the selected node; `None` removes it.
     SetColor(ColorProperty, Option<Color>),
+    /// Sets the border width of the selected node.
+    SetBorderWidth(f64),
     /// Edits the selected node's first label on the canvas.
     EditLabel,
     EditLabelInDialog(LabelRef),

@@ -20,8 +20,11 @@ const SHORTCUTS: [(Modifiers, Key, Action); 11] = [
 ];
 
 /// Takes this frame's press of an action's shortcut, if there is one.
-pub fn pressed(ctx: &Context) -> Option<Action> {
-    if blocked(ctx) {
+/// `typing` is whether a text field had the focus at the end of the last frame.
+pub fn pressed(ctx: &Context, typing: bool) -> Option<Action> {
+    // Egui drops a field's focus on Escape before this frame runs, but the
+    // field still needs the Escape, to cancel what was typed.
+    if typing || blocked(ctx) {
         return None;
     }
     ctx.input_mut(|input| {

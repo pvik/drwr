@@ -78,6 +78,9 @@ struct DrwrApp {
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelRef>,
     error: Option<String>,
+    /// Whether a text field had the focus at the end of the last frame; see
+    /// [`shortcuts::pressed`].
+    typing: bool,
 }
 
 impl DrwrApp {
@@ -122,6 +125,13 @@ impl DrwrApp {
                     });
                 }
             }
+            Action::SetBorderWidth(width) => {
+                if let Some(id) = &self.selected {
+                    document::edit_graphics(&mut self.graphml, id, |graphics| {
+                        graphics.border.width = width;
+                    });
+                }
+            }
             Action::EditLabel => {
                 if let Some(id) = &self.selected {
                     let label = LabelRef {
@@ -155,7 +165,7 @@ impl eframe::App for DrwrApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Before the menu, so an Escape that closes it doesn't also select the
         // Cursor tool.
-        if let Some(action) = shortcuts::pressed(ui.ctx()) {
+        if let Some(action) = shortcuts::pressed(ui.ctx(), self.typing) {
             self.perform(action, ui.ctx(), frame);
         }
         // Panels are laid out outside-in in the order they're added, so the
@@ -185,6 +195,7 @@ impl eframe::App for DrwrApp {
             self.perform(Action::SetLabel(label, text), ui.ctx(), frame);
         }
         error_dialog::show(ui, &mut self.error);
+        self.typing = ui.ctx().text_edit_focused();
     }
 }
 

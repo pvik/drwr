@@ -1,6 +1,7 @@
 use eframe::App as _;
 use egui::{
-    Color32, Event, Key, Modifiers, PointerButton, Popup, Pos2, RawInput, Rect, Shape, Vec2, vec2,
+    Color32, Event, Key, Modifiers, PointerButton, Popup, Pos2, RawInput, Rect, Shape, Stroke,
+    Vec2, vec2,
 };
 use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
 
@@ -57,8 +58,14 @@ impl Harness {
 
     /// Clicks the middle of the first text painted as `text`.
     fn click_text(&mut self, text: &str) {
-        let at = self
-            .run(vec![])
+        let at = self.text_at(text);
+        self.click_at(at);
+    }
+
+    /// Runs a frame, returning the middle of the first text it painted as
+    /// `text`.
+    fn text_at(&mut self, text: &str) -> Pos2 {
+        self.run(vec![])
             .iter()
             .find_map(|shape| match shape {
                 Shape::Text(shape) if shape.galley.text() == text => {
@@ -66,8 +73,7 @@ impl Harness {
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("{text:?} wasn't painted"));
-        self.click_at(at);
+            .unwrap_or_else(|| panic!("{text:?} wasn't painted"))
     }
 
     /// Double-clicks a point relative to the canvas's top-left corner.
@@ -82,11 +88,16 @@ impl Harness {
     /// Drags between two points relative to the canvas's top-left corner.
     fn drag(&mut self, from: Vec2, to: Vec2) {
         let origin = canvas(&self.run(vec![])).min;
-        let (from, to) = (origin + from, origin + to);
+        self.drag_and_hold(origin + from, origin + to);
+        self.run(vec![button(origin + to, false)]);
+    }
+
+    /// Drags between two points without letting go, returning what the last
+    /// frame painted.
+    fn drag_and_hold(&mut self, from: Pos2, to: Pos2) -> Vec<Shape> {
         self.run(vec![Event::PointerMoved(from)]);
         self.run(vec![button(from, true)]);
-        self.run(vec![Event::PointerMoved(to)]);
-        self.run(vec![button(to, false)]);
+        self.run(vec![Event::PointerMoved(to)])
     }
 
     fn click_at(&mut self, at: Pos2) {
@@ -167,6 +178,24 @@ fn canvas(shapes: &[Shape]) -> Rect {
         })
         .max_by(|a, b| a.area().total_cmp(&b.area()))
         .expect("the canvas was painted")
+}
+
+/// The border painted around the node filled with `fill` on the canvas.
+fn border(shapes: &[Shape], fill: Color32) -> Stroke {
+    let canvas = canvas(shapes);
+    let borders: Vec<_> = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(rect) if rect.fill == fill && canvas.contains_rect(rect.rect) => {
+                Some(rect.stroke)
+            }
+            _ => None,
+        })
+        .collect();
+    let [border] = borders[..] else {
+        panic!("expected one node filled with {fill:?}: {borders:?}");
+    };
+    border
 }
 
 #[test]
@@ -448,6 +477,134 @@ fn typing_a_color_selects_no_tools() {
     assert_eq!(harness.app.tool, Tool::Cursor);
     let typed = yed::Color::rgb(0xAB, 0xCE, 0xAB);
     assert_eq!(harness.graphics(&id).fill.color, Some(typed));
+}
+
+/// yEd's default node fill, which [`new_box`] has.
+const BOX_FILL: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
+
+/// Adds the box from [`new_box`] and selects it, then clicks its border width
+/// in the side panel. Returns the box's id.
+fn click_border_width(harness: &mut Harness) -> String {
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    harness.click_text("1");
+    id
+}
+
+#[test]
+fn typing_a_border_width_in_the_side_panel_sets_it() {
+    let mut harness = Harness::new();
+    let id = click_border_width(&mut harness);
+    // The width is selected, so typing replaces it.
+    harness.type_text("4.5");
+    assert_eq!(harness.graphics(&id).border.width, 1.0);
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    assert_eq!(harness.graphics(&id).border.width, 4.5);
+    assert!(!harness.ctx.text_edit_focused());
+    let shapes = harness.run(vec![]);
+    assert_eq!(border(&shapes, BOX_FILL), Stroke::new(4.5, Color32::BLACK));
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel
+            .windows(2)
+            .any(|row| row == ["Border width", "4.5"]),
+        "{side_panel:?}"
+    );
+}
+
+#[test]
+fn dragging_the_border_width_changes_it_as_it_goes() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    let field = harness.text_at("1");
+    // A tenth per point, rightwards.
+    let shapes = harness.drag_and_hold(field, field + vec2(20.0, 0.0));
+    assert_eq!(harness.graphics(&id).border.width, 3.0);
+    assert_eq!(border(&shapes, BOX_FILL).width, 3.0);
+    harness.run(vec![button(field + vec2(20.0, 0.0), false)]);
+    assert_eq!(harness.graphics(&id).border.width, 3.0);
+}
+
+#[test]
+fn escape_in_the_border_width_field_keeps_the_width_and_the_tool() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    harness.press(Modifiers::NONE, Key::B);
+    harness.click_text("1");
+    harness.type_text("4");
+    harness.press(Modifiers::NONE, Key::Escape);
+    harness.run(vec![]);
+
+    assert_eq!(harness.graphics(&id).border.width, 1.0);
+    assert_eq!(harness.app.tool, Tool::Box);
+    assert!(!harness.ctx.text_edit_focused());
+    // Once the field has let go of the keys.
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.app.tool, Tool::Cursor);
+}
+
+#[test]
+fn clicking_a_color_applies_the_border_width_typed_first() {
+    let mut harness = Harness::new();
+    let id = click_border_width(&mut harness);
+    harness.type_text("4");
+    harness.click_text("#FFCC00");
+    assert_eq!(harness.graphics(&id).border.width, 4.0);
+    assert!(harness.painted("Fill color"));
+}
+
+#[test]
+fn the_dots_button_applies_the_border_width_typed_first() {
+    let mut harness = Harness::new();
+    let id = click_border_width(&mut harness);
+    harness.type_text("4");
+    harness.click_text("...");
+    assert_eq!(harness.graphics(&id).border.width, 4.0);
+    assert!(harness.app.label_dialog.is_open());
+}
+
+#[test]
+fn entering_the_border_width_unchanged_keeps_it_exactly() {
+    let mut harness = Harness::new();
+    let mut graphics = new_box();
+    graphics.border.width = 0.125;
+    let id = document::add_node(&mut harness.app.graphml, &graphics);
+    harness.click(vec2(150.0, 60.0));
+    harness.click_text("0.125");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.graphics(&id).border.width, 0.125);
+}
+
+#[test]
+fn typed_border_widths_are_kept_in_range() {
+    for (typed, width) in [("-2", 0.0), ("1000", 100.0), ("inf", 100.0)] {
+        let mut harness = Harness::new();
+        let id = click_border_width(&mut harness);
+        harness.type_text(typed);
+        harness.press(Modifiers::NONE, Key::Enter);
+        assert_eq!(harness.graphics(&id).border.width, width, "{typed}");
+    }
+}
+
+#[test]
+fn showing_a_border_width_out_of_range_keeps_it() {
+    let mut harness = Harness::new();
+    let mut graphics = new_box();
+    graphics.border.width = 250.0;
+    document::add_node(&mut harness.app.graphml, &graphics);
+    let before = harness.app.graphml.clone();
+    harness.click(vec2(150.0, 60.0));
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel
+            .windows(2)
+            .any(|row| row == ["Border width", "250"]),
+        "{side_panel:?}"
+    );
+    assert_eq!(harness.app.graphml, before);
 }
 
 #[test]
