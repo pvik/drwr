@@ -6,8 +6,10 @@ const FIXTURE: &str = concat!(
 );
 
 #[test]
-fn starts_with_an_empty_graph() {
-    assert_eq!(DrwrApp::default().graphml, GraphMl::default());
+fn starts_with_an_empty_unsaved_graph() {
+    let app = DrwrApp::default();
+    assert_eq!(app.graphml, GraphMl::default());
+    assert_eq!(app.file, None);
 }
 
 #[test]
@@ -16,6 +18,16 @@ fn open_replaces_the_graph() {
     app.open(Path::new(FIXTURE)).unwrap();
     assert_eq!(app.graphml, GraphMl::read_file(FIXTURE).unwrap());
     assert_ne!(app.graphml, GraphMl::default());
+}
+
+#[test]
+fn open_records_the_absolute_path() {
+    let mut app = DrwrApp::default();
+    // Cargo runs tests from the package root.
+    let relative = Path::new("crates/graphml/tests/fixtures/yed.graphml");
+    app.open(relative).unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(app.file, Some(cwd.join(relative)));
 }
 
 #[test]
@@ -33,4 +45,5 @@ fn failed_open_keeps_the_graph() {
     assert!(matches!(err, graphml::Error::Io(_)), "{err:?}");
 
     assert_eq!(app.graphml, before);
+    assert_eq!(app.file.as_deref(), Some(Path::new(FIXTURE)));
 }

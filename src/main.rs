@@ -8,7 +8,7 @@ mod status_bar;
 mod tool;
 mod toolbar;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use graphml::GraphMl;
 use open_dialog::OpenDialog;
@@ -55,6 +55,8 @@ fn run_gui(app: DrwrApp) -> eframe::Result {
 struct DrwrApp {
     tool: Tool,
     graphml: GraphMl,
+    /// Where `graphml` is saved, as an absolute path; `None` if it isn't.
+    file: Option<PathBuf>,
     open_dialog: OpenDialog,
     error: Option<String>,
 }
@@ -62,7 +64,9 @@ struct DrwrApp {
 impl DrwrApp {
     /// Replaces the graph with the GraphML file at `path`, or keeps it on error.
     fn open(&mut self, path: &Path) -> Result<(), graphml::Error> {
-        self.graphml = GraphMl::read_file(path)?;
+        let path = std::path::absolute(path)?;
+        self.graphml = GraphMl::read_file(&path)?;
+        self.file = Some(path);
         Ok(())
     }
 }
@@ -81,7 +85,7 @@ impl eframe::App for DrwrApp {
         // canvas (the central panel) must come last.
         menu::show(ui, frame, &mut self.open_dialog);
         toolbar::show(ui, &mut self.tool);
-        status_bar::show(ui, self.tool);
+        status_bar::show(ui, self.tool, self.file.as_deref());
         side_panel::show(ui);
         canvas::show(ui);
 
