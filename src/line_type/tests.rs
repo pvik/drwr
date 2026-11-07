@@ -6,8 +6,7 @@ use super::*;
 fn pieces(strips: &[[Pos2; 2]], pattern: &[[f32; 2]], unit: f32) -> Vec<[(f32, f32); 2]> {
     dashes(strips, pattern, unit)
         .into_iter()
-        .flatten()
-        .map(xy)
+        .map(|piece| xy(piece.line))
         .collect()
 }
 
@@ -40,10 +39,11 @@ fn dashes_and_gaps_are_in_units() {
 }
 
 #[test]
-fn patterns_can_alternate_several_dashes() {
+fn patterns_can_alternate_dashes_and_dots() {
     let line = [[pos2(0.0, 25.0), pos2(0.0, 5.0)]];
+    let pattern = [[4.0, 2.0], [1.0, 2.0]];
     assert_eq!(
-        pieces(&line, &[[4.0, 2.0], [1.0, 2.0]], 1.0),
+        pieces(&line, &pattern, 1.0),
         [
             [(0.0, 25.0), (0.0, 21.0)],
             [(0.0, 19.0), (0.0, 18.0)],
@@ -52,6 +52,19 @@ fn patterns_can_alternate_several_dashes() {
             [(0.0, 7.0), (0.0, 5.0)],
         ]
     );
+    let dots: Vec<bool> = dashes(&line, &pattern, 1.0)
+        .iter()
+        .map(|piece| piece.dot)
+        .collect();
+    assert_eq!(dots, [false, true, false, true, false]);
+}
+
+#[test]
+fn dashes_cut_short_are_not_dots() {
+    let line = [[pos2(0.0, 0.0), pos2(7.0, 0.0)]];
+    let pieces = dashes(&line, &[[4.0, 2.0]], 1.0);
+    assert_eq!(xy(pieces[1].line), [(6.0, 0.0), (7.0, 0.0)]);
+    assert!(!pieces[1].dot);
 }
 
 #[test]
@@ -62,8 +75,8 @@ fn dashes_run_on_from_one_strip_to_the_next() {
         [pos2(6.0, 1.0), pos2(6.0, 11.0)],
     ];
     let dashes: Vec<Vec<_>> = dashes(&strips, &[[8.0, 2.0]], 1.0)
-        .into_iter()
-        .map(|dash| dash.into_iter().map(xy).collect())
+        .chunk_by(|_, next| next.runs_on)
+        .map(|dash| dash.iter().map(|piece| xy(piece.line)).collect())
         .collect();
     // The first dash is in two pieces, one on each strip.
     assert_eq!(
@@ -73,6 +86,20 @@ fn dashes_run_on_from_one_strip_to_the_next() {
             vec![[(6.0, 6.0), (6.0, 11.0)]],
         ]
     );
+}
+
+#[test]
+fn pieces_run_the_way_their_strips_do_however_short() {
+    // The dash ends a hair past the corner.
+    let strips = [
+        [pos2(0.0, 0.0), pos2(3.0, 4.0)],
+        [pos2(3.0, 4.0), pos2(3.0, 100.0)],
+    ];
+    let directions: Vec<Vec2> = dashes(&strips, &[[5.000_001, 100.0]], 1.0)
+        .iter()
+        .map(|piece| piece.direction)
+        .collect();
+    assert_eq!(directions, [vec2(0.6, 0.8), vec2(0.0, 1.0)]);
 }
 
 #[test]
@@ -107,16 +134,48 @@ fn lines_too_long_to_dash_are_solid() {
 }
 
 #[test]
-fn ellipses_are_drawn_as_polygons_clockwise_from_the_top() {
+fn dashes_round_corners_are_mitered_in_one_piece() {
+    // Right, then down.
+    let strips = [
+        [pos2(0.0, 0.0), pos2(10.0, 0.0)],
+        [pos2(10.0, 0.0), pos2(10.0, 10.0)],
+    ];
+    let dash = dashes(&strips, &[[30.0, 2.0]], 1.0);
+    let mut mesh = Mesh::default();
+    add_curved_dash(&mut mesh, &dash, 1.0, 1.0, Color32::RED);
+
+    let vertices: Vec<_> = mesh
+        .vertices
+        .iter()
+        .map(|vertex| ((vertex.pos.x, vertex.pos.y), vertex.color))
+        .collect();
+    // Four across each end and the corner, mitered there, and faded out at
+    // the sides.
+    let (red, clear) = (Color32::RED, Color32::TRANSPARENT);
+    assert_eq!(
+        vertices[4..8],
+        [
+            ((11.5, -1.5), clear),
+            ((10.5, -0.5), red),
+            ((9.5, 0.5), red),
+            ((8.5, 1.5), clear),
+        ]
+    );
+    assert_eq!(vertices.len(), 12);
+    assert_eq!(mesh.indices.len(), 2 * 6 * 3);
+}
+
+#[test]
+fn ellipses_are_drawn_as_polygons_clockwise_from_the_right() {
     let (center, radius) = (pos2(100.0, 50.0), vec2(75.0, 40.0));
-    let points = ellipse_points(center, radius, 1.0);
+    let points = ellipse_points(Rect::from_center_size(center, 2.0 * radius), 1.0);
     assert_eq!(points.len(), 32);
-    assert_eq!(points[0], pos2(100.0, 10.0));
-    assert_eq!(points[8], pos2(175.0, 50.0));
-    assert_eq!(points[16], pos2(100.0, 90.0));
-    assert_eq!(points[24], pos2(25.0, 50.0));
+    assert_eq!(points[0], pos2(175.0, 50.0));
+    assert_eq!(points[8], pos2(100.0, 90.0));
+    assert_eq!(points[16], pos2(25.0, 50.0));
+    assert_eq!(points[24], pos2(100.0, 10.0));
     for pair in points[..9].windows(2) {
-        assert!(pair[1].x > pair[0].x && pair[1].y > pair[0].y, "{pair:?}");
+        assert!(pair[1].x < pair[0].x && pair[1].y > pair[0].y, "{pair:?}");
     }
     for point in &points {
         let offset = (*point - center) / radius;
@@ -124,23 +183,36 @@ fn ellipses_are_drawn_as_polygons_clockwise_from_the_top() {
     }
 }
 
-#[test]
-fn bigger_ellipses_get_more_corners() {
-    assert_eq!(ellipse_points(Pos2::ZERO, vec2(10.0, 10.0), 1.0).len(), 32);
-    assert_eq!(
-        ellipse_points(Pos2::ZERO, vec2(400.0, 100.0), 1.0).len(),
-        100
-    );
-    assert_eq!(
-        ellipse_points(Pos2::ZERO, vec2(400.0, 100.0), 2.0).len(),
-        200
-    );
+/// An ellipse of `radius` around zero.
+fn ellipse(radius: Vec2) -> Rect {
+    Rect::from_center_size(Pos2::ZERO, 2.0 * radius)
 }
 
 #[test]
-fn ellipses_without_width_or_height_have_no_corners() {
-    assert!(ellipse_points(Pos2::ZERO, vec2(0.0, 10.0), 1.0).is_empty());
-    assert!(ellipse_points(Pos2::ZERO, vec2(10.0, 0.0), 1.0).is_empty());
+fn bigger_ellipses_get_more_corners() {
+    assert_eq!(ellipse_points(ellipse(vec2(10.0, 10.0)), 1.0).len(), 32);
+    let big = ellipse(vec2(400.0, 100.0));
+    assert_eq!(ellipse_points(big, 1.0).len(), 100);
+    assert_eq!(ellipse_points(big, 2.0).len(), 200);
+}
+
+#[test]
+fn ellipses_of_absurd_sizes_get_a_bounded_number_of_corners() {
+    let huge = ellipse(Vec2::splat(1e10));
+    assert_eq!(
+        ellipse_points(huge, 2.0).len(),
+        4 * MAX_QUARTER_POINTS as usize
+    );
+    let endless = Rect::from_min_size(Pos2::ZERO, vec2(f32::INFINITY, 10.0));
+    assert!(ellipse_points(endless, 1.0).is_empty());
+}
+
+#[test]
+fn flat_or_inverted_ellipses_have_no_corners() {
+    for size in [vec2(0.0, 10.0), vec2(10.0, 0.0), vec2(-10.0, 10.0)] {
+        let rect = Rect::from_min_size(Pos2::ZERO, size);
+        assert!(ellipse_points(rect, 1.0).is_empty(), "{size:?}");
+    }
 }
 
 #[test]

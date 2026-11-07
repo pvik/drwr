@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use egui::epaint::{ClippedShape, ColorMode, Primitive, Vertex};
 use egui::{Key, Modifiers, RawInput, Shape, pos2, vec2};
 
 use super::*;
@@ -183,15 +185,31 @@ fn filled_rects(shapes: &[Shape], fill: Color32) -> Vec<Rect> {
         .collect()
 }
 
-/// The bounds of the ellipses painted filled with `fill`.
+/// The bounds of the polygons painted filled with `fill`, as ellipses are.
 fn filled_ellipses(shapes: &[Shape], fill: Color32) -> Vec<Rect> {
     shapes
         .iter()
         .filter_map(|shape| match shape {
-            Shape::Ellipse(ellipse) if ellipse.fill == fill => {
-                Some(Rect::from_center_size(ellipse.center, 2.0 * ellipse.radius))
+            Shape::Path(path) if path.closed && path.fill == fill => {
+                Some(Rect::from_points(&path.points))
             }
             _ => None,
+        })
+        .collect()
+}
+
+/// The vertices of the triangles `shapes` are drawn as, at 1 pixel a point.
+fn tessellated(harness: &Harness, shapes: Vec<Shape>) -> Vec<Vertex> {
+    let shapes = shapes
+        .into_iter()
+        .map(|shape| ClippedShape::new(Rect::EVERYTHING, shape))
+        .collect();
+    let primitives = harness.ctx.tessellate(shapes, 1.0);
+    primitives
+        .into_iter()
+        .flat_map(|primitive| match primitive.primitive {
+            Primitive::Mesh(mesh) => mesh.vertices,
+            Primitive::Callback(_) => Vec::new(),
         })
         .collect()
 }
@@ -333,7 +351,12 @@ fn escape_cancels_the_box() {
 
 #[test]
 fn switching_tools_mid_drag_drops_the_shape() {
-    for (tool, other) in [(Tool::Box, Tool::Circle), (Tool::Circle, Tool::Ellipse)] {
+    // To tools that draw nodes, and to one that doesn't.
+    for (tool, other) in [
+        (Tool::Box, Tool::Circle),
+        (Tool::Circle, Tool::Ellipse),
+        (Tool::Ellipse, Tool::Line),
+    ] {
         let mut harness = Harness::new(tool);
         let (from, to) = (
             harness.origin + vec2(100.0, 50.0),
@@ -372,16 +395,36 @@ fn dragging_with_the_ellipse_tool_adds_an_ellipse() {
 #[test]
 fn the_circle_tool_draws_circles_as_big_as_the_longer_side_of_the_drag() {
     let mut harness = Harness::new(Tool::Circle);
-    // Right and down, then up and left.
+    // Right and down, up and left, right and up, then left and down.
     harness.drag(vec2(100.0, 50.0), vec2(250.0, 130.0));
     harness.drag(vec2(400.0, 300.0), vec2(350.0, 220.0));
+    harness.drag(vec2(100.0, 300.0), vec2(180.0, 250.0));
+    harness.drag(vec2(500.0, 100.0), vec2(470.0, 200.0));
     assert_eq!(
         harness.ellipses(),
         [
             geometry(100.0, 50.0, 150.0, 150.0),
             geometry(320.0, 220.0, 80.0, 80.0),
+            geometry(100.0, 220.0, 80.0, 80.0),
+            geometry(400.0, 100.0, 100.0, 100.0),
         ]
     );
+}
+
+#[test]
+fn clicks_draw_nothing_even_if_they_slip() {
+    for tool in [Tool::Box, Tool::Circle, Tool::Ellipse] {
+        let mut harness = Harness::new(tool);
+        // Across whole numbers, and as far as a click can go.
+        harness.drag(vec2(300.4, 200.4), vec2(300.6, 200.6));
+        harness.drag(vec2(300.0, 200.0), vec2(304.0, 204.0));
+        assert_eq!(harness.boxes(), [], "{tool:?}");
+        assert_eq!(harness.ellipses(), [], "{tool:?}");
+    }
+    // Any further is a drag.
+    let mut harness = Harness::new(Tool::Circle);
+    harness.drag(vec2(300.0, 200.0), vec2(307.0, 200.0));
+    assert_eq!(harness.ellipses(), [geometry(300.0, 200.0, 7.0, 7.0)]);
 }
 
 #[test]
@@ -502,6 +545,16 @@ fn clicking_an_ellipse_selects_it_only_inside_its_outline() {
     harness.click(vec2(245.0, 90.0));
     assert_eq!(harness.selected, Some(id));
     harness.click(vec2(110.0, 58.0));
+    assert_eq!(harness.selected, None);
+}
+
+#[test]
+fn ellipses_of_negative_size_cannot_be_clicked() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.max);
+    graphics.geometry = geometry(300.0, 200.0, -150.0, -80.0);
+    document::add_node(&mut harness.graphml, &graphics);
+    harness.click(vec2(225.0, 160.0));
     assert_eq!(harness.selected, None);
 }
 
@@ -993,40 +1046,89 @@ fn ellipse_borders_are_painted_across_the_outline() {
 
     assert_eq!(filled_ellipses(&shapes, BOX_FILL), [node]);
     assert_eq!(filled_rects(&shapes, BOX_FILL), []);
-    let borders: Vec<_> = shapes
+    let paths: Vec<_> = shapes
         .iter()
         .filter_map(|shape| match shape {
-            Shape::Ellipse(ellipse) if ellipse.stroke.color == RED => Some(ellipse),
+            Shape::Path(path) => Some(path),
             _ => None,
         })
         .collect();
-    // egui strokes outside the outline, so the border is pulled in by half
-    // its width.
-    let radius = node.size() / 2.0 - Vec2::splat(3.0);
-    let border = EllipseShape::stroke(node.center(), radius, Stroke::new(6.0, RED));
-    assert_eq!(borders, [&border]);
+    // The fill and the border on the polygon its dashes would follow.
+    let points = line_type::ellipse_points(node, 1.0);
+    let fill = PathShape::convex_polygon(points.clone(), BOX_FILL, Stroke::NONE);
+    let border = PathShape::closed_line(points, Stroke::new(6.0, RED));
+    assert_eq!(paths, [&fill, &border]);
 }
 
 #[test]
-fn a_border_wider_than_its_ellipse_fills_it() {
-    let mut harness = Harness::new(Tool::Cursor);
-    let mut graphics = new_shape(ShapeType::Ellipse, pos2(100.0, 50.0), pos2(104.0, 54.0));
-    graphics.border.width = 6.0;
-    graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-    document::add_node(&mut harness.graphml, &graphics);
-    let shapes = harness.frame(vec![]);
-    let center = harness.origin + vec2(102.0, 52.0);
-    assert_eq!(
-        filled_ellipses(&shapes, RED),
-        [Rect::from_center_size(center, Vec2::splat(10.0))]
-    );
+fn borders_nearly_as_wide_as_their_ellipse_keep_round_it() {
+    for (size, width) in [(vec2(100.0, 30.0), 29.9), (vec2(150.0, 80.0), 79.0)] {
+        let mut harness = Harness::new(Tool::Cursor);
+        let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.min + size);
+        graphics.border.width = width;
+        graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+        document::add_node(&mut harness.graphml, &graphics);
+        let shapes = harness.frame(vec![]);
+
+        let node = Rect::from_min_size(harness.node().min, size);
+        // Half the width out from the outline, and a pixel to fade out.
+        let border = node.expand(width as f32 / 2.0 + 1.0);
+        let vertices = tessellated(&harness, shapes);
+        assert!(vertices.iter().any(|vertex| vertex.color == RED));
+        for vertex in vertices.iter().filter(|vertex| vertex.color == RED) {
+            assert!(border.contains(vertex.pos), "{size:?}: {vertex:?}");
+        }
+    }
 }
 
-/// Adds a node of `shape` in [`NODE`] with a red border of `line_type` and
-/// `width`, returning the bounds of the quads painted in `color`, relative to
-/// the node.
-fn dashes(shape: ShapeType, line_type: yed::LineType, width: f64, color: Color32) -> Vec<Rect> {
+#[test]
+fn flat_ellipses_show_their_border_in_every_line_type() {
+    for line_type in line_type::ALL {
+        let mut harness = Harness::new(Tool::Cursor);
+        let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.min + vec2(150.0, 0.0));
+        graphics.border.line_type = line_type.clone();
+        graphics.border.width = 2.0;
+        graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+        document::add_node(&mut harness.graphml, &graphics);
+        let shapes = harness.frame(vec![]);
+        let red = shapes.iter().any(|shape| match shape {
+            Shape::Rect(rect) => rect.stroke.color == RED,
+            Shape::Mesh(mesh) => mesh.vertices.iter().any(|vertex| vertex.color == RED),
+            _ => false,
+        });
+        assert!(red, "{line_type:?}");
+    }
+}
+
+#[test]
+fn ellipses_of_absurd_sizes_are_painted_in_few_triangles() {
     let mut harness = Harness::new(Tool::Cursor);
+    for (size, width) in [(1e10, 1.0), (150.0, 1e10)] {
+        for line_type in [yed::LineType::Line, yed::LineType::Dashed] {
+            let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.max);
+            graphics.geometry.width = size;
+            graphics.border.width = width;
+            graphics.border.line_type = line_type;
+            document::add_node(&mut harness.graphml, &graphics);
+        }
+    }
+    let shapes = harness.frame(vec![]);
+    assert!(tessellated(&harness, shapes).len() < 1_000_000);
+}
+
+/// Paints a node of `shape` in [`NODE`] with a red, dashed border of
+/// `line_type` and `width`, zoomed by `zoom`. Returns what was painted, where
+/// the node is, and the pixels per point.
+fn dashed_border(
+    shape: ShapeType,
+    line_type: yed::LineType,
+    width: f64,
+    zoom: f32,
+) -> (Vec<Shape>, Rect, f32) {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.ctx.set_zoom_factor(zoom);
+    let shapes = harness.frame(vec![]);
+    harness.origin = filled_rects(&shapes, BACKGROUND)[0].min;
     let mut graphics = new_shape(shape.clone(), NODE.min, NODE.max);
     graphics.border.line_type = line_type;
     graphics.border.width = width;
@@ -1036,7 +1138,7 @@ fn dashes(shape: ShapeType, line_type: yed::LineType, width: f64, color: Color32
 
     let solid = shapes.iter().any(|shape| match shape {
         Shape::Rect(rect) => rect.stroke.color == RED,
-        Shape::Ellipse(ellipse) => ellipse.stroke.color == RED,
+        Shape::Path(path) => path.stroke.color == ColorMode::Solid(RED),
         _ => false,
     });
     assert!(!solid, "the border was painted solid");
@@ -1045,7 +1147,13 @@ fn dashes(shape: ShapeType, line_type: yed::LineType, width: f64, color: Color32
         _ => filled_rects(&shapes, BOX_FILL),
     };
     assert_eq!(filled, [harness.node()]);
-    let dashes = shapes
+    (shapes, harness.node(), harness.ctx.pixels_per_point())
+}
+
+/// The bounds of the quads painted in `color`, which dots and dashes along
+/// straight lines are.
+fn quads(shapes: &[Shape], color: Color32) -> Vec<Rect> {
+    shapes
         .iter()
         .filter_map(|shape| match shape {
             Shape::Mesh(mesh) => Some(mesh.vertices.as_chunks::<4>().0),
@@ -1053,10 +1161,78 @@ fn dashes(shape: ShapeType, line_type: yed::LineType, width: f64, color: Color32
         })
         .flatten()
         .filter(|quad| quad.iter().all(|vertex| vertex.color == color))
-        .map(|quad| Rect::from_points(&quad.map(|vertex| vertex.pos)));
+        .map(|quad| Rect::from_points(&quad.map(|vertex| vertex.pos)))
+        .collect()
+}
+
+/// The middles of the dashes painted in `color` along curves, each through
+/// the corners it turns at.
+fn curved_dashes(shapes: &[Shape], color: Color32) -> Vec<Vec<Pos2>> {
+    let clear = Color32::TRANSPARENT;
+    let mut dashes: Vec<Vec<Pos2>> = Vec::new();
+    for shape in shapes {
+        let Shape::Mesh(mesh) = shape else {
+            continue;
+        };
+        // Four vertices across each point of a dash, which triangles join to
+        // the next point's.
+        let joined: HashSet<u32> = (mesh.indices.as_chunks::<3>().0.iter())
+            .filter_map(|triangle| {
+                let points = triangle.map(|index| index / 4);
+                let (first, last) = (*points.iter().min()?, *points.iter().max()?);
+                (last == first + 1).then_some(first)
+            })
+            .collect();
+        for (point, quad) in (0..).zip(mesh.vertices.as_chunks::<4>().0) {
+            if quad.map(|vertex| vertex.color) != [clear, color, color, clear] {
+                continue;
+            }
+            let middle = quad[1].pos.lerp(quad[2].pos, 0.5);
+            match dashes.last_mut() {
+                Some(dash) if point > 0 && joined.contains(&(point - 1)) => dash.push(middle),
+                _ => dashes.push(vec![middle]),
+            }
+        }
+    }
+    dashes
+}
+
+fn perimeter(outline: &[Pos2]) -> f32 {
+    let next = outline.iter().cycle().skip(1);
+    outline.iter().zip(next).map(|(a, b)| a.distance(*b)).sum()
+}
+
+/// The length of the line through `points`.
+fn length(points: &[Pos2]) -> f32 {
+    let segments = points.windows(2);
+    segments.map(|pair| pair[0].distance(pair[1])).sum()
+}
+
+/// Whether `v` is in whole numbers, but for rounding errors.
+fn whole(v: Vec2) -> bool {
+    (v - v.round()).length() < 1e-3
+}
+
+/// How far round `outline`, a polygon, `point` is from its first corner.
+fn along(outline: &[Pos2], point: Pos2) -> f32 {
+    let mut distance = 0.0;
+    for (&a, &b) in outline.iter().zip(outline.iter().cycle().skip(1)) {
+        if point.distance(a) + point.distance(b) - a.distance(b) < 1e-3 {
+            return distance + a.distance(point);
+        }
+        distance += a.distance(b);
+    }
+    panic!("{point:?} isn't on the outline");
+}
+
+/// The [`quads`] of a red, dashed border of `line_type` and `width` round a
+/// node of `shape` in [`NODE`], painted in `color`, relative to the node.
+fn dashes(shape: ShapeType, line_type: yed::LineType, width: f64, color: Color32) -> Vec<Rect> {
+    let (shapes, node, _) = dashed_border(shape, line_type, width, 1.0);
     // Relative to the node, for readable expectations.
-    let node = harness.node().min.to_vec2();
-    dashes.map(|dash| dash.translate(-node)).collect()
+    let offset = node.min.to_vec2();
+    let quads = quads(&shapes, color).into_iter();
+    quads.map(|quad| quad.translate(-offset)).collect()
 }
 
 #[test]
@@ -1115,34 +1291,65 @@ fn borders_thinner_than_a_point_are_dotted_a_point_apart_and_fainter() {
 
 #[test]
 fn dashed_ellipses_are_dashed_along_their_outline() {
-    let dashes = dashes(ShapeType::Ellipse, yed::LineType::Dashed, 2.0, RED);
-    let node = NODE.translate(-NODE.min.to_vec2());
-    // The first dash, 8 long, starts at the top and heads right.
-    assert_near(dashes[0].center(), node.center_top() + vec2(4.0, 0.0));
-    // Each lies across the outline.
-    for dash in &dashes {
-        let offset = (dash.center() - node.center()) / (node.size() / 2.0);
-        assert!((offset.length() - 1.0).abs() < 0.02, "{dash:?}");
+    // 10 wide, the outline ends 9.3 into the last dash, which stays a dash.
+    for width in [2.0, 10.0] {
+        let line_type = yed::LineType::Dashed;
+        let (shapes, node, _) = dashed_border(ShapeType::Ellipse, line_type, width, 1.0);
+        assert_eq!(quads(&shapes, RED), [], "{width}");
+        let dashes = curved_dashes(&shapes, RED);
+        let outline = line_type::ellipse_points(node, 1.0);
+        let perimeter = perimeter(&outline);
+
+        // Four widths long and two apart, from the right end down, until the
+        // outline ends.
+        let (dash, period) = (4.0 * width as f32, 6.0 * width as f32);
+        assert_eq!(dashes.len() as f32, (perimeter / period).ceil(), "{width}");
+        assert!(dashes[0][1].y > dashes[0][0].y, "{width}");
+        for (i, points) in dashes.iter().enumerate() {
+            let start = i as f32 * period;
+            let at = along(&outline, points[0]);
+            assert!((at - start).abs() < 0.01, "{width}: {i} at {at}");
+            let (drawn, expected) = (length(points), dash.min(perimeter - start));
+            assert!((drawn - expected).abs() < 0.01, "{width}: {i} is {drawn}");
+            for &point in points {
+                along(&outline, point);
+            }
+        }
     }
-    // About 31 dashes 12 apart round the 370 long outline, some in two parts
-    // where it bends.
-    assert!((31..=62).contains(&dashes.len()), "{}", dashes.len());
 }
 
 #[test]
 fn dots_on_ellipses_are_squares_on_whole_pixels() {
-    for (width, color, side) in [(3.0, RED, 3.0), (0.5, RED.gamma_multiply(0.5), 1.0)] {
-        let dots = dashes(ShapeType::Ellipse, yed::LineType::Dotted, width, color);
-        assert!(dots.len() >= 50, "{width}: {}", dots.len());
-        for dot in &dots {
-            assert_eq!(dot.size(), Vec2::splat(side), "{width}: {dot:?}");
-            assert_eq!(dot.min, dot.min.round(), "{width}: {dot:?}");
+    // Zoomed by egui's keys or the display's scale.
+    for zoom in [0.9, 1.0, 1.25, 1.5, 2.0] {
+        for width in [0.5, 1.0, 2.5, 3.0] {
+            let line_type = yed::LineType::Dotted;
+            let (shapes, node, ppp) = dashed_border(ShapeType::Ellipse, line_type, width, zoom);
+            let width = width as f32;
+            let color = RED.gamma_multiply((width * ppp).min(1.0));
+            assert!(curved_dashes(&shapes, color).is_empty());
+            let dots = quads(&shapes, color);
+
+            // A unit apart, which is at least a point.
+            let unit = width.max(1.0);
+            let perimeter = perimeter(&line_type::ellipse_points(node, ppp));
+            let expected = (perimeter / (2.0 * unit)).ceil();
+            assert_eq!(dots.len() as f32, expected, "{zoom} {width}");
+            // As thick as the line, which is at least a pixel.
+            let side = (width * ppp).max(1.0).round();
+            for dot in &dots {
+                let (min, size) = (dot.min.to_vec2() * ppp, dot.size() * ppp);
+                let message = format!("{zoom} {width}: {dot:?}");
+                assert!(whole(min) && whole(size), "{message}");
+                assert_eq!(size.round(), Vec2::splat(side), "{message}");
+            }
         }
     }
+    // The first, down from the right end.
     let dots = dashes(ShapeType::Ellipse, yed::LineType::Dotted, 3.0, RED);
     assert_eq!(
         dots[0],
-        Rect::from_min_max(pos2(75.0, -1.0), pos2(78.0, 2.0))
+        Rect::from_min_max(pos2(148.0, 40.0), pos2(151.0, 43.0))
     );
 }
 

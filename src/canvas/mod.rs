@@ -1,4 +1,4 @@
-use egui::epaint::EllipseShape;
+use egui::epaint::PathShape;
 use egui::text::LayoutJob;
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Margin, Painter, PointerButton, Pos2,
@@ -249,6 +249,12 @@ impl Canvas {
         let response = response.on_hover_cursor(CursorIcon::Crosshair);
         // Whole numbers keep the saved coordinates tidy.
         let to_graph = |pos: Pos2| (pos - origin).round();
+        // Within egui's click distance a press is a click, which draws
+        // nothing, even if it slips across a whole number.
+        let max_click_dist = response.ctx.options(|o| o.input_options.max_click_dist);
+        let node = |(drag, end): (ShapeDrag, Pos2)| {
+            (drag.from.distance(end) > max_click_dist).then(|| new_node(&shape, drag.from, end))
+        };
         if response.drag_started_by(PointerButton::Primary) {
             let from = response.ctx.input(|i| i.pointer.press_origin());
             self.shape_drag = from.map(|from| ShapeDrag {
@@ -258,19 +264,17 @@ impl Canvas {
         }
         if !response.drag_stopped() {
             let end = response.interact_pointer_pos().map(to_graph);
-            return self
-                .shape_drag
-                .zip(end)
-                .map(|(drag, end)| new_node(&shape, drag.from, end));
+            return self.shape_drag.zip(end).and_then(node);
         }
 
         // Without a release, Escape stopped the drag, which cancels the node.
         let end = response.ctx.input(primary_release).map(to_graph);
-        if let Some((drag, end)) = self.shape_drag.take().zip(end) {
-            let graphics = new_node(&shape, drag.from, end);
-            if graphics.geometry.width > 0.0 && graphics.geometry.height > 0.0 {
-                *selected = Some(document::add_node(graphml, &graphics));
-            }
+        let graphics = self.shape_drag.take().zip(end).and_then(node);
+        if let Some(graphics) = graphics
+            && graphics.geometry.width > 0.0
+            && graphics.geometry.height > 0.0
+        {
+            *selected = Some(document::add_node(graphml, &graphics));
         }
         None
     }
@@ -457,10 +461,18 @@ fn new_shape(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
     graphics
 }
 
+/// The shapes the canvas can draw nodes as.
+#[derive(Clone, Copy)]
+enum Outline {
+    Rect,
+    Ellipse,
+}
+
 /// The shape the canvas draws a node as, if it's a kind it can draw yet.
-fn shape(graphics: &NodeGraphics) -> Option<&ShapeType> {
+fn shape(graphics: &NodeGraphics) -> Option<Outline> {
     match &graphics.kind {
-        NodeKind::Shape(shape @ (ShapeType::Rectangle | ShapeType::Ellipse)) => Some(shape),
+        NodeKind::Shape(ShapeType::Rectangle) => Some(Outline::Rect),
+        NodeKind::Shape(ShapeType::Ellipse) => Some(Outline::Ellipse),
         _ => None,
     }
 }
@@ -469,16 +481,17 @@ fn shape(graphics: &NodeGraphics) -> Option<&ShapeType> {
 fn hit(origin: Vec2, graphics: &NodeGraphics, pos: Pos2) -> bool {
     let rect = screen_rect(origin, graphics);
     match shape(graphics) {
-        Some(ShapeType::Ellipse) => in_ellipse(rect, pos),
-        Some(_) => rect.contains(pos),
+        Some(Outline::Rect) => rect.contains(pos),
+        Some(Outline::Ellipse) => in_ellipse(rect, pos),
         None => false,
     }
 }
 
-/// Whether a point is in the ellipse filling `rect`.
+/// Whether a point is in the ellipse filling `rect`. An inverted `rect` has
+/// none, as none is painted.
 fn in_ellipse(rect: Rect, pos: Pos2) -> bool {
     let offset = (pos - rect.center()) / (rect.size() / 2.0);
-    offset.length_sq() <= 1.0
+    rect.contains(pos) && offset.length_sq() <= 1.0
 }
 
 /// Where a node's bounds are on screen.
@@ -505,7 +518,7 @@ fn yed_rect(rect: Rect) -> yed::Rect {
 /// Paints a node with its labels, except the one at index `hidden`, unless
 /// it's a kind the canvas can't draw yet.
 fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Option<usize>) {
-    let Some(shape) = shape(graphics) else {
+    let Some(outline) = shape(graphics) else {
         return;
     };
     let rect = screen_rect(origin, graphics);
@@ -515,14 +528,15 @@ fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Optio
         Stroke::new(border.width as f32, color32(color))
     });
     // Like yEd, which centers borders on the outline, over the fill.
-    match shape {
-        ShapeType::Ellipse => {
-            painter.add(EllipseShape::filled(rect.center(), rect.size() / 2.0, fill));
-            line_type::paint_ellipse_outline(painter, rect, stroke, &border.line_type);
-        }
-        _ => {
+    match outline {
+        Outline::Rect => {
             painter.rect_filled(rect, 0.0, fill);
             line_type::paint_rect_outline(painter, rect, stroke, &border.line_type);
+        }
+        Outline::Ellipse => {
+            let points = line_type::ellipse_points(rect, painter.pixels_per_point());
+            painter.add(PathShape::convex_polygon(points, fill, Stroke::NONE));
+            line_type::paint_ellipse_outline(painter, rect, stroke, &border.line_type);
         }
     }
 

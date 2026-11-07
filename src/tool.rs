@@ -1,4 +1,4 @@
-}}}}use graphml::yed::ShapeType;
+use graphml::yed::ShapeType;
 
 /// A drawing tool. Exactly one is selected at a time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
