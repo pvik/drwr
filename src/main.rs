@@ -1,6 +1,7 @@
 mod action;
 mod canvas;
 mod cli;
+mod color_picker;
 mod document;
 mod error_dialog;
 mod menu;
@@ -15,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use action::Action;
 use canvas::Canvas;
+use color_picker::ColorPicker;
+use document::ColorProperty;
 use graphml::GraphMl;
 use open_dialog::OpenDialog;
 use tool::Tool;
@@ -66,6 +69,8 @@ struct DrwrApp {
     selected: Option<String>,
     canvas: Canvas,
     open_dialog: OpenDialog,
+    /// Picks the colors of the selected node.
+    color_picker: ColorPicker<ColorProperty>,
     error: Option<String>,
 }
 
@@ -76,10 +81,11 @@ impl DrwrApp {
         self.graphml = GraphMl::read_file(&path)?;
         self.file = Some(path);
         self.selected = None;
+        self.color_picker.close();
         Ok(())
     }
 
-    /// Does what the menu, the toolbar or a keyboard shortcut asked for.
+    /// Does what the user asked for, wherever they asked.
     fn perform(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
         match action {
             Action::New => {
@@ -90,6 +96,22 @@ impl DrwrApp {
                 // TODO: save the graph, asking for a file if it's unsaved.
             }
             Action::SelectTool(tool) => self.tool = tool,
+            Action::EditColor(property) => {
+                if let Some(id) = &self.selected
+                    && let Some(graphics) = document::graphics_of(&self.graphml, id)
+                {
+                    let title = format!("{} color", property.name());
+                    self.color_picker
+                        .open(property, title, property.get(&graphics));
+                }
+            }
+            Action::SetColor(property, color) => {
+                if let Some(id) = &self.selected {
+                    document::edit_graphics(&mut self.graphml, id, |graphics| {
+                        property.set(graphics, color);
+                    });
+                }
+            }
         }
     }
 }
@@ -118,10 +140,15 @@ impl eframe::App for DrwrApp {
             self.perform(action, ui.ctx(), frame);
         }
         status_bar::show(ui, self.tool, self.file.as_deref());
-        side_panel::show(ui, &self.graphml, self.selected.as_deref());
+        if let Some(action) = side_panel::show(ui, &self.graphml, self.selected.as_deref()) {
+            self.perform(action, ui.ctx(), frame);
+        }
         self.canvas
             .show(ui, self.tool, &mut self.graphml, &mut self.selected);
 
+        if let Some((property, color)) = self.color_picker.show(ui.ctx()) {
+            self.perform(Action::SetColor(property, color), ui.ctx(), frame);
+        }
         error_dialog::show(ui, &mut self.error);
     }
 }

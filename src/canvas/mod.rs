@@ -5,6 +5,7 @@ use egui::{
 use graphml::GraphMl;
 use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
 
+use crate::color_picker::color32;
 use crate::document;
 use crate::tool::Tool;
 
@@ -195,10 +196,6 @@ fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics) {
     });
     // yEd centers borders on the outline.
     painter.rect(rect, 0.0, fill, stroke, StrokeKind::Middle);
-}
-
-fn color32(color: yed::Color) -> Color32 {
-    Color32::from_rgba_unmultiplied(color.r, color.g, color.b, color.a)
 }
 
 #[cfg(test)]

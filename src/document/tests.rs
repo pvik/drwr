@@ -2,6 +2,8 @@ use graphml::yed::{self, NodeKind, ShapeType};
 
 use super::*;
 
+const FIXTURE: &str = include_str!("../../crates/graphml/tests/fixtures/yed.graphml");
+
 fn rectangle() -> NodeGraphics {
     NodeGraphics::new(NodeKind::Shape(ShapeType::Rectangle))
 }
@@ -73,4 +75,53 @@ fn graphics_of_looks_up_a_top_level_node() {
     assert_eq!(graphics_of(&doc, "plain"), None);
     assert_eq!(graphics_of(&doc, "group::n0"), None);
     assert_eq!(graphics_of(&doc, "missing"), None);
+}
+
+#[test]
+fn color_properties_are_the_fill_gradient_and_border_colors() {
+    let mut graphics = rectangle();
+    let [fill, gradient, border] = [1, 2, 3].map(|n| Some(Color::rgb(n, n, n)));
+    ColorProperty::Fill.set(&mut graphics, fill);
+    ColorProperty::Gradient.set(&mut graphics, gradient);
+    ColorProperty::Border.set(&mut graphics, border);
+
+    assert_eq!(graphics.fill.color, fill);
+    assert_eq!(graphics.fill.gradient, gradient);
+    assert_eq!(graphics.border.color, border);
+    let read = ColorProperty::ALL.map(|property| property.get(&graphics));
+    assert_eq!(read, [fill, gradient, border]);
+}
+
+#[test]
+fn edit_graphics_changes_only_what_was_edited() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    edit_graphics(&mut doc, "n0", |graphics| {
+        ColorProperty::Fill.set(graphics, Some(Color::rgb(0xFF, 0x00, 0x00)));
+    });
+
+    let text = doc.to_xml();
+    assert_eq!(text.lines().count(), FIXTURE.lines().count());
+    let changed: Vec<_> = FIXTURE
+        .lines()
+        .zip(text.lines())
+        .filter(|(before, after)| before != after)
+        .collect();
+    assert_eq!(
+        changed,
+        [(
+            r##"          <y:Fill color="#FFCC00" transparent="false"/>"##,
+            r##"          <y:Fill color="#FF0000" transparent="false"/>"##,
+        )]
+    );
+}
+
+#[test]
+fn edit_graphics_skips_nodes_without_graphics() {
+    let mut doc = yed::new_document();
+    doc.graphs[0].nodes.push(Node::new("plain"));
+    let before = doc.clone();
+    for id in ["plain", "missing"] {
+        edit_graphics(&mut doc, id, |graphics| graphics.geometry.x = 10.0);
+    }
+    assert_eq!(doc, before);
 }

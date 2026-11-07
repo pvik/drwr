@@ -1,6 +1,6 @@
 use eframe::App as _;
 use egui::{
-    Color32, Event, Key, Modifiers, PointerButton, Popup, RawInput, Rect, Shape, Vec2, vec2,
+    Color32, Event, Key, Modifiers, PointerButton, Popup, Pos2, RawInput, Rect, Shape, Vec2, vec2,
 };
 use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
 
@@ -49,6 +49,25 @@ impl Harness {
     /// Clicks a point relative to the canvas's top-left corner.
     fn click(&mut self, at: Vec2) {
         let at = canvas(&self.run(vec![])).min + at;
+        self.click_at(at);
+    }
+
+    /// Clicks the middle of the first text painted as `text`.
+    fn click_text(&mut self, text: &str) {
+        let at = self
+            .run(vec![])
+            .iter()
+            .find_map(|shape| match shape {
+                Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(shape.pos + shape.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text:?} wasn't painted"));
+        self.click_at(at);
+    }
+
+    fn click_at(&mut self, at: Pos2) {
         self.run(vec![Event::PointerMoved(at)]);
         for pressed in [true, false] {
             self.run(vec![Event::PointerButton {
@@ -75,6 +94,18 @@ impl Harness {
             .collect()
     }
 
+    /// Runs a frame, returning whether it painted `text`.
+    fn painted(&mut self, text: &str) -> bool {
+        self.run(vec![])
+            .iter()
+            .any(|shape| matches!(shape, Shape::Text(shape) if shape.galley.text() == text))
+    }
+
+    /// The graphics of the node with id `id`.
+    fn graphics(&self, id: &str) -> NodeGraphics {
+        document::graphics_of(&self.app.graphml, id).expect("the node has graphics")
+    }
+
     fn press(&mut self, modifiers: Modifiers, key: Key) {
         self.run(vec![Event::Key {
             key,
@@ -86,14 +117,16 @@ impl Harness {
     }
 }
 
-/// Where the canvas is: the first white rect painted.
+/// Where the canvas is: the largest white rect painted, since the side
+/// panel's color swatches can be white too.
 fn canvas(shapes: &[Shape]) -> Rect {
     shapes
         .iter()
-        .find_map(|shape| match shape {
+        .filter_map(|shape| match shape {
             Shape::Rect(rect) if rect.fill == Color32::WHITE => Some(rect.rect),
             _ => None,
         })
+        .max_by(|a, b| a.area().total_cmp(&b.area()))
         .expect("the canvas was painted")
 }
 
@@ -252,4 +285,105 @@ fn the_side_panel_shows_the_clicked_node() {
 
     harness.click(vec2(400.0, 300.0));
     assert_eq!(harness.side_panel(), ["Nothing selected"]);
+}
+
+/// A 150×80 box at (100, 50) with yEd's default look.
+fn new_box() -> NodeGraphics {
+    let mut graphics = NodeGraphics::new(NodeKind::Shape(ShapeType::Rectangle));
+    graphics.geometry = yed::Rect {
+        x: 100.0,
+        y: 50.0,
+        width: 150.0,
+        height: 80.0,
+    };
+    graphics
+}
+
+#[test]
+fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+
+    harness.click_text("#FFCC00");
+    assert!(harness.painted("Fill color"));
+    // The hex field has the focus, with the fill's color selected.
+    harness.run(vec![Event::Text("#FF0000".to_owned())]);
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    assert!(!harness.app.color_picker.is_open());
+    let red = yed::Color::rgb(0xFF, 0x00, 0x00);
+    assert_eq!(harness.graphics(&id).fill.color, Some(red));
+    #[rustfmt::skip]
+    assert_eq!(harness.side_panel(), [
+        "Id",           "n0",
+        "Shape",        "rectangle",
+        "X",            "100",
+        "Y",            "50",
+        "Width",        "150",
+        "Height",       "80",
+        "Fill",         "#FF0000",
+        "Gradient",     "None",
+        "Border",       "#000000",
+        "Border width", "1",
+        "Border style", "line",
+    ]);
+}
+
+#[test]
+fn no_color_removes_the_color_clicked() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+
+    harness.click_text("#000000");
+    assert!(harness.painted("Border color"));
+    harness.click_text("No color");
+    harness.click_text("OK");
+
+    let graphics = harness.graphics(&id);
+    assert_eq!(graphics.border.color, None);
+    assert_eq!(graphics.fill, new_box().fill);
+}
+
+#[test]
+fn typing_a_color_selects_no_tools() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    harness.click_text("#FFCC00");
+    harness.run(vec![]);
+
+    // Each key is a tool's shortcut.
+    for (key, text) in [
+        (Key::A, "a"),
+        (Key::B, "b"),
+        (Key::C, "c"),
+        (Key::E, "e"),
+        (Key::A, "a"),
+        (Key::B, "b"),
+    ] {
+        let press = Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        harness.run(vec![press, Event::Text(text.to_owned())]);
+    }
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    assert_eq!(harness.app.tool, Tool::Cursor);
+    let typed = yed::Color::rgb(0xAB, 0xCE, 0xAB);
+    assert_eq!(harness.graphics(&id).fill.color, Some(typed));
+}
+
+#[test]
+fn open_closes_the_color_picker() {
+    let mut app = DrwrApp::default();
+    app.color_picker
+        .open(ColorProperty::Fill, "Fill color", None);
+    app.open(Path::new(FIXTURE)).unwrap();
+    assert!(!app.color_picker.is_open());
 }
