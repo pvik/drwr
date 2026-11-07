@@ -62,6 +62,8 @@ struct DrwrApp {
     graphml: GraphMl,
     /// Where `graphml` is saved, as an absolute path; `None` if it isn't.
     file: Option<PathBuf>,
+    /// The id of the selected node.
+    selected: Option<String>,
     canvas: Canvas,
     open_dialog: OpenDialog,
     error: Option<String>,
@@ -73,6 +75,7 @@ impl DrwrApp {
         let path = std::path::absolute(path)?;
         self.graphml = GraphMl::read_file(&path)?;
         self.file = Some(path);
+        self.selected = None;
         Ok(())
     }
 
@@ -115,8 +118,9 @@ impl eframe::App for DrwrApp {
             self.perform(action, ui.ctx(), frame);
         }
         status_bar::show(ui, self.tool, self.file.as_deref());
-        side_panel::show(ui);
-        self.canvas.show(ui, self.tool, &mut self.graphml);
+        side_panel::show(ui, &self.graphml, self.selected.as_deref());
+        self.canvas
+            .show(ui, self.tool, &mut self.graphml, &mut self.selected);
 
         error_dialog::show(ui, &mut self.error);
     }

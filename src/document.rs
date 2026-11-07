@@ -4,9 +4,11 @@ use graphml::yed::{Keys, NodeGraphics};
 use graphml::{Graph, GraphMl, Node};
 
 /// Adds a node to the top-level graph, adding the graph and keys if missing.
-pub fn add_node(doc: &mut GraphMl, graphics: &NodeGraphics) {
+/// Returns the node's id.
+pub fn add_node(doc: &mut GraphMl, graphics: &NodeGraphics) -> String {
     let keys = Keys::ensure(doc);
-    let mut node = Node::new(unused_node_id(doc));
+    let id = unused_node_id(doc);
+    let mut node = Node::new(id.clone());
     keys.set_node_graphics(&mut node, graphics);
     if doc.graphs.is_empty() {
         doc.graphs.push(Graph {
@@ -15,16 +17,27 @@ pub fn add_node(doc: &mut GraphMl, graphics: &NodeGraphics) {
         });
     }
     doc.graphs[0].nodes.push(node);
+    id
 }
 
-/// The readable graphics of the top-level graph's nodes.
-pub fn node_graphics(doc: &GraphMl) -> impl Iterator<Item = NodeGraphics> {
+/// The readable graphics of the top-level graph's nodes, with their ids.
+pub fn node_graphics(doc: &GraphMl) -> impl Iterator<Item = (&str, NodeGraphics)> {
     let keys = Keys::find(doc);
     doc.graphs
         .first()
         .into_iter()
         .flat_map(|graph| &graph.nodes)
-        .filter_map(move |node| keys.node_graphics(node).ok().flatten())
+        .filter_map(move |node| {
+            let graphics = keys.node_graphics(node).ok().flatten()?;
+            Some((node.id.as_str(), graphics))
+        })
+}
+
+/// The readable graphics of the top-level graph's node with id `id`.
+pub fn graphics_of(doc: &GraphMl, id: &str) -> Option<NodeGraphics> {
+    let nodes = &doc.graphs.first()?.nodes;
+    let node = nodes.iter().find(|node| node.id == id)?;
+    Keys::find(doc).node_graphics(node).ok().flatten()
 }
 
 /// The first of yEd's ids n0, n1, … that no node in the document has.
