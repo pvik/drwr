@@ -84,7 +84,7 @@ impl eframe::App for DrwrApp {
         // Panels are laid out outside-in in the order they're added, so the
         // canvas (the central panel) must come last.
         menu::show(ui, frame, &mut self.open_dialog);
-        toolbar::show(ui, &mut self.tool);
+        toolbar::show(ui, frame, &mut self.open_dialog, &mut self.tool);
         status_bar::show(ui, self.tool, self.file.as_deref());
         side_panel::show(ui);
         canvas::show(ui);
