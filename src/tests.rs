@@ -450,6 +450,49 @@ fn dragging_the_selected_node_moves_it() {
 }
 
 #[test]
+fn ctrl_arrows_move_the_selected_node() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    let unmoved = harness.app.graphml.clone();
+    harness.press(CTRL, Key::ArrowRight);
+    assert_eq!(harness.app.graphml, unmoved);
+
+    harness.click(vec2(150.0, 60.0));
+    let before = harness.graphics(&id);
+    for (key, x, y) in [
+        (Key::ArrowRight, 101.0, 50.0),
+        (Key::ArrowDown, 101.0, 51.0),
+        (Key::ArrowLeft, 100.0, 51.0),
+        (Key::ArrowUp, 100.0, 50.0),
+        (Key::ArrowUp, 100.0, 49.0),
+    ] {
+        harness.press(CTRL, key);
+        let geometry = harness.graphics(&id).geometry;
+        assert_eq!((geometry.x, geometry.y), (x, y), "{key:?}");
+    }
+    // Whatever the tool.
+    harness.press(Modifiers::NONE, Key::B);
+    harness.press(CTRL, Key::ArrowLeft);
+
+    let after = harness.graphics(&id);
+    let geometry = yed::Rect {
+        x: 99.0,
+        y: 49.0,
+        ..before.geometry
+    };
+    assert_eq!(after.geometry, geometry);
+    // Placed relative to the node, they move with it unchanged.
+    assert_eq!(after.labels, before.labels);
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel
+            .windows(4)
+            .any(|rows| rows == ["X", "99", "Y", "49"]),
+        "{side_panel:?}"
+    );
+}
+
+#[test]
 fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
     let mut harness = Harness::new();
     let id = document::add_node(&mut harness.app.graphml, &new_box());
@@ -877,6 +920,19 @@ fn typing_a_label_selects_no_tools() {
     harness.press(Modifiers::NONE, Key::Escape);
     assert_eq!(harness.app.tool, Tool::Box);
     assert_eq!(harness.label(&id), "Start");
+}
+
+#[test]
+fn ctrl_arrows_in_a_label_field_move_the_text_cursor() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("One two");
+    // Back a word.
+    harness.press(CTRL, Key::ArrowLeft);
+    harness.type_text("big ");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.label(&id), "One big two");
+    assert_eq!(harness.graphics(&id).geometry, new_box().geometry);
 }
 
 #[test]

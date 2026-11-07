@@ -3,34 +3,46 @@ use egui::{Context, Key, KeyboardShortcut, Modifiers, Popup};
 use crate::action::Action;
 use crate::tool::Tool;
 
+/// How far Ctrl+arrow moves the selected node, in points.
+const STEP: f64 = 1.0;
+
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 11] = [
-    (Modifiers::COMMAND, Key::N,      Action::New),
-    (Modifiers::COMMAND, Key::O,      Action::Open),
-    (Modifiers::COMMAND, Key::S,      Action::Save),
-    (Modifiers::COMMAND, Key::Enter,  Action::EditLabel),
-    (Modifiers::NONE,    Key::Escape, Action::SelectTool(Tool::Cursor)),
-    (Modifiers::NONE,    Key::B,      Action::SelectTool(Tool::Box)),
-    (Modifiers::NONE,    Key::C,      Action::SelectTool(Tool::Circle)),
-    (Modifiers::NONE,    Key::E,      Action::SelectTool(Tool::Ellipse)),
-    (Modifiers::NONE,    Key::L,      Action::SelectTool(Tool::Line)),
-    (Modifiers::NONE,    Key::A,      Action::SelectTool(Tool::Arrow)),
-    (Modifiers::NONE,    Key::T,      Action::SelectTool(Tool::TextBox)),
+const SHORTCUTS: [(Modifiers, Key, Action); 15] = [
+    (Modifiers::COMMAND, Key::N,          Action::New),
+    (Modifiers::COMMAND, Key::O,          Action::Open),
+    (Modifiers::COMMAND, Key::S,          Action::Save),
+    (Modifiers::COMMAND, Key::Enter,      Action::EditLabel),
+    (Modifiers::COMMAND, Key::ArrowLeft,  Action::MoveBy(-STEP, 0.0)),
+    (Modifiers::COMMAND, Key::ArrowRight, Action::MoveBy(STEP, 0.0)),
+    (Modifiers::COMMAND, Key::ArrowUp,    Action::MoveBy(0.0, -STEP)),
+    (Modifiers::COMMAND, Key::ArrowDown,  Action::MoveBy(0.0, STEP)),
+    (Modifiers::NONE,    Key::Escape,     Action::SelectTool(Tool::Cursor)),
+    (Modifiers::NONE,    Key::B,          Action::SelectTool(Tool::Box)),
+    (Modifiers::NONE,    Key::C,          Action::SelectTool(Tool::Circle)),
+    (Modifiers::NONE,    Key::E,          Action::SelectTool(Tool::Ellipse)),
+    (Modifiers::NONE,    Key::L,          Action::SelectTool(Tool::Line)),
+    (Modifiers::NONE,    Key::A,          Action::SelectTool(Tool::Arrow)),
+    (Modifiers::NONE,    Key::T,          Action::SelectTool(Tool::TextBox)),
 ];
 
-/// Takes this frame's press of an action's shortcut, if there is one.
+/// Takes this frame's presses of shortcuts, returning an action per press.
 /// `typing` is whether a text field had the focus at the end of the last frame.
-pub fn pressed(ctx: &Context, typing: bool) -> Option<Action> {
+pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
     // Egui drops a field's focus on Escape before this frame runs, but the
     // field still needs the Escape, to cancel what was typed.
     if typing || blocked(ctx) {
-        return None;
+        return Vec::new();
     }
     ctx.input_mut(|input| {
-        SHORTCUTS.into_iter().find_map(|(modifiers, key, action)| {
-            input.consume_key(modifiers, key).then_some(action)
-        })
+        SHORTCUTS
+            .into_iter()
+            .flat_map(|(modifiers, key, action)| {
+                // Counted, as a slow frame can get several key repeats.
+                let presses = input.count_and_consume_key(modifiers, key);
+                std::iter::repeat_n(action, presses)
+            })
+            .collect()
     })
 }
 

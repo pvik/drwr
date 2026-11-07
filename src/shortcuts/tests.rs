@@ -37,6 +37,10 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::O, Action::Open),
         (CTRL, Key::S, Action::Save),
         (CTRL, Key::Enter, Action::EditLabel),
+        (CTRL, Key::ArrowLeft, Action::MoveBy(-1.0, 0.0)),
+        (CTRL, Key::ArrowRight, Action::MoveBy(1.0, 0.0)),
+        (CTRL, Key::ArrowUp, Action::MoveBy(0.0, -1.0)),
+        (CTRL, Key::ArrowDown, Action::MoveBy(0.0, 1.0)),
         (NONE, Key::Escape, Action::SelectTool(Tool::Cursor)),
         (NONE, Key::B, Action::SelectTool(Tool::Box)),
         (NONE, Key::C, Action::SelectTool(Tool::Circle)),
@@ -46,16 +50,42 @@ fn shortcuts_pick_their_actions() {
         (NONE, Key::T, Action::SelectTool(Tool::TextBox)),
     ] {
         let picked = frame(&ctx, vec![key(modifiers, k)], |ctx| pressed(ctx, false));
-        assert_eq!(picked, Some(action), "{modifiers:?} {k:?}");
+        assert_eq!(picked, [action], "{modifiers:?} {k:?}");
     }
+}
+
+#[test]
+fn every_press_in_a_frame_picks_its_action() {
+    let ctx = Context::default();
+    let repeat = Event::Key {
+        key: Key::ArrowRight,
+        physical_key: None,
+        pressed: true,
+        repeat: true,
+        modifiers: CTRL,
+    };
+    let events = vec![
+        key(CTRL, Key::ArrowRight),
+        repeat,
+        key(CTRL, Key::ArrowDown),
+    ];
+    let picked = frame(&ctx, events, |ctx| pressed(ctx, false));
+    let right = Action::MoveBy(1.0, 0.0);
+    assert_eq!(picked, [right.clone(), right, Action::MoveBy(0.0, 1.0)]);
 }
 
 #[test]
 fn other_keys_pick_nothing() {
     let ctx = Context::default();
-    for (modifiers, k) in [(NONE, Key::O), (CTRL, Key::B), (Modifiers::ALT, Key::F)] {
+    for (modifiers, k) in [
+        (NONE, Key::O),
+        (CTRL, Key::B),
+        (Modifiers::ALT, Key::F),
+        // Plain arrows are left to egui, which moves the focus with them.
+        (NONE, Key::ArrowRight),
+    ] {
         let picked = frame(&ctx, vec![key(modifiers, k)], |ctx| pressed(ctx, false));
-        assert_eq!(picked, None, "{modifiers:?} {k:?}");
+        assert!(picked.is_empty(), "{modifiers:?} {k:?}: {picked:?}");
     }
 }
 
@@ -78,7 +108,7 @@ fn an_open_menu_keeps_the_keys() {
             ctx.input(|i| i.key_pressed(Key::Escape)),
         )
     });
-    assert_eq!(picked, None);
+    assert!(picked.is_empty(), "{picked:?}");
     assert!(escape_left);
 }
 
@@ -91,7 +121,7 @@ fn a_field_typed_in_last_frame_keeps_the_keys() {
             ctx.input(|i| i.key_pressed(Key::Escape)),
         )
     });
-    assert_eq!(picked, None);
+    assert!(picked.is_empty(), "{picked:?}");
     assert!(escape_left);
 }
 
@@ -105,7 +135,7 @@ fn a_modal_dialog_keeps_the_keys() {
         modal(ctx);
         picked
     });
-    assert_eq!(picked, None);
+    assert!(picked.is_empty(), "{picked:?}");
     let file_menu = frame(&ctx, vec![key(Modifiers::ALT, Key::F)], file_menu_pressed);
     assert!(!file_menu);
 }

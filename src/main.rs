@@ -120,6 +120,14 @@ impl DrwrApp {
                 // TODO: save the graph, asking for a file if it's unsaved.
             }
             Action::SelectTool(tool) => self.tool = tool,
+            Action::MoveBy(dx, dy) => {
+                if let Some(id) = &self.selected {
+                    document::edit_graphics(&mut self.graphml, id, |graphics| {
+                        graphics.geometry.x += dx;
+                        graphics.geometry.y += dy;
+                    });
+                }
+            }
             Action::EditColor(property) => {
                 if let Some(id) = &self.selected
                     && let Some(graphics) = document::graphics_of(&self.graphml, id)
@@ -195,7 +203,7 @@ impl eframe::App for DrwrApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Before the menu, so an Escape that closes it doesn't also select the
         // Cursor tool.
-        if let Some(action) = shortcuts::pressed(ui.ctx(), self.typing) {
+        for action in shortcuts::pressed(ui.ctx(), self.typing) {
             self.perform(action, ui.ctx(), frame);
         }
         // Panels are laid out outside-in in the order they're added, so the

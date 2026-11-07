@@ -10,6 +10,8 @@ pub enum Action {
     Open,
     Save,
     SelectTool(Tool),
+    /// Moves the selected node right and down by these distances, in points.
+    MoveBy(f64, f64),
     /// Opens the color picker on a color of the selected node.
     EditColor(ColorProperty),
     /// Sets a color of the selected node; `None` removes it.
