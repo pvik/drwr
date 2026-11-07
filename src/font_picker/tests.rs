@@ -1,0 +1,354 @@
+use egui::accesskit::{self, Role, Toggled};
+use egui::{Context, Event, Popup, Pos2, RawInput, Rect, UiBuilder, pos2};
+
+use super::*;
+
+/// Drives a picker 200 points wide in an 800×600 window, one frame at a time.
+struct Harness {
+    ctx: Context,
+    picker: FontPicker,
+    current: String,
+    families: Vec<String>,
+    /// What the picker returned, in order.
+    picked: Vec<String>,
+    /// How many times it asked for the families.
+    listed: usize,
+    time: f64,
+    /// The widgets the last frame showed.
+    widgets: Vec<accesskit::Node>,
+}
+
+impl Harness {
+    fn new(current: &str, families: &[&str]) -> Self {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        let mut harness = Harness {
+            ctx,
+            picker: FontPicker::default(),
+            current: current.to_owned(),
+            families: families.iter().map(|&family| family.to_owned()).collect(),
+            picked: Vec::new(),
+            listed: 0,
+            time: 0.0,
+            widgets: Vec::new(),
+        };
+        harness.frame(vec![]);
+        harness
+    }
+
+    /// With families "Family 0" to "Family 99".
+    fn with_many(current: &str) -> Self {
+        let families: Vec<String> = (0..100).map(|n| format!("Family {n}")).collect();
+        let families: Vec<&str> = families.iter().map(String::as_str).collect();
+        Harness::new(current, &families)
+    }
+
+    fn frame(&mut self, events: Vec<Event>) {
+        self.time += 0.1;
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            time: Some(self.time),
+            events,
+            ..RawInput::default()
+        };
+        let mut output = self.ctx.run_ui(input, |ui| {
+            let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(200.0, 20.0));
+            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                let families = || {
+                    self.listed += 1;
+                    self.families.clone()
+                };
+                let picked = self.picker.show(ui, "font", &self.current, families);
+                self.picked.extend(picked);
+            });
+        });
+        let update = output.platform_output.accesskit_update.take();
+        self.widgets = update.map_or_else(Vec::new, |update| {
+            update.nodes.into_iter().map(|(_, node)| node).collect()
+        });
+        output.drop_without_applying_deltas();
+    }
+
+    /// Clicks the dropdown, then waits for its list to show.
+    fn open(&mut self) {
+        self.click(|widget| widget.role() == Role::ComboBox);
+        // A new popup is laid out unseen first.
+        self.frame(vec![]);
+        self.frame(vec![]);
+    }
+
+    fn click_family(&mut self, family: &str) {
+        self.click(|widget| widget.role() == Role::Button && widget.label() == Some(family));
+    }
+
+    fn click(&mut self, find: impl Fn(&accesskit::Node) -> bool) {
+        let widget = self.widgets.iter().find(|widget| find(widget));
+        let bounds = widget
+            .and_then(|widget| widget.bounds())
+            .expect("the widget is shown");
+        let at = pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        self.frame(vec![Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            self.frame(vec![Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+        self.frame(vec![]);
+    }
+
+    fn press(&mut self, key: Key) {
+        self.frame(vec![Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        // Scrolling to the highlighted family takes another frame.
+        self.frame(vec![]);
+    }
+
+    fn type_text(&mut self, text: &str) {
+        self.frame(vec![Event::Text(text.to_owned())]);
+        self.frame(vec![]);
+    }
+
+    fn is_open(&self) -> bool {
+        Popup::is_any_open(&self.ctx)
+    }
+
+    /// The families listed in view, top to bottom.
+    fn listed(&self) -> Vec<&str> {
+        let mut rows: Vec<_> = self.rows().collect();
+        rows.sort_by(|a, b| a.bounds().unwrap().y0.total_cmp(&b.bounds().unwrap().y0));
+        rows.into_iter().filter_map(|row| row.label()).collect()
+    }
+
+    fn highlighted(&self) -> Option<&str> {
+        let mut highlighted = self
+            .rows()
+            .filter(|row| row.toggled() == Some(Toggled::True));
+        highlighted.next().and_then(|row| row.label())
+    }
+
+    fn rows(&self) -> impl Iterator<Item = &accesskit::Node> {
+        self.widgets
+            .iter()
+            .filter(|widget| widget.role() == Role::Button)
+    }
+
+    fn shows(&self, text: &str) -> bool {
+        self.widgets
+            .iter()
+            .any(|widget| widget.value() == Some(text))
+    }
+}
+
+const FAMILIES: [&str; 7] = [
+    "Dialog",
+    "DialogInput",
+    "Monospaced",
+    "Noto Sans",
+    "Noto Sans Mono",
+    "Noto Serif",
+    "Serif",
+];
+
+#[test]
+fn opens_with_the_current_family_highlighted_and_the_field_focused() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    assert!(harness.listed().is_empty());
+    harness.open();
+    assert_eq!(harness.listed(), FAMILIES);
+    assert_eq!(harness.highlighted(), Some("Noto Sans"));
+    assert!(harness.ctx.text_edit_focused());
+}
+
+#[test]
+fn typing_narrows_the_families_to_those_with_every_word() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.open();
+    harness.type_text("MONO");
+    assert_eq!(harness.listed(), ["Monospaced", "Noto Sans Mono"]);
+    assert_eq!(harness.highlighted(), Some("Monospaced"));
+
+    harness.press(Key::Backspace);
+    harness.type_text(" noto");
+    assert_eq!(harness.listed(), ["Noto Sans Mono"]);
+    assert!(harness.is_open());
+    assert_eq!(harness.picked, Vec::<String>::new());
+}
+
+#[test]
+fn enter_picks_the_highlighted_family() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.open();
+    harness.type_text("mono");
+    harness.press(Key::ArrowDown);
+    assert_eq!(harness.highlighted(), Some("Noto Sans Mono"));
+    harness.press(Key::Enter);
+    assert_eq!(harness.picked, ["Noto Sans Mono"]);
+    assert!(!harness.is_open());
+}
+
+#[test]
+fn arrows_move_the_highlight_within_the_families_listed() {
+    let mut harness = Harness::new("Dialog", &FAMILIES);
+    harness.open();
+    harness.press(Key::ArrowUp);
+    assert_eq!(harness.highlighted(), Some("Dialog"));
+    for _ in 0..10 {
+        harness.press(Key::ArrowDown);
+    }
+    assert_eq!(harness.highlighted(), Some("Serif"));
+    harness.press(Key::ArrowUp);
+    assert_eq!(harness.highlighted(), Some("Noto Serif"));
+    // The arrows moved no cursor through the field.
+    harness.type_text("x");
+    assert!(harness.shows("x"));
+}
+
+#[test]
+fn every_arrow_press_counts_even_in_one_frame() {
+    let mut harness = Harness::new("Dialog", &FAMILIES);
+    harness.open();
+    let down = Event::Key {
+        key: Key::ArrowDown,
+        physical_key: None,
+        pressed: true,
+        repeat: true,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![down.clone(), down.clone(), down]);
+    assert_eq!(harness.highlighted(), Some("Noto Sans"));
+}
+
+#[test]
+fn clicking_a_family_picks_it() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.open();
+    harness.click_family("Serif");
+    assert_eq!(harness.picked, ["Serif"]);
+    assert!(!harness.is_open());
+}
+
+#[test]
+fn clicking_the_field_keeps_the_list_open() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.open();
+    harness.click(|widget| widget.role() == Role::TextInput);
+    assert!(harness.is_open());
+}
+
+#[test]
+fn escape_closes_the_list_without_picking() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.open();
+    harness.type_text("mono");
+    harness.press(Key::Escape);
+    assert!(!harness.is_open());
+    assert_eq!(harness.picked, Vec::<String>::new());
+
+    // Reopened afresh.
+    harness.open();
+    assert_eq!(harness.listed(), FAMILIES);
+    assert_eq!(harness.highlighted(), Some("Noto Sans"));
+}
+
+#[test]
+fn picking_the_current_family_closes_the_list_without_picking() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.open();
+    harness.press(Key::Enter);
+    assert!(!harness.is_open());
+    assert_eq!(harness.picked, Vec::<String>::new());
+}
+
+#[test]
+fn enter_picks_nothing_when_nothing_matches() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.open();
+    harness.type_text("wingdings");
+    assert!(harness.listed().is_empty());
+    assert!(harness.shows("No matches"));
+    harness.press(Key::Enter);
+    assert!(harness.is_open());
+    assert_eq!(harness.picked, Vec::<String>::new());
+}
+
+#[test]
+fn the_current_family_is_highlighted_whatever_its_case() {
+    let mut harness = Harness::new("noto sans", &FAMILIES);
+    harness.open();
+    assert_eq!(harness.highlighted(), Some("Noto Sans"));
+}
+
+#[test]
+fn a_current_family_not_offered_is_shown_but_not_highlighted() {
+    let mut harness = Harness::new("Noto Mono", &FAMILIES);
+    assert!(harness.shows("Noto Mono"));
+    harness.open();
+    assert_eq!(harness.highlighted(), None);
+    harness.press(Key::ArrowDown);
+    assert_eq!(harness.highlighted(), Some("Dialog"));
+}
+
+#[test]
+fn the_families_are_listed_once_per_opening() {
+    let mut harness = Harness::new("Noto Sans", &FAMILIES);
+    harness.frame(vec![]);
+    assert_eq!(harness.listed, 0);
+    harness.open();
+    harness.type_text("mono");
+    assert_eq!(harness.listed, 1);
+    harness.press(Key::Escape);
+    harness.open();
+    assert_eq!(harness.listed, 2);
+}
+
+#[test]
+fn the_list_opens_with_the_current_family_in_the_middle() {
+    let mut harness = Harness::with_many("Family 80");
+    harness.open();
+    let listed = harness.listed();
+    for family in ["Family 75", "Family 80", "Family 85"] {
+        assert!(listed.contains(&family), "{listed:?}");
+    }
+}
+
+#[test]
+fn moving_the_highlight_scrolls_only_as_far_as_it_takes() {
+    let mut harness = Harness::with_many("Family 80");
+    harness.open();
+    let before: Vec<String> = harness.listed().iter().map(|&f| f.to_owned()).collect();
+    for _ in 0..3 {
+        harness.press(Key::ArrowDown);
+    }
+    assert_eq!(harness.highlighted(), Some("Family 83"));
+    assert_eq!(harness.listed(), before);
+
+    for _ in 0..43 {
+        harness.press(Key::ArrowUp);
+    }
+    assert_eq!(harness.highlighted(), Some("Family 40"));
+    // At the top, the rest below it.
+    let listed = harness.listed();
+    assert!(listed.contains(&"Family 50"), "{listed:?}");
+    assert!(!listed.contains(&"Family 38"), "{listed:?}");
+}
+
+#[test]
+fn narrowing_a_scrolled_list_shows_the_matches_at_once() {
+    let mut harness = Harness::with_many("Family 80");
+    harness.open();
+    harness.frame(vec![Event::Text("family 1".to_owned())]);
+    let listed = harness.listed();
+    assert_eq!(harness.highlighted(), Some("Family 1"));
+    assert!(listed.starts_with(&["Family 1", "Family 10"]), "{listed:?}");
+}
