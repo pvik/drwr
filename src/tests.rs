@@ -75,24 +75,24 @@ impl Harness {
         let at = canvas(&self.run(vec![])).min + at;
         self.run(vec![Event::PointerMoved(at)]);
         for pressed in [true, false, true, false] {
-            self.run(vec![Event::PointerButton {
-                pos: at,
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            }]);
+            self.run(vec![button(at, pressed)]);
         }
+    }
+
+    /// Drags between two points relative to the canvas's top-left corner.
+    fn drag(&mut self, from: Vec2, to: Vec2) {
+        let origin = canvas(&self.run(vec![])).min;
+        let (from, to) = (origin + from, origin + to);
+        self.run(vec![Event::PointerMoved(from)]);
+        self.run(vec![button(from, true)]);
+        self.run(vec![Event::PointerMoved(to)]);
+        self.run(vec![button(to, false)]);
     }
 
     fn click_at(&mut self, at: Pos2) {
         self.run(vec![Event::PointerMoved(at)]);
         for pressed in [true, false] {
-            self.run(vec![Event::PointerButton {
-                pos: at,
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            }]);
+            self.run(vec![button(at, pressed)]);
         }
     }
 
@@ -144,6 +144,15 @@ impl Harness {
             repeat: false,
             modifiers,
         }]);
+    }
+}
+
+fn button(pos: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
     }
 }
 
@@ -327,6 +336,20 @@ fn new_box() -> NodeGraphics {
         height: 80.0,
     };
     graphics
+}
+
+#[test]
+fn dragging_a_side_resizes_the_selected_node() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    harness.drag(vec2(250.0, 90.0), vec2(300.0, 90.0));
+    assert_eq!(harness.graphics(&id).geometry.width, 200.0);
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel.windows(2).any(|row| row == ["Width", "200"]),
+        "{side_panel:?}"
+    );
 }
 
 #[test]
@@ -585,6 +608,75 @@ fn ctrl_enter_edits_the_selected_nodes_label_on_the_canvas() {
     harness.type_text("Hello");
     harness.press(Modifiers::NONE, Key::Enter);
     assert_eq!(harness.label(&id), "Hello");
+}
+
+#[test]
+fn ctrl_enter_edits_the_label_whatever_the_tool() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    for (key, tool) in [
+        (Key::B, Tool::Box),
+        (Key::C, Tool::Circle),
+        (Key::E, Tool::Ellipse),
+        (Key::L, Tool::Line),
+        (Key::A, Tool::Arrow),
+        (Key::T, Tool::TextBox),
+        (Key::Escape, Tool::Cursor),
+    ] {
+        harness.press(Modifiers::NONE, key);
+        harness.press(CTRL, Key::Enter);
+        harness.run(vec![]);
+        assert!(harness.ctx.text_edit_focused(), "{tool:?}");
+        let text = format!("{tool:?}");
+        harness.type_text(&text);
+        harness.press(Modifiers::NONE, Key::Enter);
+        assert_eq!(harness.label(&id), text);
+        assert_eq!(harness.app.tool, tool);
+    }
+}
+
+#[test]
+fn boxes_can_be_drawn_and_labelled_without_changing_tools() {
+    let mut harness = Harness::new();
+    harness.press(Modifiers::NONE, Key::B);
+    for (corner, text) in [(vec2(20.0, 20.0), "One"), (vec2(20.0, 150.0), "Two")] {
+        harness.drag(corner, corner + vec2(120.0, 60.0));
+        harness.press(CTRL, Key::Enter);
+        harness.run(vec![]);
+        harness.type_text(text);
+        harness.press(Modifiers::NONE, Key::Enter);
+    }
+    assert_eq!(harness.label("n0"), "One");
+    assert_eq!(harness.label("n1"), "Two");
+    assert_eq!(harness.app.tool, Tool::Box);
+}
+
+#[test]
+fn drawing_the_next_box_applies_the_label_typed() {
+    let mut harness = Harness::new();
+    harness.press(Modifiers::NONE, Key::B);
+    harness.drag(vec2(20.0, 20.0), vec2(140.0, 80.0));
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    harness.type_text("One");
+    harness.drag(vec2(20.0, 150.0), vec2(140.0, 210.0));
+    assert_eq!(harness.label("n0"), "One");
+    assert!(!harness.ctx.text_edit_focused());
+    assert_eq!(harness.app.selected.as_deref(), Some("n1"));
+    assert_eq!(harness.label("n1"), "");
+}
+
+#[test]
+fn drawing_the_next_box_applies_the_label_typed_in_the_side_panel() {
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("Stop");
+    harness.app.tool = Tool::Box;
+    harness.drag(vec2(20.0, 150.0), vec2(140.0, 210.0));
+    harness.run(vec![]);
+    assert_eq!(harness.label(&id), "Stop");
+    assert!(!harness.ctx.text_edit_focused());
 }
 
 #[test]

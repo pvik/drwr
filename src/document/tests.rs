@@ -204,3 +204,60 @@ fn set_label_skips_labels_that_are_missing() {
     }
     assert_eq!(doc.to_xml(), FIXTURE);
 }
+
+fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+#[test]
+fn resize_keeps_labels_in_the_middle_or_by_the_nearest_side() {
+    let placed = |x, y, width, height| {
+        let mut label = Label::new("Label");
+        label.bounds = bounds(x, y, width, height);
+        label
+    };
+    let mut graphics = rectangle();
+    graphics.geometry = bounds(10.0, 20.0, 100.0, 60.0);
+    graphics.labels = vec![
+        // In the middle.
+        placed(30.0, 20.0, 40.0, 20.0),
+        // Along the top, in the middle across.
+        placed(30.0, 0.0, 40.0, 18.0),
+        // Below the node, near its right side.
+        placed(76.0, 64.0, 20.0, 10.0),
+        // No bounds yet, so the canvas puts it in the middle anyway.
+        Label::new("New"),
+    ];
+    resize(&mut graphics, bounds(0.0, 20.0, 150.0, 100.0));
+
+    assert_eq!(graphics.geometry, bounds(0.0, 20.0, 150.0, 100.0));
+    let moved: Vec<_> = graphics.labels.iter().map(|label| label.bounds).collect();
+    assert_eq!(
+        moved,
+        [
+            bounds(55.0, 40.0, 40.0, 20.0),
+            bounds(55.0, 0.0, 40.0, 18.0),
+            bounds(126.0, 104.0, 20.0, 10.0),
+            Rect::default(),
+        ]
+    );
+}
+
+#[test]
+fn resize_changes_only_the_geometry_and_label_positions() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    let mut geometry = graphics_of(&doc, "n0").unwrap().geometry;
+    geometry.width += 40.0;
+    edit_graphics(&mut doc, "n0", |graphics| resize(graphics, geometry));
+
+    // n0 is the first node.
+    let expected = FIXTURE
+        .replacen(r#"width="120.0""#, r#"width="160.0""#, 1)
+        .replacen(r#"x="30.9912109375""#, r#"x="50.9912109375""#, 1);
+    assert_eq!(doc.to_xml(), expected);
+}

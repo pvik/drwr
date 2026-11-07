@@ -1,7 +1,7 @@
 use egui::text::{CCursorRange, LayoutJob};
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Margin, Painter, PointerButton, Pos2,
-    Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2, Visuals, vec2,
+    Rangef, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2, Visuals, vec2,
 };
 use graphml::GraphMl;
 use graphml::yed::{self, Alignment, Label, NodeGraphics, NodeKind, ShapeType};
@@ -22,6 +22,23 @@ const SELECTION: Stroke = Stroke {
 /// Between the selected node's bounds and its outline.
 const SELECTION_GAP: f32 = 2.0;
 
+/// The sides and corners of the selected node that can be dragged, e.g.
+/// `RIGHT_CENTER` for its right side.
+const HANDLES: [Align2; 8] = [
+    Align2::LEFT_TOP,
+    Align2::CENTER_TOP,
+    Align2::RIGHT_TOP,
+    Align2::LEFT_CENTER,
+    Align2::RIGHT_CENTER,
+    Align2::LEFT_BOTTOM,
+    Align2::CENTER_BOTTOM,
+    Align2::RIGHT_BOTTOM,
+];
+/// How far inside or outside a side of the selected node a drag grabs it,
+/// which takes in its outline.
+const GRAB: f32 = 5.0;
+const MIN_SIZE: f64 = 1.0;
+
 const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
 const EDITOR_MIN_WIDTH: f32 = 60.0;
 
@@ -30,7 +47,16 @@ const EDITOR_MIN_WIDTH: f32 = 60.0;
 pub struct Canvas {
     /// The corner the box being drawn was started from, in graph coordinates.
     box_start: Option<Pos2>,
+    resize: Option<Resize>,
     editor: Option<LabelEditor>,
+}
+
+/// A drag of one of the selected node's [`HANDLES`].
+#[derive(Clone, Copy)]
+struct Resize {
+    handle: Align2,
+    /// Where the drag started, in graph coordinates.
+    from: Pos2,
 }
 
 /// A label being edited on the canvas, over where it's painted.
@@ -60,6 +86,11 @@ impl Canvas {
                 _ => Sense::hover(),
             };
             let (response, painter) = ui.allocate_painter(ui.available_size(), sense);
+            // Unlike a click, a drag leaves the focus in a label being typed,
+            // which would then stay open while the next box is drawn.
+            if response.drag_started() {
+                ui.memory_mut(|memory| memory.stop_text_input());
+            }
             let rect = response.rect;
             let origin = rect.min.to_vec2();
             if tool != Tool::Box {
@@ -77,10 +108,27 @@ impl Canvas {
                 Tool::Box => self.draw_box(response, origin, graphml, selected),
                 _ => None,
             };
+            // The handles go over the canvas, so they take the drags and clicks
+            // on them.
+            let resized = match (tool, selected.as_deref()) {
+                (Tool::Cursor, Some(id)) => self.resize_handles(ui, origin, graphml, id),
+                // Switching tools mid-drag drops the resize, as it does the box.
+                _ => {
+                    self.resize = None;
+                    None
+                }
+            };
 
             painter.rect_filled(rect, 0.0, BACKGROUND);
             let editing = self.editor.as_ref().map(|editor| &editor.label);
-            for (id, graphics) in document::node_graphics(graphml) {
+            let mut outline = None;
+            for (id, mut graphics) in document::node_graphics(graphml) {
+                if selected.as_deref() == Some(id) {
+                    if let Some(geometry) = resized {
+                        document::resize(&mut graphics, geometry);
+                    }
+                    outline = Some(screen_rect(origin, &graphics).expand(SELECTION_GAP));
+                }
                 // The label being edited shows in its editor instead.
                 let hidden = editing.filter(|label| label.node == id);
                 paint(&painter, origin, &graphics, hidden.map(|label| label.index));
@@ -89,11 +137,7 @@ impl Canvas {
                 paint(&painter, origin, &graphics, None);
             }
             // Over the nodes, so one on top can't hide it.
-            if let Some(graphics) = selected
-                .as_deref()
-                .and_then(|id| document::graphics_of(graphml, id))
-            {
-                let outline = screen_rect(origin, &graphics).expand(SELECTION_GAP);
+            if let Some(outline) = outline {
                 painter.rect_stroke(outline, 0.0, SELECTION, StrokeKind::Outside);
             }
             // Outlined, since the light theme's panels are nearly white too.
@@ -219,6 +263,113 @@ impl Canvas {
             }
         }
         None
+    }
+
+    /// Lets the [`HANDLES`] of the node with id `id` be dragged with the
+    /// primary button, resizing it on release. Returns its bounds so far
+    /// while one is being dragged.
+    fn resize_handles(
+        &mut self,
+        ui: &egui::Ui,
+        origin: Vec2,
+        graphml: &mut GraphMl,
+        id: &str,
+    ) -> Option<yed::Rect> {
+        let graphics = document::graphics_of(graphml, id)?;
+        let node = screen_rect(origin, &graphics);
+        let geometry = graphics.geometry;
+        // Whole numbers, as when drawing a box.
+        let to_graph = |pos: Pos2| (pos - origin).round();
+        let mut resized = None;
+        for handle in HANDLES {
+            let response = ui
+                .interact(
+                    handle_rect(node, handle),
+                    Id::unique(("resize_handle", handle)),
+                    Sense::drag(),
+                )
+                .on_hover_cursor(resize_cursor(handle));
+            if response.drag_started_by(PointerButton::Primary) {
+                // Like drawing a box, this applies a label being typed.
+                ui.memory_mut(|memory| memory.stop_text_input());
+                let from = ui.input(|input| input.pointer.press_origin());
+                self.resize = from.map(|from| Resize {
+                    handle,
+                    from: to_graph(from),
+                });
+            }
+            let Some(resize) = self.resize.filter(|resize| resize.handle == handle) else {
+                continue;
+            };
+            if !response.drag_stopped() {
+                let to = response.interact_pointer_pos().map(to_graph);
+                resized = to.map(|to| resize.geometry(geometry, to));
+                continue;
+            }
+            self.resize = None;
+            // Without a release, Escape stopped the drag, which cancels it.
+            if let Some(to) = ui.input(primary_release).map(to_graph) {
+                let new = resize.geometry(geometry, to);
+                if new != geometry {
+                    document::edit_graphics(graphml, id, |graphics| {
+                        document::resize(graphics, new);
+                    });
+                }
+            }
+        }
+        resized
+    }
+}
+
+impl Resize {
+    /// The bounds `old` would have with the handle dragged to `to`, in graph
+    /// coordinates.
+    fn geometry(&self, old: yed::Rect, to: Pos2) -> yed::Rect {
+        let delta = to - self.from;
+        let (x, width) = drag_side(old.x, old.width, self.handle.x(), delta.x.into());
+        let (y, height) = drag_side(old.y, old.height, self.handle.y(), delta.y.into());
+        yed::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+/// Moves the `side` of the span from `start` of length `size` by `delta`,
+/// keeping it at least [`MIN_SIZE`] long. Returns its new start and length.
+fn drag_side(start: f64, size: f64, side: Align, delta: f64) -> (f64, f64) {
+    match side {
+        Align::Min => {
+            let delta = delta.min(size - MIN_SIZE);
+            (start + delta, size - delta)
+        }
+        Align::Center => (start, size),
+        Align::Max => (start, (size + delta).max(MIN_SIZE)),
+    }
+}
+
+/// Where a drag grabs `handle` of `node`: within [`GRAB`] of its sides, with
+/// the corners taking the ends of the sides.
+fn handle_rect(node: Rect, handle: Align2) -> Rect {
+    let range = |side, min: f32, max: f32| match side {
+        Align::Min => Rangef::new(min - GRAB, min + GRAB),
+        Align::Center => Rangef::new(min + GRAB, max - GRAB),
+        Align::Max => Rangef::new(max - GRAB, max + GRAB),
+    };
+    Rect::from_x_y_ranges(
+        range(handle.x(), node.min.x, node.max.x),
+        range(handle.y(), node.min.y, node.max.y),
+    )
+}
+
+fn resize_cursor(handle: Align2) -> CursorIcon {
+    match handle.0 {
+        [Align::Center, _] => CursorIcon::ResizeVertical,
+        [_, Align::Center] => CursorIcon::ResizeHorizontal,
+        [x, y] if x == y => CursorIcon::ResizeNwSe,
+        _ => CursorIcon::ResizeNeSw,
     }
 }
 

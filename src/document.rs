@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use graphml::yed::{Color, Keys, Label, NodeGraphics};
+use graphml::yed::{Color, Keys, Label, NodeGraphics, Rect};
 use graphml::{Graph, GraphMl, Node};
 
 /// A label of a top-level node. The index one past its last label stands for
@@ -128,6 +128,31 @@ pub fn set_label(doc: &mut GraphMl, label: &LabelRef, text: &str) {
             None => graphics.labels.push(Label::new(text)),
         }
     });
+}
+
+/// Moves a node's bounds to `geometry`. Labels in its middle stay there, and
+/// others keep their distance from the side they're nearest to.
+pub fn resize(graphics: &mut NodeGraphics, geometry: Rect) {
+    let old = std::mem::replace(&mut graphics.geometry, geometry);
+    for label in &mut graphics.labels {
+        let bounds = &mut label.bounds;
+        bounds.x += label_shift(bounds.x + bounds.width / 2.0, old.width, geometry.width);
+        bounds.y += label_shift(bounds.y + bounds.height / 2.0, old.height, geometry.height);
+    }
+}
+
+/// How far a label centered at `center` moves along an axis on which its node
+/// changes size from `old` to `new`.
+fn label_shift(center: f64, old: f64, new: f64) -> f64 {
+    let middle = old / 2.0;
+    // yEd centers labels exactly, and places others a pixel or more off center.
+    if (center - middle).abs() < 0.1 {
+        (new - old) / 2.0
+    } else if center < middle {
+        0.0
+    } else {
+        new - old
+    }
 }
 
 /// The first of yEd's ids n0, n1, … that no node in the document has.
