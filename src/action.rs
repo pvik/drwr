@@ -1,4 +1,4 @@
-use graphml::yed::Color;
+use graphml::yed::{Color, LineType};
 
 use crate::document::{ColorProperty, LabelRef};
 use crate::tool::Tool;
@@ -16,6 +16,8 @@ pub enum Action {
     SetColor(ColorProperty, Option<Color>),
     /// Sets the border width of the selected node.
     SetBorderWidth(f64),
+    /// Sets the line type of the selected node's border.
+    SetBorderType(LineType),
     /// Edits the selected node's first label on the canvas.
     EditLabel,
     EditLabelInDialog(LabelRef),

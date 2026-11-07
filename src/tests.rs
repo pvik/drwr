@@ -180,22 +180,41 @@ fn canvas(shapes: &[Shape]) -> Rect {
         .expect("the canvas was painted")
 }
 
-/// The border painted around the node filled with `fill` on the canvas.
+/// The solid border painted around the node filled with `fill` on the canvas.
 fn border(shapes: &[Shape], fill: Color32) -> Stroke {
     let canvas = canvas(shapes);
-    let borders: Vec<_> = shapes
-        .iter()
-        .filter_map(|shape| match shape {
-            Shape::Rect(rect) if rect.fill == fill && canvas.contains_rect(rect.rect) => {
-                Some(rect.stroke)
-            }
+    let rects = || {
+        shapes.iter().filter_map(|shape| match shape {
+            Shape::Rect(rect) if canvas.contains_rect(rect.rect) => Some(rect),
             _ => None,
         })
+    };
+    let nodes: Vec<_> = rects().filter(|rect| rect.fill == fill).collect();
+    let [node] = nodes[..] else {
+        panic!("expected one node filled with {fill:?}: {nodes:?}");
+    };
+    let borders: Vec<_> = rects()
+        .filter(|rect| rect.rect == node.rect && !rect.stroke.is_empty())
+        .map(|rect| rect.stroke)
         .collect();
     let [border] = borders[..] else {
-        panic!("expected one node filled with {fill:?}: {borders:?}");
+        panic!("expected one border around {node:?}: {borders:?}");
     };
     border
+}
+
+/// How many dashes were painted on the canvas.
+fn dashes(shapes: &[Shape]) -> usize {
+    let canvas = canvas(shapes);
+    shapes
+        .iter()
+        .map(|shape| match shape {
+            Shape::Mesh(mesh) if canvas.contains_rect(mesh.calc_bounds()) => {
+                mesh.vertices.len() / 4
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 #[test]
@@ -346,7 +365,7 @@ fn the_side_panel_shows_the_clicked_node() {
         "Gradient",     "#FFFFFF",
         "Border",       "None",
         "Border width", "1",
-        "Border style", "line",
+        "Border style", "Solid",
         "Label",        "...", "Start",
         "Label",        "...", "Two\nlines",
     ]);
@@ -425,7 +444,7 @@ fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
         "Gradient",     "None",
         "Border",       "#000000",
         "Border width", "1",
-        "Border style", "line",
+        "Border style", "Solid",
         "Label",        "...", "",
     ]);
 }
@@ -604,6 +623,110 @@ fn showing_a_border_width_out_of_range_keeps_it() {
             .any(|row| row == ["Border width", "250"]),
         "{side_panel:?}"
     );
+    assert_eq!(harness.app.graphml, before);
+}
+
+#[test]
+fn picking_a_border_style_in_the_side_panel_sets_it() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    let mut shown = "Solid";
+    for (name, line_type) in [
+        ("Dashed", yed::LineType::Dashed),
+        ("Dotted", yed::LineType::Dotted),
+        ("Dash-dotted", yed::LineType::DashedDotted),
+        ("Solid", yed::LineType::Line),
+    ] {
+        harness.click_text(shown);
+        harness.click_text(name);
+        assert_eq!(harness.graphics(&id).border.line_type, line_type);
+        assert!(!Popup::is_any_open(&harness.ctx));
+        let side_panel = harness.side_panel();
+        assert!(
+            side_panel
+                .windows(2)
+                .any(|row| row == ["Border style", name]),
+            "{side_panel:?}"
+        );
+        let shapes = harness.run(vec![]);
+        assert_eq!(dashes(&shapes) > 0, name != "Solid", "{name}");
+        shown = name;
+    }
+    let shapes = harness.run(vec![]);
+    assert_eq!(border(&shapes, BOX_FILL), Stroke::new(1.0, Color32::BLACK));
+}
+
+#[test]
+fn picking_the_border_style_a_node_has_changes_nothing() {
+    let mut harness = Harness::new();
+    document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    let before = harness.app.graphml.clone();
+    harness.click_text("Solid");
+    // The list's, painted over the dropdown's own.
+    let solids: Vec<_> = harness
+        .run(vec![])
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Text(text) if text.galley.text() == "Solid" => {
+                Some(text.pos + text.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .collect();
+    let [_, listed] = solids[..] else {
+        panic!("expected the dropdown and its list to show Solid: {solids:?}");
+    };
+    harness.click_at(listed);
+    assert!(!Popup::is_any_open(&harness.ctx));
+    assert_eq!(harness.app.graphml, before);
+}
+
+#[test]
+fn escape_closes_the_border_style_dropdown_before_it_selects_the_cursor() {
+    let mut harness = Harness::new();
+    document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    harness.press(Modifiers::NONE, Key::B);
+    harness.click_text("Solid");
+    assert!(Popup::is_any_open(&harness.ctx));
+
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert!(!Popup::is_any_open(&harness.ctx));
+    assert_eq!(harness.app.tool, Tool::Box);
+
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.app.tool, Tool::Cursor);
+}
+
+#[test]
+fn clicking_the_border_style_applies_the_border_width_typed_first() {
+    let mut harness = Harness::new();
+    let id = click_border_width(&mut harness);
+    harness.type_text("4");
+    harness.click_text("Solid");
+    assert_eq!(harness.graphics(&id).border.width, 4.0);
+    assert!(Popup::is_any_open(&harness.ctx));
+}
+
+#[test]
+fn unknown_border_styles_read_as_written_and_are_drawn_solid() {
+    let mut harness = Harness::new();
+    let mut graphics = new_box();
+    graphics.border.line_type = yed::LineType::Other("wavy".to_owned());
+    document::add_node(&mut harness.app.graphml, &graphics);
+    let before = harness.app.graphml.clone();
+    harness.click(vec2(150.0, 60.0));
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel
+            .windows(2)
+            .any(|row| row == ["Border style", "wavy"]),
+        "{side_panel:?}"
+    );
+    let shapes = harness.run(vec![]);
+    assert_eq!(border(&shapes, BOX_FILL), Stroke::new(1.0, Color32::BLACK));
     assert_eq!(harness.app.graphml, before);
 }
 

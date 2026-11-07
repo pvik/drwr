@@ -5,6 +5,7 @@ mod color_picker;
 mod document;
 mod error_dialog;
 mod label_field;
+mod line_type;
 mod menu;
 mod open_dialog;
 mod shortcuts;
@@ -129,6 +130,13 @@ impl DrwrApp {
                 if let Some(id) = &self.selected {
                     document::edit_graphics(&mut self.graphml, id, |graphics| {
                         graphics.border.width = width;
+                    });
+                }
+            }
+            Action::SetBorderType(line_type) => {
+                if let Some(id) = &self.selected {
+                    document::edit_graphics(&mut self.graphml, id, |graphics| {
+                        graphics.border.line_type = line_type;
                     });
                 }
             }

@@ -10,6 +10,7 @@ use crate::action::Action;
 use crate::color_picker::color32;
 use crate::document::{self, LabelRef};
 use crate::label_field::{self, End};
+use crate::line_type;
 use crate::tool::Tool;
 
 /// White like paper, even in the dark theme.
@@ -470,8 +471,9 @@ fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Optio
     let stroke = border.color.map_or(Stroke::NONE, |color| {
         Stroke::new(border.width as f32, color32(color))
     });
-    // yEd centers borders on the outline.
-    painter.rect(rect, 0.0, fill, stroke, StrokeKind::Middle);
+    // Like yEd, which centers borders on the outline, over the fill.
+    painter.rect_filled(rect, 0.0, fill);
+    line_type::paint_outline(painter, rect, stroke, &border.line_type);
 
     for (index, label) in graphics.labels.iter().enumerate() {
         if label.visible && hidden != Some(index) {

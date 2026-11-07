@@ -1,19 +1,22 @@
 use std::ops::RangeInclusive;
 
 use egui::{
-    Align, Align2, Atom, Button, DragValue, Grid, Id, Key, Label, Layout, Response, Stroke,
-    TextStyle, Ui, Vec2, emath,
+    Align, Align2, Atom, Button, ComboBox, DragValue, Grid, Id, Key, Label, Layout, Response,
+    Stroke, TextStyle, Ui, Vec2, emath, vec2,
 };
 use graphml::GraphMl;
-use graphml::yed::{Color, NodeGraphics, NodeKind};
+use graphml::yed::{Color, LineType, NodeGraphics, NodeKind};
 
 use crate::action::Action;
 use crate::color_picker;
 use crate::document::{self, ColorProperty, LabelRef};
 use crate::label_field::{self, End};
+use crate::line_type;
 
 /// Capped, so typing "inf" can't make a border infinite.
 const BORDER_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
+/// How long the line samples are, in text heights.
+const SAMPLE_LENGTH: f32 = 2.0;
 
 /// A resizable panel right of the canvas with the properties of the selected
 /// node.
@@ -37,7 +40,10 @@ impl SidePanel {
     /// actions asked for.
     pub fn show(&mut self, ui: &mut Ui, graphml: &GraphMl, selected: Option<&str>) -> Vec<Action> {
         let mut actions = Vec::new();
-        egui::Panel::right("side_panel").show(ui, |ui| {
+        let panel = egui::Panel::right("side_panel");
+        // Wide enough for the border style dropdown, which would otherwise
+        // widen the panel the first time a node is selected.
+        panel.default_size(245.0).show(ui, |ui| {
             // Otherwise the panel shrinks to fit its contents, even after resizing.
             ui.take_available_width();
             let node = selected.and_then(|id| Some((id, document::graphics_of(graphml, id)?)));
@@ -90,7 +96,10 @@ impl SidePanel {
                 let width = self.border_width_field(ui, border.width);
                 actions.extend(width.map(Action::SetBorderWidth));
                 ui.end_row();
-                row(ui, "Border style", border.line_type.as_str());
+                ui.label("Border style");
+                let line_type = border_style_box(ui, &border.line_type);
+                actions.extend(line_type.map(Action::SetBorderType));
+                ui.end_row();
                 // A node without labels gets a field that adds one.
                 for index in 0..graphics.labels.len().max(1) {
                     let text = graphics.labels.get(index).map_or("", |label| &label.text);
@@ -165,6 +174,35 @@ fn row(ui: &mut Ui, name: &str, value: &str) {
     ui.label(name);
     ui.add(Label::new(value).truncate());
     ui.end_row();
+}
+
+/// Adds a dropdown to pick a border's line type in. Returns the type picked.
+fn border_style_box(ui: &mut Ui, current: &LineType) -> Option<LineType> {
+    let mut picked = None;
+    ComboBox::from_id_salt("border_style")
+        .selected_text(line_type_atoms(ui, current))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for line_type in line_type::ALL {
+                let selected = line_type == *current;
+                let atoms = line_type_atoms(ui, &line_type);
+                if ui.selectable_label(selected, atoms).clicked() && !selected {
+                    picked = Some(line_type);
+                }
+            }
+        });
+    picked
+}
+
+/// A sample line of `line_type` and its name.
+fn line_type_atoms<'a>(ui: &Ui, line_type: &'a LineType) -> (Atom<'a>, &'a str) {
+    let height = ui.text_style_height(&TextStyle::Body);
+    let sample = Atom::paint(vec2(SAMPLE_LENGTH * height, height), move |ui, args| {
+        let stroke = Stroke::new(1.0, args.fallback_text_color);
+        let (x, y) = (args.rect.x_range(), args.rect.center().y);
+        line_type::paint_hline(ui.painter(), x, y, stroke, line_type);
+    });
+    (sample, line_type::name(line_type))
 }
 
 /// A button showing a swatch of `color` and its hex code.

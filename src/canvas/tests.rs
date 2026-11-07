@@ -855,20 +855,115 @@ fn borders_are_painted_at_their_width_across_the_outline() {
     document::add_node(&mut harness.graphml, &graphics);
     let shapes = harness.frame(vec![]);
 
-    let nodes: Vec<_> = shapes
+    assert_eq!(filled_rects(&shapes, BOX_FILL), [harness.node()]);
+    let borders: Vec<_> = shapes
         .iter()
         .filter_map(|shape| match shape {
-            Shape::Rect(rect) if rect.fill == BOX_FILL => Some(rect),
+            Shape::Rect(rect) if rect.stroke.color == RED => Some(rect),
             _ => None,
         })
         .collect();
-    let [node] = nodes[..] else {
-        panic!("expected one node: {nodes:?}");
+    let [border] = borders[..] else {
+        panic!("expected one border: {borders:?}");
     };
-    assert_eq!(node.rect, harness.node());
-    let red = Color32::from_rgb(0xFF, 0x00, 0x00);
-    assert_eq!(node.stroke, Stroke::new(6.5, red));
-    assert_eq!(node.stroke_kind, StrokeKind::Middle);
+    assert_eq!(border.rect, harness.node());
+    assert_eq!(border.stroke, Stroke::new(6.5, RED));
+    assert_eq!(border.stroke_kind, StrokeKind::Middle);
+}
+
+const RED: Color32 = Color32::from_rgb(0xFF, 0x00, 0x00);
+
+/// Adds the box in [`NODE`] with a red border of `line_type` and `width`,
+/// returning the rects painted in `color`, relative to the node.
+fn dashes(line_type: yed::LineType, width: f64, color: Color32) -> Vec<Rect> {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut graphics = new_box(NODE.min, NODE.max);
+    graphics.border.line_type = line_type;
+    graphics.border.width = width;
+    graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    document::add_node(&mut harness.graphml, &graphics);
+    let shapes = harness.frame(vec![]);
+
+    assert!(stroked_rects(&shapes, RED).is_empty());
+    assert_eq!(filled_rects(&shapes, BOX_FILL), [harness.node()]);
+    let dashes = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Mesh(mesh) => Some(mesh.vertices.as_chunks::<4>().0),
+            _ => None,
+        })
+        .flatten()
+        .filter(|quad| quad.iter().all(|vertex| vertex.color == color))
+        .map(|quad| Rect::from_points(&quad.map(|vertex| vertex.pos)));
+    // Relative to the node, for readable expectations.
+    let node = harness.node().min.to_vec2();
+    dashes.map(|dash| dash.translate(-node)).collect()
+}
+
+#[test]
+fn dashed_borders_are_painted_in_their_width_and_color() {
+    let dashes = dashes(yed::LineType::Dashed, 2.0, RED);
+    // Clockwise from the top-left corner, as long as four widths and two
+    // apart, across the outline.
+    assert_eq!(
+        dashes[..2],
+        [
+            Rect::from_min_max(pos2(-1.0, -1.0), pos2(7.0, 1.0)),
+            Rect::from_min_max(pos2(11.0, -1.0), pos2(19.0, 1.0)),
+        ]
+    );
+    // The last ends on the left side, below the first.
+    assert_eq!(
+        dashes.last(),
+        Some(&Rect::from_min_max(pos2(-1.0, 1.0), pos2(1.0, 5.0)))
+    );
+    let outline = NODE.translate(-NODE.min.to_vec2());
+    for dash in &dashes {
+        let inside = outline.shrink(1.0).intersect(*dash);
+        assert!(outline.expand(1.0).contains_rect(*dash), "{dash:?}");
+        assert!(inside.width() <= 0.0 || inside.height() <= 0.0, "{dash:?}");
+    }
+    // 13 each on the top and bottom, which take the corners, and 7 on each
+    // side, counting the parts of the dashes going round them.
+    assert_eq!(dashes.len(), 40);
+}
+
+#[test]
+fn dotted_borders_are_square_dots_a_width_apart() {
+    // An odd width, whose solid outline egui puts on pixel centers.
+    let dashes = dashes(yed::LineType::Dotted, 3.0, RED);
+    assert_eq!(
+        dashes[..2],
+        [
+            Rect::from_min_max(pos2(-1.0, -1.0), pos2(2.0, 2.0)),
+            Rect::from_min_max(pos2(5.0, -1.0), pos2(8.0, 2.0)),
+        ]
+    );
+}
+
+#[test]
+fn borders_thinner_than_a_point_are_dotted_a_point_apart_and_fainter() {
+    let faint = RED.gamma_multiply(0.5);
+    let dashes = dashes(yed::LineType::Dotted, 0.5, faint);
+    assert_eq!(
+        dashes[..2],
+        [
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Rect::from_min_max(pos2(2.0, 0.0), pos2(3.0, 1.0)),
+        ]
+    );
+}
+
+#[test]
+fn dashed_borders_without_a_color_are_not_painted() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut graphics = new_box(NODE.min, NODE.max);
+    graphics.border.line_type = yed::LineType::Dashed;
+    graphics.border.color = None;
+    document::add_node(&mut harness.graphml, &graphics);
+    let shapes = harness.frame(vec![]);
+    assert!(!shapes.iter().any(|shape| matches!(shape, Shape::Mesh(_))));
+    assert_eq!(filled_rects(&shapes, BOX_FILL), [harness.node()]);
 }
 
 #[test]
