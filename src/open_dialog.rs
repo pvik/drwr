@@ -14,8 +14,12 @@ impl OpenDialog {
         self.picked.is_some()
     }
 
-    /// Opens the dialog over `parent`, showing only GraphML files.
+    /// Opens the dialog over `parent`, showing only GraphML files, unless it's
+    /// open already.
     pub fn open(&mut self, ctx: &egui::Context, parent: &eframe::Frame) {
+        if self.is_open() {
+            return;
+        }
         let dialog = rfd::FileDialog::new()
             .set_title("Open")
             .add_filter("GraphML", &["graphml"])

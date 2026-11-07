@@ -6,5 +6,7 @@ pub enum Tool {
     Box,
     Circle,
     Ellipse,
+    Line,
+    Arrow,
     TextBox,
 }

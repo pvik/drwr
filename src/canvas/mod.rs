@@ -31,7 +31,11 @@ impl Canvas {
             let origin = rect.min.to_vec2();
             let drawing = match tool {
                 Tool::Box => self.draw_box(response, origin, graphml),
-                _ => None,
+                _ => {
+                    // A shortcut can switch tools mid-drag, which drops the box.
+                    self.box_start = None;
+                    None
+                }
             };
 
             painter.rect_filled(rect, 0.0, BACKGROUND);

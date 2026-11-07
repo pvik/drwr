@@ -163,6 +163,26 @@ fn escape_cancels_the_box() {
 }
 
 #[test]
+fn switching_tools_mid_drag_drops_the_box() {
+    let mut harness = Harness::new(Tool::Box);
+    let (from, to) = (
+        harness.origin + vec2(100.0, 50.0),
+        harness.origin + vec2(250.0, 130.0),
+    );
+    harness.frame(vec![Event::PointerMoved(from)]);
+    harness.frame(vec![button(from, true)]);
+    harness.frame(vec![Event::PointerMoved(to)]);
+    harness.tool = Tool::Circle;
+    harness.frame(vec![]);
+    harness.tool = Tool::Box;
+    let painted = harness.frame(vec![]);
+    harness.frame(vec![button(to, false)]);
+
+    assert_eq!(filled_rects(&painted, BOX_FILL), []);
+    assert_eq!(harness.boxes(), []);
+}
+
+#[test]
 fn empty_boxes_are_dropped() {
     let mut harness = Harness::new(Tool::Box);
     let corner = vec2(100.0, 50.0);
