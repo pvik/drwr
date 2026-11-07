@@ -1010,6 +1010,41 @@ fn boxes_can_be_drawn_and_labelled_without_changing_tools() {
 }
 
 #[test]
+fn circles_and_ellipses_are_drawn_with_their_tools() {
+    let mut harness = Harness::new();
+    harness.press(Modifiers::NONE, Key::C);
+    harness.drag(vec2(20.0, 20.0), vec2(140.0, 80.0));
+    harness.press(Modifiers::NONE, Key::E);
+    harness.drag(vec2(20.0, 150.0), vec2(140.0, 210.0));
+
+    let ellipse = NodeKind::Shape(ShapeType::Ellipse);
+    let circle = harness.graphics("n0");
+    assert_eq!(circle.kind, ellipse);
+    assert_eq!(
+        circle.geometry,
+        yed::Rect {
+            x: 20.0,
+            y: 20.0,
+            width: 120.0,
+            height: 120.0,
+        }
+    );
+    let oval = harness.graphics("n1");
+    assert_eq!(oval.kind, ellipse);
+    assert_eq!(
+        oval.geometry,
+        yed::Rect {
+            x: 20.0,
+            y: 150.0,
+            width: 120.0,
+            height: 60.0,
+        }
+    );
+    assert_eq!(harness.app.selected.as_deref(), Some("n1"));
+    assert_eq!(harness.side_panel()[..4], ["Id", "n1", "Shape", "ellipse"]);
+}
+
+#[test]
 fn drawing_the_next_box_applies_the_label_typed() {
     let mut harness = Harness::new();
     harness.press(Modifiers::NONE, Key::B);

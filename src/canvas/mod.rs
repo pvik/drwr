@@ -1,3 +1,4 @@
+use egui::epaint::EllipseShape;
 use egui::text::LayoutJob;
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Margin, Painter, PointerButton, Pos2,
@@ -12,7 +13,7 @@ use crate::document::{self, LabelRef};
 use crate::fonts;
 use crate::line_type;
 use crate::text_field::{self, End};
-use crate::tool::Tool;
+use crate::tool::{NodeShape, Tool};
 
 /// White like paper, even in the dark theme.
 const BACKGROUND: Color32 = Color32::WHITE;
@@ -50,11 +51,17 @@ const EDITOR_MIN_WIDTH: f32 = 60.0;
 /// The drawing canvas. Graph coordinates start at its top-left corner.
 #[derive(Default)]
 pub struct Canvas {
-    /// The corner the shape being drawn was started from, in graph
-    /// coordinates.
-    shape_start: Option<Pos2>,
+    shape_drag: Option<ShapeDrag>,
     node_drag: Option<NodeDrag>,
     editor: Option<LabelEditor>,
+}
+
+/// A node being dragged out by the tool that draws it.
+#[derive(Clone, Copy)]
+struct ShapeDrag {
+    tool: Tool,
+    /// The corner it was started from, in graph coordinates.
+    from: Pos2,
 }
 
 /// A drag of the selected node, from inside it or by one of its [`HANDLES`].
@@ -89,21 +96,19 @@ impl Canvas {
         egui::CentralPanel::default().show(ui, |ui| {
             let sense = match tool {
                 Tool::Cursor => Sense::click_and_drag(),
-                Tool::Box => Sense::drag(),
+                _ if tool.node_shape().is_some() => Sense::drag(),
                 _ => Sense::hover(),
             };
             let (response, painter) = ui.allocate_painter(ui.available_size(), sense);
             // Unlike a click, a drag leaves the focus in a label being typed,
-            // which would then stay open while the next box is drawn.
+            // which would then stay open while the next node is drawn.
             if response.drag_started() {
                 ui.memory_mut(|memory| memory.stop_text_input());
             }
             let rect = response.rect;
             let origin = rect.min.to_vec2();
-            if tool != Tool::Box {
-                // A shortcut can switch tools mid-drag, which drops the shape.
-                self.shape_start = None;
-            }
+            // A shortcut can switch tools mid-drag, which drops the shape.
+            self.shape_drag.take_if(|drag| drag.tool != tool);
             let mut double_clicked = false;
             let drawing = match tool {
                 Tool::Cursor => {
@@ -112,16 +117,12 @@ impl Canvas {
                         response.double_clicked_by(PointerButton::Primary) && selected.is_some();
                     None
                 }
-                Tool::Box => {
-                    let response = response.clone();
-                    self.draw_shape(response, origin, graphml, selected, ShapeType::Rectangle)
-                }
-                _ => None,
+                _ => self.draw_node(response.clone(), origin, graphml, selected, tool),
             };
             let dragged = match (tool, selected.as_deref()) {
                 (Tool::Cursor, Some(id)) => self.drag_node(ui, response, origin, graphml, id),
                 // Switching tools mid-drag drops the move or resize, as it does
-                // the box.
+                // the shape.
                 _ => {
                     self.node_drag = None;
                     None
@@ -233,37 +234,40 @@ impl Canvas {
         Some(Action::SetLabel(editor.label, editor.text))
     }
 
-    /// Drags out a `shape` with the primary button, adding it to `graphml`
-    /// and selecting it on release. Returns the shape while it's being drawn.
-    fn draw_shape(
+    /// Drags out a node with the primary button, if `tool` draws nodes,
+    /// adding it to `graphml` and selecting it on release. Returns the node
+    /// while it's being drawn.
+    fn draw_node(
         &mut self,
         response: Response,
         origin: Vec2,
         graphml: &mut GraphMl,
         selected: &mut Option<String>,
-        shape: ShapeType,
+        tool: Tool,
     ) -> Option<NodeGraphics> {
+        let shape = tool.node_shape()?;
         let response = response.on_hover_cursor(CursorIcon::Crosshair);
         // Whole numbers keep the saved coordinates tidy.
         let to_graph = |pos: Pos2| (pos - origin).round();
         if response.drag_started_by(PointerButton::Primary) {
-            self.shape_start = response
-                .ctx
-                .input(|i| i.pointer.press_origin())
-                .map(to_graph);
+            let from = response.ctx.input(|i| i.pointer.press_origin());
+            self.shape_drag = from.map(|from| ShapeDrag {
+                tool,
+                from: to_graph(from),
+            });
         }
         if !response.drag_stopped() {
             let end = response.interact_pointer_pos().map(to_graph);
             return self
-                .shape_start
+                .shape_drag
                 .zip(end)
-                .map(|(start, end)| new_shape(shape, start, end));
+                .map(|(drag, end)| new_node(&shape, drag.from, end));
         }
 
-        // Without a release, Escape stopped the drag, which cancels the shape.
+        // Without a release, Escape stopped the drag, which cancels the node.
         let end = response.ctx.input(primary_release).map(to_graph);
-        if let Some((start, end)) = self.shape_start.take().zip(end) {
-            let graphics = new_shape(shape, start, end);
+        if let Some((drag, end)) = self.shape_drag.take().zip(end) {
+            let graphics = new_node(&shape, drag.from, end);
             if graphics.geometry.width > 0.0 && graphics.geometry.height > 0.0 {
                 *selected = Some(document::add_node(graphml, &graphics));
             }
@@ -288,8 +292,9 @@ impl Canvas {
         let geometry = graphics.geometry;
         // Whole numbers, as when drawing a box.
         let to_graph = |pos: Pos2| (pos - origin).round();
+        let inside = |pos: Pos2| hit(origin, &graphics, pos);
         let moving = self.node_drag.is_some_and(|drag| drag.handle.is_none());
-        if moving || canvas.hover_pos().is_some_and(|pos| node.contains(pos)) {
+        if moving || canvas.hover_pos().is_some_and(inside) {
             ui.ctx().set_cursor_icon(CursorIcon::Move);
         }
         // The handles go over the canvas, so they take the drags and clicks
@@ -308,7 +313,7 @@ impl Canvas {
                 ui.memory_mut(|memory| memory.stop_text_input());
                 let from = ui.input(|input| input.pointer.press_origin());
                 // Drags on the canvas move the node only from inside it.
-                let from = from.filter(|&from| handle.is_some() || node.contains(from));
+                let from = from.filter(|&from| handle.is_some() || inside(from));
                 self.node_drag = from.map(|from| NodeDrag {
                     handle,
                     from: to_graph(from),
@@ -432,6 +437,18 @@ fn primary_release(input: &egui::InputState) -> Option<Pos2> {
     })
 }
 
+/// A node of `shape` with yEd's default look, dragged out between two
+/// corners in graph coordinates.
+fn new_node(shape: &NodeShape, corner: Pos2, opposite: Pos2) -> NodeGraphics {
+    let mut size = opposite - corner;
+    if shape.square {
+        // The longer side of the drag, so the node keeps up with the pointer.
+        let side = size.abs().max_elem();
+        size = vec2(side.copysign(size.x), side.copysign(size.y));
+    }
+    new_shape(shape.shape.clone(), corner, corner + size)
+}
+
 /// A `shape` with yEd's default look, spanning two corners in graph
 /// coordinates.
 fn new_shape(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
@@ -443,14 +460,25 @@ fn new_shape(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
 /// The shape the canvas draws a node as, if it's a kind it can draw yet.
 fn shape(graphics: &NodeGraphics) -> Option<&ShapeType> {
     match &graphics.kind {
-        NodeKind::Shape(shape @ ShapeType::Rectangle) => Some(shape),
+        NodeKind::Shape(shape @ (ShapeType::Rectangle | ShapeType::Ellipse)) => Some(shape),
         _ => None,
     }
 }
 
 /// Whether a point on screen is on a node the canvas draws.
 fn hit(origin: Vec2, graphics: &NodeGraphics, pos: Pos2) -> bool {
-    shape(graphics).is_some() && screen_rect(origin, graphics).contains(pos)
+    let rect = screen_rect(origin, graphics);
+    match shape(graphics) {
+        Some(ShapeType::Ellipse) => in_ellipse(rect, pos),
+        Some(_) => rect.contains(pos),
+        None => false,
+    }
+}
+
+/// Whether a point is in the ellipse filling `rect`.
+fn in_ellipse(rect: Rect, pos: Pos2) -> bool {
+    let offset = (pos - rect.center()) / (rect.size() / 2.0);
+    offset.length_sq() <= 1.0
 }
 
 /// Where a node's bounds are on screen.
@@ -477,9 +505,9 @@ fn yed_rect(rect: Rect) -> yed::Rect {
 /// Paints a node with its labels, except the one at index `hidden`, unless
 /// it's a kind the canvas can't draw yet.
 fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Option<usize>) {
-    if shape(graphics).is_none() {
+    let Some(shape) = shape(graphics) else {
         return;
-    }
+    };
     let rect = screen_rect(origin, graphics);
     let fill = graphics.fill.color.map_or(Color32::TRANSPARENT, color32);
     let border = &graphics.border;
@@ -487,8 +515,16 @@ fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Optio
         Stroke::new(border.width as f32, color32(color))
     });
     // Like yEd, which centers borders on the outline, over the fill.
-    painter.rect_filled(rect, 0.0, fill);
-    line_type::paint_outline(painter, rect, stroke, &border.line_type);
+    match shape {
+        ShapeType::Ellipse => {
+            painter.add(EllipseShape::filled(rect.center(), rect.size() / 2.0, fill));
+            line_type::paint_ellipse_outline(painter, rect, stroke, &border.line_type);
+        }
+        _ => {
+            painter.rect_filled(rect, 0.0, fill);
+            line_type::paint_rect_outline(painter, rect, stroke, &border.line_type);
+        }
+    }
 
     for (index, label) in graphics.labels.iter().enumerate() {
         if label.visible && hidden != Some(index) {
