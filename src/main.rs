@@ -4,6 +4,8 @@ mod cli;
 mod color_picker;
 mod document;
 mod error_dialog;
+mod font_picker;
+mod fonts;
 mod label_field;
 mod line_type;
 mod menu;
@@ -16,11 +18,13 @@ mod tool;
 mod toolbar;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use action::Action;
 use canvas::Canvas;
 use color_picker::ColorPicker;
 use document::{ColorProperty, LabelRef};
+use fonts::Fonts;
 use graphml::GraphMl;
 use open_dialog::OpenDialog;
 use side_panel::SidePanel;
@@ -30,7 +34,10 @@ use tool::Tool;
 fn main() -> eframe::Result {
     match cli::parse(std::env::args_os().skip(1)) {
         Ok(cli::Command::Run { file }) => {
-            let mut app = DrwrApp::default();
+            let mut app = DrwrApp {
+                fonts: Arc::new(Fonts::system()),
+                ..DrwrApp::default()
+            };
             if let Some(path) = file
                 && let Err(err) = app.open(&path)
             {
@@ -59,6 +66,7 @@ fn run_gui(app: DrwrApp) -> eframe::Result {
         Box::new(|cc| {
             // Needed to render the toolbar's SVG icons.
             egui_extras::install_image_loaders(&cc.egui_ctx);
+            cc.egui_ctx.add_font_provider(app.fonts.clone());
             Ok(Box::new(app))
         }),
     )
@@ -73,6 +81,8 @@ struct DrwrApp {
     /// The id of the selected node.
     selected: Option<String>,
     canvas: Canvas,
+    /// The fonts labels are drawn in, which egui is given too.
+    fonts: Arc<Fonts>,
     side_panel: SidePanel,
     open_dialog: OpenDialog,
     /// Picks the colors of the selected node.
@@ -115,8 +125,9 @@ impl DrwrApp {
                     && let Some(graphics) = document::graphics_of(&self.graphml, id)
                 {
                     let title = format!("{} color", property.name());
+                    let color = property.get(&graphics);
                     self.color_picker
-                        .open(property, title, property.get(&graphics));
+                        .open(property, title, color, property.optional());
                 }
             }
             Action::SetColor(property, color) => {
@@ -157,6 +168,17 @@ impl DrwrApp {
                 }
             }
             Action::SetLabel(label, text) => document::set_label(&mut self.graphml, &label, &text),
+            Action::SetFontFamily(label, family) => {
+                document::edit_label(&mut self.graphml, &label, |label| {
+                    label.font.family = family
+                });
+            }
+            Action::SetFontStyle(label, style) => {
+                document::edit_label(&mut self.graphml, &label, |label| label.font.style = style);
+            }
+            Action::SetFontSize(label, size) => {
+                document::edit_label(&mut self.graphml, &label, |label| label.font.size = size);
+            }
         }
     }
 }
@@ -186,7 +208,10 @@ impl eframe::App for DrwrApp {
         }
         status_bar::show(ui, self.tool, self.file.as_deref());
         let selected = self.selected.as_deref();
-        for action in self.side_panel.show(ui, &self.graphml, selected) {
+        for action in self
+            .side_panel
+            .show(ui, &self.graphml, selected, &self.fonts)
+        {
             self.perform(action, ui.ctx(), frame);
         }
         let actions = self

@@ -24,6 +24,8 @@ pub struct ColorPicker<T> {
 struct Dialog<T> {
     target: T,
     title: String,
+    /// Whether "No color" is offered.
+    optional: bool,
     no_color: bool,
     /// Unlike a `Color`, keeps its hue while it's gray.
     color: Hsva,
@@ -47,15 +49,22 @@ impl<T> ColorPicker<T> {
     }
 
     /// Opens the dialog with `color` picked, or "No color" if it's `None`,
-    /// unless it's open already.
-    pub fn open(&mut self, target: T, title: impl Into<String>, color: Option<Color>) {
+    /// unless it's open already. Only an `optional` color can be "No color".
+    pub fn open(
+        &mut self,
+        target: T,
+        title: impl Into<String>,
+        color: Option<Color>,
+        optional: bool,
+    ) {
         if self.is_open() {
             return;
         }
         self.dialog = Some(Dialog {
             target,
             title: title.into(),
-            no_color: color.is_none(),
+            optional,
+            no_color: optional && color.is_none(),
             color: hsva(color.unwrap_or(Color::WHITE)),
             hex: String::new(),
             focus_hex: true,
@@ -122,7 +131,9 @@ impl<T> Dialog<T> {
             // modal then grows a little every frame.
             ui.add_space(8.0);
             ui.vertical(|ui| {
-                ui.checkbox(&mut self.no_color, "No color");
+                if self.optional {
+                    ui.checkbox(&mut self.no_color, "No color");
+                }
                 self.hex_field(ui);
                 ui.label("Recent colors");
                 ok = self.recent_colors(ui, recent);
@@ -175,8 +186,10 @@ impl<T> Dialog<T> {
             ui.label("Hex");
             let mut field = TextEdit::singleline(&mut self.hex)
                 .id(id)
-                .hint_text("None")
                 .desired_width(80.0);
+            if self.optional {
+                field = field.hint_text("None");
+            }
             if invalid {
                 field = field.text_color(ui.visuals().error_fg_color);
             }

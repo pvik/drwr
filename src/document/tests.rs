@@ -88,8 +88,33 @@ fn color_properties_are_the_fill_gradient_and_border_colors() {
     assert_eq!(graphics.fill.color, fill);
     assert_eq!(graphics.fill.gradient, gradient);
     assert_eq!(graphics.border.color, border);
-    let read = ColorProperty::ALL.map(|property| property.get(&graphics));
+    let read = ColorProperty::NODE.map(|property| property.get(&graphics));
     assert_eq!(read, [fill, gradient, border]);
+}
+
+#[test]
+fn text_colors_are_those_of_the_labels_and_never_none() {
+    let mut graphics = rectangle();
+    graphics.labels = vec![Label::new("One"), Label::new("Two")];
+    let red = Color::rgb(0xFF, 0x00, 0x00);
+    ColorProperty::Text(1).set(&mut graphics, Some(red));
+    ColorProperty::Text(0).set(&mut graphics, None);
+    ColorProperty::Text(2).set(&mut graphics, Some(red));
+
+    let colors: Vec<_> = graphics
+        .labels
+        .iter()
+        .map(|label| label.text_color)
+        .collect();
+    assert_eq!(colors, [Color::BLACK, red]);
+    let read = [0, 1, 2].map(|index| ColorProperty::Text(index).get(&graphics));
+    assert_eq!(read, [Some(Color::BLACK), Some(red), None]);
+    assert!(!ColorProperty::Text(0).optional());
+    assert!(
+        ColorProperty::NODE
+            .iter()
+            .all(|property| property.optional())
+    );
 }
 
 #[test]
@@ -201,6 +226,41 @@ fn set_label_skips_labels_that_are_missing() {
     let mut doc = GraphMl::parse(FIXTURE).unwrap();
     for missing in [label("n2", 2), label("missing", 0)] {
         set_label(&mut doc, &missing, "Topic");
+    }
+    assert_eq!(doc.to_xml(), FIXTURE);
+}
+
+#[test]
+fn edit_label_changes_only_what_was_edited() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    edit_label(&mut doc, &label("n2", 0), |label| {
+        label.font.family = "Noto Sans".to_owned();
+        label.font.size = 16;
+        label.font.style = yed::FontStyle::BoldItalic;
+    });
+
+    let text = doc.to_xml();
+    assert_eq!(text.lines().count(), FIXTURE.lines().count());
+    let changed: Vec<_> = FIXTURE
+        .lines()
+        .zip(text.lines())
+        .filter(|(before, after)| before != after)
+        .collect();
+    let [(before, after)] = changed.as_slice() else {
+        panic!("expected one line to change: {changed:?}");
+    };
+    let expected = before.replace(
+        r#"fontFamily="Dialog" fontSize="12" fontStyle="plain""#,
+        r#"fontFamily="Noto Sans" fontSize="16" fontStyle="bolditalic""#,
+    );
+    assert_eq!(*after, expected);
+}
+
+#[test]
+fn edit_label_skips_labels_that_are_missing() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    for missing in [label("n2", 1), label("missing", 0)] {
+        edit_label(&mut doc, &missing, |label| label.font.size = 16);
     }
     assert_eq!(doc.to_xml(), FIXTURE);
 }

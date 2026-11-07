@@ -27,10 +27,12 @@ impl Harness {
     fn new() -> Self {
         let ctx = egui::Context::default();
         egui_extras::install_image_loaders(&ctx);
+        let app = DrwrApp::default();
+        ctx.add_font_provider(app.fonts.clone());
         let mut harness = Harness {
             ctx,
             frame: eframe::Frame::_new_kittest(),
-            app: DrwrApp::default(),
+            app,
         };
         harness.run(vec![]);
         harness
@@ -65,15 +67,37 @@ impl Harness {
     /// Runs a frame, returning the middle of the first text it painted as
     /// `text`.
     fn text_at(&mut self, text: &str) -> Pos2 {
+        let found = self.texts_at(text).first().copied();
+        found.unwrap_or_else(|| panic!("{text:?} wasn't painted"))
+    }
+
+    /// Runs a frame, returning the middles of the texts it painted as `text`.
+    fn texts_at(&mut self, text: &str) -> Vec<Pos2> {
         self.run(vec![])
             .iter()
-            .find_map(|shape| match shape {
+            .filter_map(|shape| match shape {
                 Shape::Text(shape) if shape.galley.text() == text => {
                     Some(shape.pos + shape.galley.rect.center().to_vec2())
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("{text:?} wasn't painted"))
+            .collect()
+    }
+
+    /// Runs a frame, returning the font and color of `text` on the canvas,
+    /// which must be visible.
+    fn canvas_text(&mut self, text: &str) -> egui::TextFormat {
+        let shapes = self.run(vec![]);
+        let canvas = canvas(&shapes);
+        let galley = shapes.iter().find_map(|shape| match shape {
+            Shape::Text(shape) if shape.galley.text() == text && canvas.contains(shape.pos) => {
+                Some(&shape.galley)
+            }
+            _ => None,
+        });
+        let galley = galley.unwrap_or_else(|| panic!("{text:?} wasn't painted on the canvas"));
+        assert!(galley.size().x > 0.0, "{text:?} has no glyphs");
+        galley.job.sections[0].format.clone()
     }
 
     /// Double-clicks a point relative to the canvas's top-left corner.
@@ -367,7 +391,15 @@ fn the_side_panel_shows_the_clicked_node() {
         "Border width", "1",
         "Border style", "Solid",
         "Label",        "...", "Start",
+        "Font",         "Dialog",
+        "Font style",   "Plain",
+        "Font size",    "12",
+        "Text color",   "#000000",
         "Label",        "...", "Two\nlines",
+        "Font",         "Dialog",
+        "Font style",   "Plain",
+        "Font size",    "12",
+        "Text color",   "#000000",
     ]);
 
     harness.click(vec2(400.0, 300.0));
@@ -734,7 +766,7 @@ fn unknown_border_styles_read_as_written_and_are_drawn_solid() {
 fn open_closes_the_color_picker() {
     let mut app = DrwrApp::default();
     app.color_picker
-        .open(ColorProperty::Fill, "Fill color", None);
+        .open(ColorProperty::Fill, "Fill color", None, true);
     app.open(Path::new(FIXTURE)).unwrap();
     assert!(!app.color_picker.is_open());
 }
@@ -1022,4 +1054,176 @@ fn open_closes_the_label_dialog() {
     app.label_dialog.open(label, "Label", "Start");
     app.open(Path::new(FIXTURE)).unwrap();
     assert!(!app.label_dialog.is_open());
+}
+
+/// Adds a box labelled "Start" and selects it. Its border has no color, so its
+/// label's is the only black in the side panel. Returns the box's id.
+fn select_labelled_box(harness: &mut Harness) -> String {
+    let mut graphics = labelled_box("Start");
+    graphics.border.color = None;
+    let id = document::add_node(&mut harness.app.graphml, &graphics);
+    harness.click(vec2(150.0, 60.0));
+    id
+}
+
+#[test]
+fn picking_a_font_in_the_side_panel_sets_it() {
+    let mut harness = Harness::new();
+    let id = select_labelled_box(&mut harness);
+    harness.click_text("Dialog");
+    harness.run(vec![]);
+    // The search field has the focus.
+    harness.type_text("mono");
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    assert_eq!(harness.graphics(&id).labels[0].font.family, "Monospaced");
+    assert!(!Popup::is_any_open(&harness.ctx));
+    let family = fonts::family("Monospaced", &yed::FontStyle::Plain);
+    assert_eq!(harness.canvas_text("Start").font_id.family, family);
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel
+            .windows(2)
+            .any(|row| row == ["Font", "Monospaced"]),
+        "{side_panel:?}"
+    );
+}
+
+#[test]
+fn searching_fonts_selects_no_tools() {
+    let mut harness = Harness::new();
+    let id = select_labelled_box(&mut harness);
+    harness.press(Modifiers::NONE, Key::B);
+    harness.click_text("Dialog");
+    harness.run(vec![]);
+    // Each key is a tool's shortcut.
+    for (key, text) in [(Key::C, "c"), (Key::E, "e"), (Key::L, "l")] {
+        let press = Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        harness.run(vec![press, Event::Text(text.to_owned())]);
+    }
+    assert_eq!(harness.app.tool, Tool::Box);
+
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert!(!Popup::is_any_open(&harness.ctx));
+    assert_eq!(harness.app.tool, Tool::Box);
+    assert_eq!(harness.graphics(&id).labels[0].font.family, "Dialog");
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.app.tool, Tool::Cursor);
+}
+
+#[test]
+fn picking_a_font_style_in_the_side_panel_sets_it() {
+    use yed::FontStyle::{Bold, BoldItalic, Italic, Plain};
+    let mut harness = Harness::new();
+    let id = select_labelled_box(&mut harness);
+    let mut shown = "Plain";
+    for (name, style) in [
+        ("Bold", Bold),
+        ("Italic", Italic),
+        ("Bold italic", BoldItalic),
+        ("Plain", Plain),
+    ] {
+        harness.click_text(shown);
+        harness.click_text(name);
+        assert_eq!(harness.graphics(&id).labels[0].font.style, style);
+        assert!(!Popup::is_any_open(&harness.ctx));
+        let family = fonts::family("Dialog", &style);
+        assert_eq!(
+            harness.canvas_text("Start").font_id.family,
+            family,
+            "{name}"
+        );
+        shown = name;
+    }
+}
+
+#[test]
+fn typing_a_font_size_in_the_side_panel_sets_it() {
+    let mut harness = Harness::new();
+    let id = select_labelled_box(&mut harness);
+    harness.click_text("12");
+    // The size is selected, so typing replaces it.
+    harness.type_text("20");
+    assert_eq!(harness.graphics(&id).labels[0].font.size, 12);
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    assert_eq!(harness.graphics(&id).labels[0].font.size, 20);
+    assert_eq!(harness.canvas_text("Start").font_id.size, 20.0);
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel.windows(2).any(|row| row == ["Font size", "20"]),
+        "{side_panel:?}"
+    );
+}
+
+#[test]
+fn escape_in_the_font_size_field_keeps_the_size_and_the_tool() {
+    let mut harness = Harness::new();
+    let id = select_labelled_box(&mut harness);
+    harness.press(Modifiers::NONE, Key::B);
+    harness.click_text("12");
+    harness.type_text("20");
+    harness.press(Modifiers::NONE, Key::Escape);
+    harness.run(vec![]);
+
+    assert_eq!(harness.graphics(&id).labels[0].font.size, 12);
+    assert_eq!(harness.app.tool, Tool::Box);
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.app.tool, Tool::Cursor);
+}
+
+#[test]
+fn typed_font_sizes_are_kept_in_range() {
+    for (typed, size) in [("0", 1), ("-3", 1), ("1000", 500), ("inf", 500)] {
+        let mut harness = Harness::new();
+        let id = select_labelled_box(&mut harness);
+        harness.click_text("12");
+        harness.type_text(typed);
+        harness.press(Modifiers::NONE, Key::Enter);
+        assert_eq!(harness.graphics(&id).labels[0].font.size, size, "{typed}");
+    }
+}
+
+#[test]
+fn font_rows_edit_their_own_label() {
+    let mut harness = Harness::new();
+    let mut graphics = new_box();
+    graphics.labels = vec![yed::Label::new("One"), yed::Label::new("Two")];
+    let id = document::add_node(&mut harness.app.graphml, &graphics);
+    harness.click(vec2(150.0, 60.0));
+    let sizes = harness.texts_at("12");
+    let [_, second] = sizes[..] else {
+        panic!("expected two font sizes: {sizes:?}");
+    };
+    harness.click_at(second);
+    harness.type_text("20");
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    let labels = harness.graphics(&id).labels;
+    let sizes: Vec<_> = labels.iter().map(|label| label.font.size).collect();
+    assert_eq!(sizes, [12, 20]);
+}
+
+#[test]
+fn clicking_the_text_color_picks_a_new_one() {
+    let mut harness = Harness::new();
+    let id = select_labelled_box(&mut harness);
+    harness.click_text("#000000");
+    assert!(harness.app.color_picker.is_open());
+    // Labels always have a text color.
+    assert!(!harness.painted("No color"));
+    // The hex field has the focus, with the text color selected.
+    harness.type_text("#FF0000");
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    let red = yed::Color::rgb(0xFF, 0x00, 0x00);
+    assert_eq!(harness.graphics(&id).labels[0].text_color, red);
+    let painted = harness.canvas_text("Start").color;
+    assert_eq!(painted, Color32::from_rgb(0xFF, 0x00, 0x00));
 }

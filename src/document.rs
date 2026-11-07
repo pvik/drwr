@@ -18,10 +18,13 @@ pub enum ColorProperty {
     /// The color the fill fades to.
     Gradient,
     Border,
+    /// The text color of the label at this index.
+    Text(usize),
 }
 
 impl ColorProperty {
-    pub const ALL: [ColorProperty; 3] = [
+    /// The colors of the node itself, in the side panel's order.
+    pub const NODE: [ColorProperty; 3] = [
         ColorProperty::Fill,
         ColorProperty::Gradient,
         ColorProperty::Border,
@@ -32,7 +35,13 @@ impl ColorProperty {
             ColorProperty::Fill => "Fill",
             ColorProperty::Gradient => "Gradient",
             ColorProperty::Border => "Border",
+            ColorProperty::Text(_) => "Text",
         }
+    }
+
+    /// Whether the node can have none of this color.
+    pub fn optional(self) -> bool {
+        !matches!(self, ColorProperty::Text(_))
     }
 
     /// `None` if the node has no such color.
@@ -41,14 +50,22 @@ impl ColorProperty {
             ColorProperty::Fill => graphics.fill.color,
             ColorProperty::Gradient => graphics.fill.gradient,
             ColorProperty::Border => graphics.border.color,
+            ColorProperty::Text(index) => graphics.labels.get(index).map(|label| label.text_color),
         }
     }
 
+    /// Sets the color, or removes it if it's `None` and [`Self::optional`].
     pub fn set(self, graphics: &mut NodeGraphics, color: Option<Color>) {
         let property = match self {
             ColorProperty::Fill => &mut graphics.fill.color,
             ColorProperty::Gradient => &mut graphics.fill.gradient,
             ColorProperty::Border => &mut graphics.border.color,
+            ColorProperty::Text(index) => {
+                if let Some((label, color)) = graphics.labels.get_mut(index).zip(color) {
+                    label.text_color = color;
+                }
+                return;
+            }
         };
         *property = color;
     }
@@ -126,6 +143,15 @@ pub fn set_label(doc: &mut GraphMl, label: &LabelRef, text: &str) {
         match graphics.labels.get_mut(label.index) {
             Some(existing) => existing.text = text.to_owned(),
             None => graphics.labels.push(Label::new(text)),
+        }
+    });
+}
+
+/// Edits a label of a top-level node, if the node has that label.
+pub fn edit_label(doc: &mut GraphMl, label: &LabelRef, edit: impl FnOnce(&mut Label)) {
+    edit_graphics(doc, &label.node, |graphics| {
+        if let Some(label) = graphics.labels.get_mut(label.index) {
+            edit(label);
         }
     });
 }

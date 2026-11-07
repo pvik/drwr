@@ -32,7 +32,7 @@ impl Harness {
 
     /// Opens the picker on `color` for the fill.
     fn open(&mut self, color: Option<Color>) {
-        self.picker.open("fill", "Fill color", color);
+        self.picker.open("fill", "Fill color", color, true);
         // A new modal is laid out unseen first.
         self.frame(vec![]);
         self.frame(vec![]);
@@ -224,9 +224,25 @@ fn close_picks_nothing() {
 fn opening_an_open_picker_changes_nothing() {
     let mut harness = Harness::new();
     harness.open(Some(ORANGE));
-    harness.picker.open("border", "Border color", Some(RED));
+    harness
+        .picker
+        .open("border", "Border color", Some(RED), true);
     harness.click("OK", 1);
     assert_eq!(harness.picked, [("fill", Some(ORANGE))]);
+}
+
+#[test]
+fn colors_that_are_not_optional_cannot_be_none() {
+    let mut harness = Harness::new();
+    harness.picker.open("text", "Text color", None, false);
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    let labels: Vec<_> = harness.widgets.iter().filter_map(|w| w.label()).collect();
+    assert!(!labels.contains(&"No color"), "{labels:?}");
+    assert_eq!(harness.hex(), "#FFFFFF");
+
+    harness.click("OK", 1);
+    assert_eq!(harness.picked, [("text", Some(Color::WHITE))]);
 }
 
 #[test]

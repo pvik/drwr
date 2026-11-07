@@ -1,4 +1,4 @@
-use graphml::yed::{Color, LineType};
+use graphml::yed::{Color, FontStyle, LineType};
 
 use crate::document::{ColorProperty, LabelRef};
 use crate::tool::Tool;
@@ -22,4 +22,8 @@ pub enum Action {
     EditLabel,
     EditLabelInDialog(LabelRef),
     SetLabel(LabelRef, String),
+    SetFontFamily(LabelRef, String),
+    SetFontStyle(LabelRef, FontStyle),
+    /// Sets a label's font size, in points.
+    SetFontSize(LabelRef, u32),
 }

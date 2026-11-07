@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use egui::{Key, Modifiers, RawInput, Shape, pos2, vec2};
 
 use super::*;
+use crate::fonts::Fonts;
 
 /// yEd's default node fill, which new boxes get.
 const BOX_FILL: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
@@ -23,8 +26,10 @@ struct Harness {
 
 impl Harness {
     fn new(tool: Tool) -> Self {
+        let ctx = egui::Context::default();
+        ctx.add_font_provider(Arc::new(Fonts::default()));
         let mut harness = Harness {
-            ctx: egui::Context::default(),
+            ctx,
             canvas: Canvas::default(),
             tool,
             graphml: GraphMl::default(),
@@ -1001,6 +1006,29 @@ fn labels_are_painted_where_yed_put_them() {
     let format = &text.galley.job.sections[0].format;
     assert_eq!(format.color, Color32::from_rgb(0xFF, 0x00, 0x00));
     assert_eq!(format.font_id.size, 20.0);
+}
+
+#[test]
+fn labels_are_painted_in_their_font_family_and_style() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut label = Label::new("Mono");
+    label.font.family = "Noto Mono".to_owned();
+    label.font.style = yed::FontStyle::Bold;
+    let id = harness.add_labelled_box(vec![label]);
+    let family = |shapes: &[Shape]| {
+        shapes.iter().find_map(|shape| match shape {
+            Shape::Text(text) if text.galley.text() == "Mono" => {
+                assert!(text.galley.size().x > 0.0, "the label has no glyphs");
+                Some(text.galley.job.sections[0].format.font_id.family.clone())
+            }
+            _ => None,
+        })
+    };
+    let bold_mono = fonts::family("Noto Mono", &yed::FontStyle::Bold);
+    assert_eq!(family(&harness.frame(vec![])), Some(bold_mono.clone()));
+    // So is its editor.
+    harness.edit(&id);
+    assert_eq!(family(&harness.frame(vec![])), Some(bold_mono));
 }
 
 #[test]

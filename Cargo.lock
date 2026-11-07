@@ -785,6 +785,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "fontique",
  "graphml",
  "rfd",
 ]

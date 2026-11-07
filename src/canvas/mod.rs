@@ -9,6 +9,7 @@ use graphml::yed::{self, Alignment, Label, NodeGraphics, NodeKind, ShapeType};
 use crate::action::Action;
 use crate::color_picker::color32;
 use crate::document::{self, LabelRef};
+use crate::fonts;
 use crate::label_field::{self, End};
 use crate::line_type;
 use crate::tool::Tool;
@@ -483,7 +484,7 @@ fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Optio
 }
 
 /// Paints a label where yEd last put it, lined up by its alignment, in its
-/// color and size but not yet its font family or style.
+/// font and color.
 fn paint_label(painter: &Painter, node: Rect, label: &Label) {
     let color = color32(label.text_color);
     let mut job = LayoutJob::simple(label.text.clone(), label_font(label), color, f32::INFINITY);
@@ -512,7 +513,11 @@ fn label_rect(node: Rect, label: &Label) -> Rect {
 
 /// At least a point in size, since egui can't draw text of size 0.
 fn label_font(label: &Label) -> FontId {
-    FontId::proportional(label.font.size.max(1) as f32)
+    let font = &label.font;
+    FontId::new(
+        font.size.max(1) as f32,
+        fonts::family(&font.family, &font.style),
+    )
 }
 
 /// How a label's lines line up.

@@ -1,20 +1,25 @@
 use std::ops::RangeInclusive;
 
+use egui::emath::{self, Numeric};
 use egui::{
     Align, Align2, Atom, Button, ComboBox, DragValue, Grid, Id, Key, Label, Layout, Response,
-    Stroke, TextStyle, Ui, Vec2, emath, vec2,
+    RichText, ScrollArea, Stroke, TextStyle, Ui, Vec2, vec2,
 };
 use graphml::GraphMl;
-use graphml::yed::{Color, LineType, NodeGraphics, NodeKind};
+use graphml::yed::{self, Color, Font, FontStyle, LineType, NodeGraphics, NodeKind};
 
 use crate::action::Action;
 use crate::color_picker;
 use crate::document::{self, ColorProperty, LabelRef};
+use crate::font_picker::FontPicker;
+use crate::fonts::{self, Fonts};
 use crate::label_field::{self, End};
 use crate::line_type;
 
 /// Capped, so typing "inf" can't make a border infinite.
 const BORDER_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
+/// Capped, as egui draws no glyph over 1024 pixels.
+const FONT_SIZES: RangeInclusive<u32> = 1..=500;
 /// How long the line samples are, in text heights.
 const SAMPLE_LENGTH: f32 = 2.0;
 
@@ -23,9 +28,10 @@ const SAMPLE_LENGTH: f32 = 2.0;
 #[derive(Default)]
 pub struct SidePanel {
     edit: Option<FieldEdit>,
-    /// Whether Escape just cancelled the border width typed, which egui 0.37
+    /// The number field whose typing Escape just cancelled, which egui 0.37
     /// applies anyway a frame later.
-    width_cancelled: bool,
+    escaped: Option<Id>,
+    font_picker: FontPicker,
 }
 
 /// A label being typed in its field, applied once the field loses the focus.
@@ -36,23 +42,33 @@ struct FieldEdit {
 }
 
 impl SidePanel {
-    /// Shows the properties of the node whose id is `selected`. Returns the
-    /// actions asked for.
-    pub fn show(&mut self, ui: &mut Ui, graphml: &GraphMl, selected: Option<&str>) -> Vec<Action> {
+    /// Shows the properties of the node whose id is `selected`, with the font
+    /// families `fonts` offers. Returns the actions asked for.
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        graphml: &GraphMl,
+        selected: Option<&str>,
+        fonts: &Fonts,
+    ) -> Vec<Action> {
         let mut actions = Vec::new();
         let panel = egui::Panel::right("side_panel");
         // Wide enough for the border style dropdown, which would otherwise
         // widen the panel the first time a node is selected.
         panel.default_size(245.0).show(ui, |ui| {
-            // Otherwise the panel shrinks to fit its contents, even after resizing.
-            ui.take_available_width();
-            let node = selected.and_then(|id| Some((id, document::graphics_of(graphml, id)?)));
-            match node {
-                Some((id, graphics)) => actions = self.properties(ui, id, &graphics),
-                None => {
-                    ui.weak("Nothing selected");
+            // A node's rows can outgrow a small window, more so with labels.
+            ScrollArea::vertical().show(ui, |ui| {
+                // Otherwise the panel shrinks to fit its contents, even after
+                // resizing.
+                ui.take_available_width();
+                let node = selected.and_then(|id| Some((id, document::graphics_of(graphml, id)?)));
+                match node {
+                    Some((id, graphics)) => actions = self.properties(ui, id, &graphics, fonts),
+                    None => {
+                        ui.weak("Nothing selected");
+                    }
                 }
-            }
+            });
         });
         // A field loses the focus to Enter, a click elsewhere, or a new
         // selection hiding it.
@@ -64,7 +80,13 @@ impl SidePanel {
         applied.into_iter().chain(actions).collect()
     }
 
-    fn properties(&mut self, ui: &mut Ui, id: &str, graphics: &NodeGraphics) -> Vec<Action> {
+    fn properties(
+        &mut self,
+        ui: &mut Ui,
+        id: &str,
+        graphics: &NodeGraphics,
+        fonts: &Fonts,
+    ) -> Vec<Action> {
         Grid::new("properties")
             .num_columns(2)
             .striped(true)
@@ -82,10 +104,9 @@ impl SidePanel {
                 row(ui, "Y", &number(geometry.y));
                 row(ui, "Width", &number(geometry.width));
                 row(ui, "Height", &number(geometry.height));
-                // Two, when clicking a button also applies the border width
-                // typed.
+                // Two, when clicking a button also applies the number typed.
                 let mut actions = Vec::new();
-                for property in ColorProperty::ALL {
+                for property in ColorProperty::NODE {
                     ui.label(property.name());
                     if color_button(ui, property.get(graphics)).clicked() {
                         actions.push(Action::EditColor(property));
@@ -93,7 +114,7 @@ impl SidePanel {
                     ui.end_row();
                 }
                 ui.label("Border width");
-                let width = self.border_width_field(ui, border.width);
+                let width = self.number_field(ui, border.width, BORDER_WIDTHS, 0.1);
                 actions.extend(width.map(Action::SetBorderWidth));
                 ui.end_row();
                 ui.label("Border style");
@@ -102,12 +123,16 @@ impl SidePanel {
                 ui.end_row();
                 // A node without labels gets a field that adds one.
                 for index in 0..graphics.labels.len().max(1) {
-                    let text = graphics.labels.get(index).map_or("", |label| &label.text);
-                    let label = LabelRef {
+                    let label = graphics.labels.get(index);
+                    let at = LabelRef {
                         node: id.to_owned(),
                         index,
                     };
-                    actions.extend(self.label_row(ui, label, text));
+                    let text = label.map_or("", |label| &label.text);
+                    actions.extend(self.label_row(ui, at.clone(), text));
+                    if let Some(label) = label {
+                        actions.extend(self.font_rows(ui, at, label, fonts));
+                    }
                 }
                 actions
             })
@@ -149,23 +174,65 @@ impl SidePanel {
         clicked
     }
 
-    /// Adds a field to drag or type a border width in. Returns the width set.
-    fn border_width_field(&mut self, ui: &mut Ui, mut width: f64) -> Option<f64> {
-        let field = DragValue::new(&mut width)
-            .range(BORDER_WIDTHS)
-            // Otherwise just showing a width out of range would change it.
+    /// Adds rows for the font and text color of the label `at`. Returns the
+    /// actions asked for.
+    fn font_rows(
+        &mut self,
+        ui: &mut Ui,
+        at: LabelRef,
+        label: &yed::Label,
+        fonts: &Fonts,
+    ) -> Vec<Action> {
+        let font = &label.font;
+        let mut actions = Vec::new();
+        ui.label("Font");
+        let family = self
+            .font_picker
+            .show(ui, ("font", at.index), &font.family, || fonts.families());
+        actions.extend(family.map(|family| Action::SetFontFamily(at.clone(), family)));
+        ui.end_row();
+        ui.label("Font style");
+        let style = font_style_box(ui, at.index, font);
+        actions.extend(style.map(|style| Action::SetFontStyle(at.clone(), style)));
+        ui.end_row();
+        ui.label("Font size");
+        let size = self.number_field(ui, font.size, FONT_SIZES, 0.2);
+        actions.extend(size.map(|size| Action::SetFontSize(at.clone(), size)));
+        ui.end_row();
+        ui.label("Text color");
+        if color_button(ui, Some(label.text_color)).clicked() {
+            actions.push(Action::EditColor(ColorProperty::Text(at.index)));
+        }
+        ui.end_row();
+        actions
+    }
+
+    /// Adds a field to drag or type a number in. Returns the number set.
+    fn number_field<T: Numeric>(
+        &mut self,
+        ui: &mut Ui,
+        mut value: T,
+        range: RangeInclusive<T>,
+        speed: f64,
+    ) -> Option<T> {
+        let field = DragValue::new(&mut value)
+            .range(range)
+            // Otherwise just showing a number out of range would change it.
             .clamp_existing_to_range(false)
-            .speed(0.1)
+            .speed(speed)
             // Unrounded, unlike the other numbers, so that entering it
             // unchanged keeps it.
-            .custom_formatter(|width, _| width.to_string())
+            .custom_formatter(|value, _| value.to_string())
             // As in a label's field, Enter or a click elsewhere applies the
-            // width typed, and Escape cancels it.
+            // number typed, and Escape cancels it.
             .update_while_editing(false);
         let response = ui.add(field);
         let escaped = response.lost_focus() && ui.input(|input| input.key_pressed(Key::Escape));
-        let cancelled = std::mem::replace(&mut self.width_cancelled, escaped);
-        (response.changed() && !cancelled).then_some(width)
+        let cancelled = self.escaped.take_if(|id| *id == response.id).is_some();
+        if escaped {
+            self.escaped = Some(response.id);
+        }
+        (response.changed() && !cancelled).then_some(value)
     }
 }
 
@@ -188,6 +255,27 @@ fn border_style_box(ui: &mut Ui, current: &LineType) -> Option<LineType> {
                 let atoms = line_type_atoms(ui, &line_type);
                 if ui.selectable_label(selected, atoms).clicked() && !selected {
                     picked = Some(line_type);
+                }
+            }
+        });
+    picked
+}
+
+/// Adds a dropdown to pick the style of the `index`th label's `font` in,
+/// showing each in it. Returns the style picked.
+fn font_style_box(ui: &mut Ui, index: usize, font: &Font) -> Option<FontStyle> {
+    let sample = |style: &FontStyle| {
+        RichText::new(fonts::style_name(style)).family(fonts::family(&font.family, style))
+    };
+    let mut picked = None;
+    ComboBox::from_id_salt(("font_style", index))
+        .selected_text(sample(&font.style))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for style in fonts::STYLES {
+                let selected = style == font.style;
+                if ui.selectable_label(selected, sample(&style)).clicked() && !selected {
+                    picked = Some(style);
                 }
             }
         });
