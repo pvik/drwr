@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::fmt;
+use std::path::PathBuf;
 
 /// The `-version` line, e.g. `drwr 0.1.0 (5a37b68)`; `build.rs` sets the hash.
 pub const VERSION: &str = concat!(
@@ -14,13 +15,17 @@ pub const VERSION: &str = concat!(
 );
 
 /// One-line usage summary, shown alongside parse errors.
-pub const USAGE: &str = concat!("usage: ", env!("CARGO_PKG_NAME"), " [-version]");
+pub const USAGE: &str = concat!(
+    "usage: ",
+    env!("CARGO_PKG_NAME"),
+    " [-version | -open <file>]"
+);
 
 /// What the program was asked to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    /// No arguments were given: open the window.
-    Run,
+    /// Open the window, first loading `file` if `-open` gave one.
+    Run { file: Option<PathBuf> },
     /// `-version`: print the build version and exit.
     Version,
 }
@@ -30,6 +35,7 @@ pub enum Command {
 pub enum Error {
     UnknownCommand(OsString),
     UnexpectedArgument(OsString),
+    MissingValue(OsString),
 }
 
 impl fmt::Display for Error {
@@ -38,6 +44,7 @@ impl fmt::Display for Error {
         match self {
             Error::UnknownCommand(arg) => write!(f, "unknown command {arg:?}"),
             Error::UnexpectedArgument(arg) => write!(f, "unexpected argument {arg:?}"),
+            Error::MissingValue(arg) => write!(f, "expected a file after {arg:?}"),
         }
     }
 }
@@ -53,8 +60,14 @@ where
     let mut args = args.into_iter().map(Into::into);
 
     let command = match args.next() {
-        None => return Ok(Command::Run),
+        None => return Ok(Command::Run { file: None }),
         Some(arg) if arg == "-version" || arg == "--version" => Command::Version,
+        Some(arg) if arg == "-open" || arg == "--open" => match args.next() {
+            Some(file) => Command::Run {
+                file: Some(file.into()),
+            },
+            None => return Err(Error::MissingValue(arg)),
+        },
         Some(arg) => return Err(Error::UnknownCommand(arg)),
     };
 

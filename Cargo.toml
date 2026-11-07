@@ -12,3 +12,5 @@ edition = "2024"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_extras = { version = "0.37.0", features = ["svg"] }
+graphml = { path = "crates/graphml" }
+rfd = "0.17.2"
