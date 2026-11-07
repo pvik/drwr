@@ -261,3 +261,16 @@ fn resize_changes_only_the_geometry_and_label_positions() {
         .replacen(r#"x="30.9912109375""#, r#"x="50.9912109375""#, 1);
     assert_eq!(doc.to_xml(), expected);
 }
+
+#[test]
+fn resize_to_the_same_size_changes_only_the_position() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    let mut geometry = graphics_of(&doc, "n0").unwrap().geometry;
+    geometry.x += 30.0;
+    geometry.y += 40.0;
+    edit_graphics(&mut doc, "n0", |graphics| resize(graphics, geometry));
+
+    // n0 is the first node, and its label is in the middle.
+    let expected = FIXTURE.replacen(r#"x="100.0" y="40.5""#, r#"x="130.0" y="80.5""#, 1);
+    assert_eq!(doc.to_xml(), expected);
+}

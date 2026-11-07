@@ -47,14 +47,15 @@ const EDITOR_MIN_WIDTH: f32 = 60.0;
 pub struct Canvas {
     /// The corner the box being drawn was started from, in graph coordinates.
     box_start: Option<Pos2>,
-    resize: Option<Resize>,
+    node_drag: Option<NodeDrag>,
     editor: Option<LabelEditor>,
 }
 
-/// A drag of one of the selected node's [`HANDLES`].
+/// A drag of the selected node, from inside it or by one of its [`HANDLES`].
 #[derive(Clone, Copy)]
-struct Resize {
-    handle: Align2,
+struct NodeDrag {
+    /// `None` when dragged from inside, which moves the node.
+    handle: Option<Align2>,
     /// Where the drag started, in graph coordinates.
     from: Pos2,
 }
@@ -81,7 +82,7 @@ impl Canvas {
         let mut actions = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
             let sense = match tool {
-                Tool::Cursor => Sense::click(),
+                Tool::Cursor => Sense::click_and_drag(),
                 Tool::Box => Sense::drag(),
                 _ => Sense::hover(),
             };
@@ -105,16 +106,15 @@ impl Canvas {
                         response.double_clicked_by(PointerButton::Primary) && selected.is_some();
                     None
                 }
-                Tool::Box => self.draw_box(response, origin, graphml, selected),
+                Tool::Box => self.draw_box(response.clone(), origin, graphml, selected),
                 _ => None,
             };
-            // The handles go over the canvas, so they take the drags and clicks
-            // on them.
-            let resized = match (tool, selected.as_deref()) {
-                (Tool::Cursor, Some(id)) => self.resize_handles(ui, origin, graphml, id),
-                // Switching tools mid-drag drops the resize, as it does the box.
+            let dragged = match (tool, selected.as_deref()) {
+                (Tool::Cursor, Some(id)) => self.drag_node(ui, response, origin, graphml, id),
+                // Switching tools mid-drag drops the move or resize, as it does
+                // the box.
                 _ => {
-                    self.resize = None;
+                    self.node_drag = None;
                     None
                 }
             };
@@ -124,7 +124,7 @@ impl Canvas {
             let mut outline = None;
             for (id, mut graphics) in document::node_graphics(graphml) {
                 if selected.as_deref() == Some(id) {
-                    if let Some(geometry) = resized {
+                    if let Some(geometry) = dragged {
                         document::resize(&mut graphics, geometry);
                     }
                     outline = Some(screen_rect(origin, &graphics).expand(SELECTION_GAP));
@@ -265,12 +265,14 @@ impl Canvas {
         None
     }
 
-    /// Lets the [`HANDLES`] of the node with id `id` be dragged with the
-    /// primary button, resizing it on release. Returns its bounds so far
-    /// while one is being dragged.
-    fn resize_handles(
+    /// Lets the node with id `id` be dragged with the primary button, from
+    /// inside on `canvas` to move it, or by its [`HANDLES`] to resize it.
+    /// Changes its bounds on release, and returns them so far while it's
+    /// being dragged.
+    fn drag_node(
         &mut self,
         ui: &egui::Ui,
+        canvas: Response,
         origin: Vec2,
         graphml: &mut GraphMl,
         id: &str,
@@ -280,36 +282,44 @@ impl Canvas {
         let geometry = graphics.geometry;
         // Whole numbers, as when drawing a box.
         let to_graph = |pos: Pos2| (pos - origin).round();
-        let mut resized = None;
-        for handle in HANDLES {
+        let moving = self.node_drag.is_some_and(|drag| drag.handle.is_none());
+        if moving || canvas.hover_pos().is_some_and(|pos| node.contains(pos)) {
+            ui.ctx().set_cursor_icon(CursorIcon::Move);
+        }
+        // The handles go over the canvas, so they take the drags and clicks
+        // on them.
+        let handles = HANDLES.map(|handle| {
+            let rect = handle_rect(node, handle);
             let response = ui
-                .interact(
-                    handle_rect(node, handle),
-                    Id::unique(("resize_handle", handle)),
-                    Sense::drag(),
-                )
+                .interact(rect, Id::unique(("resize_handle", handle)), Sense::drag())
                 .on_hover_cursor(resize_cursor(handle));
+            (Some(handle), response)
+        });
+        let mut dragged = None;
+        for (handle, response) in std::iter::once((None, canvas)).chain(handles) {
             if response.drag_started_by(PointerButton::Primary) {
                 // Like drawing a box, this applies a label being typed.
                 ui.memory_mut(|memory| memory.stop_text_input());
                 let from = ui.input(|input| input.pointer.press_origin());
-                self.resize = from.map(|from| Resize {
+                // Drags on the canvas move the node only from inside it.
+                let from = from.filter(|&from| handle.is_some() || node.contains(from));
+                self.node_drag = from.map(|from| NodeDrag {
                     handle,
                     from: to_graph(from),
                 });
             }
-            let Some(resize) = self.resize.filter(|resize| resize.handle == handle) else {
+            let Some(drag) = self.node_drag.filter(|drag| drag.handle == handle) else {
                 continue;
             };
             if !response.drag_stopped() {
                 let to = response.interact_pointer_pos().map(to_graph);
-                resized = to.map(|to| resize.geometry(geometry, to));
+                dragged = to.map(|to| drag.geometry(geometry, to));
                 continue;
             }
-            self.resize = None;
+            self.node_drag = None;
             // Without a release, Escape stopped the drag, which cancels it.
             if let Some(to) = ui.input(primary_release).map(to_graph) {
-                let new = resize.geometry(geometry, to);
+                let new = drag.geometry(geometry, to);
                 if new != geometry {
                     document::edit_graphics(graphml, id, |graphics| {
                         document::resize(graphics, new);
@@ -317,17 +327,24 @@ impl Canvas {
                 }
             }
         }
-        resized
+        dragged
     }
 }
 
-impl Resize {
-    /// The bounds `old` would have with the handle dragged to `to`, in graph
-    /// coordinates.
+impl NodeDrag {
+    /// The bounds `old` would have with the node or handle dragged to `to`, in
+    /// graph coordinates.
     fn geometry(&self, old: yed::Rect, to: Pos2) -> yed::Rect {
         let delta = to - self.from;
-        let (x, width) = drag_side(old.x, old.width, self.handle.x(), delta.x.into());
-        let (y, height) = drag_side(old.y, old.height, self.handle.y(), delta.y.into());
+        let Some(handle) = self.handle else {
+            return yed::Rect {
+                x: old.x + f64::from(delta.x),
+                y: old.y + f64::from(delta.y),
+                ..old
+            };
+        };
+        let (x, width) = drag_side(old.x, old.width, handle.x(), delta.x.into());
+        let (y, height) = drag_side(old.y, old.height, handle.y(), delta.y.into());
         yed::Rect {
             x,
             y,

@@ -353,6 +353,23 @@ fn dragging_a_side_resizes_the_selected_node() {
 }
 
 #[test]
+fn dragging_the_selected_node_moves_it() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    harness.drag(vec2(175.0, 90.0), vec2(205.0, 130.0));
+    let geometry = harness.graphics(&id).geometry;
+    assert_eq!((geometry.x, geometry.y), (130.0, 90.0));
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel
+            .windows(4)
+            .any(|rows| rows == ["X", "130", "Y", "90"]),
+        "{side_panel:?}"
+    );
+}
+
+#[test]
 fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
     let mut harness = Harness::new();
     let id = document::add_node(&mut harness.app.graphml, &new_box());
