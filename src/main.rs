@@ -7,6 +7,7 @@ mod error_dialog;
 mod font_picker;
 mod fonts;
 mod label_field;
+mod label_position;
 mod line_type;
 mod menu;
 mod open_dialog;
@@ -186,6 +187,9 @@ impl DrwrApp {
             }
             Action::SetFontSize(label, size) => {
                 document::edit_label(&mut self.graphml, &label, |label| label.font.size = size);
+            }
+            Action::SetLabelPosition(label, position) => {
+                document::set_label_position(&mut self.graphml, &label, position);
             }
         }
     }

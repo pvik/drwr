@@ -177,12 +177,7 @@ fn set_label_changes_only_the_text() {
     set_label(&mut doc, &label("n2", 0), "Topic");
 
     let text = doc.to_xml();
-    assert_eq!(text.lines().count(), FIXTURE.lines().count());
-    let changed: Vec<_> = FIXTURE
-        .lines()
-        .zip(text.lines())
-        .filter(|(before, after)| before != after)
-        .collect();
+    let changed = changed_lines(&text);
     let [(before, after)] = changed.as_slice() else {
         panic!("expected one line to change: {changed:?}");
     };
@@ -240,12 +235,7 @@ fn edit_label_changes_only_what_was_edited() {
     });
 
     let text = doc.to_xml();
-    assert_eq!(text.lines().count(), FIXTURE.lines().count());
-    let changed: Vec<_> = FIXTURE
-        .lines()
-        .zip(text.lines())
-        .filter(|(before, after)| before != after)
-        .collect();
+    let changed = changed_lines(&text);
     let [(before, after)] = changed.as_slice() else {
         panic!("expected one line to change: {changed:?}");
     };
@@ -263,6 +253,51 @@ fn edit_label_skips_labels_that_are_missing() {
         edit_label(&mut doc, &missing, |label| label.font.size = 16);
     }
     assert_eq!(doc.to_xml(), FIXTURE);
+}
+
+#[test]
+fn set_label_position_moves_the_label_keeping_its_size() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    set_label_position(&mut doc, &label("n2", 0), LabelPosition::North);
+
+    let labels = graphics_of(&doc, "n2").unwrap().labels;
+    assert_eq!(labels[0].position(), Some(LabelPosition::North));
+    // 4 above the node, as yEd puts it.
+    assert_eq!(labels[0].bounds, bounds(21.0, -21.96875, 38.0, 17.96875));
+    let text = doc.to_xml();
+    let changed = changed_lines(&text);
+    let [(label, moved), (parameter, placed)] = &changed[..] else {
+        panic!("expected two lines to change: {changed:?}");
+    };
+    assert_eq!(
+        *moved,
+        label.replace(r#"y="11.015625""#, r#"y="-21.96875""#)
+    );
+    let expected = parameter.replace(
+        r#"labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0""#,
+        r#"labelRatioY="0.5" nodeRatioX="0.0" nodeRatioY="-0.5" offsetX="0.0" offsetY="-4.0""#,
+    );
+    assert_eq!(*placed, expected);
+}
+
+#[test]
+fn set_label_position_skips_labels_that_are_missing() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    for missing in [label("n2", 1), label("missing", 0)] {
+        set_label_position(&mut doc, &missing, LabelPosition::North);
+    }
+    assert_eq!(doc.to_xml(), FIXTURE);
+}
+
+/// The lines of `text` that differ from the fixture's, which it has as many
+/// of.
+fn changed_lines(text: &str) -> Vec<(&'static str, &str)> {
+    assert_eq!(text.lines().count(), FIXTURE.lines().count());
+    FIXTURE
+        .lines()
+        .zip(text.lines())
+        .filter(|(before, after)| before != after)
+        .collect()
 }
 
 fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {

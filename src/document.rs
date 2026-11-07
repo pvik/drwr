@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use graphml::yed::{Color, Keys, Label, NodeGraphics, Rect};
+use graphml::yed::{Color, Keys, Label, LabelPosition, NodeGraphics, Rect};
 use graphml::{Graph, GraphMl, Node};
 
 /// A label of a top-level node. The index one past its last label stands for
@@ -152,6 +152,20 @@ pub fn edit_label(doc: &mut GraphMl, label: &LabelRef, edit: impl FnOnce(&mut La
     edit_graphics(doc, &label.node, |graphics| {
         if let Some(label) = graphics.labels.get_mut(label.index) {
             edit(label);
+        }
+    });
+}
+
+/// Puts a label of a top-level node at `position`, keeping its size.
+pub fn set_label_position(doc: &mut GraphMl, label: &LabelRef, position: LabelPosition) {
+    edit_graphics(doc, &label.node, |graphics| {
+        let node = graphics.geometry;
+        if let Some(label) = graphics.labels.get_mut(label.index) {
+            label.set_position(position);
+            let Rect { width, height, .. } = label.bounds;
+            if let Some(bounds) = label.placed(&node, width, height) {
+                label.bounds = bounds;
+            }
         }
     });
 }

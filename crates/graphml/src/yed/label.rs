@@ -1,4 +1,5 @@
 use super::codec::{Part, get_color, get_or, keyword_enum, set, set_color};
+use super::placement::{LabelPosition, Placement};
 use super::{Color, Rect};
 use crate::{
     Error,
@@ -20,6 +21,8 @@ pub struct Label {
     /// The bounds yEd last computed, relative to the node's top-left corner
     /// for node labels.
     pub bounds: Rect,
+    /// Read and written for node labels only.
+    placement: Placement,
     source: Option<Element>,
 }
 
@@ -68,6 +71,7 @@ impl Label {
             border: None,
             alignment: Alignment::Center,
             bounds: Rect::default(),
+            placement: Placement::NEW,
             source: None,
         }
     }
@@ -86,6 +90,7 @@ impl Label {
             border: get_color(element, "hasLineColor", "lineColor")?,
             alignment: get_or(element, "alignment", Alignment::Center)?,
             bounds: Rect::read(element)?,
+            placement: Placement::read(element)?,
             source: Some(element.clone()),
         })
     }
@@ -113,7 +118,30 @@ impl Label {
         set_color(&mut element, "hasLineColor", "lineColor", self.border);
         set(&mut element, "alignment", &self.alignment);
         self.bounds.write(&mut element);
+        if crate::xml::local_name(name) == "NodeLabel" {
+            self.placement.write(&mut element);
+        }
         element
+    }
+
+    /// Where yEd puts this node label, or `None` if it's anywhere else, e.g.
+    /// where it was dragged to.
+    pub fn position(&self) -> Option<LabelPosition> {
+        self.placement.position()
+    }
+
+    /// Puts this node label at `position`, in its label model if that has
+    /// the position, or else in yEd's Smart model, which has them all. Leaves
+    /// `bounds` as they are; see [`Label::placed`].
+    pub fn set_position(&mut self, position: LabelPosition) {
+        self.placement = self.placement.at(position);
+    }
+
+    /// The bounds yEd gives this node label if it's `width` by `height`, on
+    /// a node with the geometry `node`. `None` if it's placed freely or by a
+    /// label model this library doesn't read.
+    pub fn placed(&self, node: &Rect, width: f64, height: f64) -> Option<Rect> {
+        self.placement.place(node, width, height)
     }
 }
 
@@ -131,10 +159,7 @@ fn template(name: &str) -> Element {
             .with_attr("preferredPlacement", "anywhere")
             .with_attr("ratio", "0.5")
     } else {
-        element
-            .with_attr("autoSizePolicy", "content")
-            .with_attr("modelName", "internal")
-            .with_attr("modelPosition", "c")
+        element.with_attr("autoSizePolicy", "content")
     }
 }
 

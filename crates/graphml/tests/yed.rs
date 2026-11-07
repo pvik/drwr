@@ -1,9 +1,10 @@
 use graphml::{
     Edge, Error, Graph, GraphMl, KeyDomain, Node,
+    xml::Element,
     yed::{
         Alignment, Arrow, Arrows, Color, EdgeGraphics, EdgeKind, Fill, Font, FontStyle, Keys,
-        Label, LineType, NAMESPACE, NodeGraphics, NodeKind, Point, Rect, ShapeType, Stroke,
-        new_document,
+        Label, LabelPosition, LineType, NAMESPACE, NodeGraphics, NodeKind, Point, Rect, ShapeType,
+        Stroke, new_document,
     },
 };
 
@@ -278,6 +279,184 @@ fn labels_can_be_added_and_removed() {
     assert!(text.contains(
         "<y:BorderStyle color=\"#000000\" type=\"line\" width=\"1.0\"/>\n          <y:UML "
     ));
+}
+
+/// The element of `n1`'s label, which is in the middle of the node.
+fn n1_label(doc: &mut GraphMl) -> &mut Element {
+    let realizer = node(doc, "n1").data[0].element_mut().unwrap();
+    realizer.child_mut("NodeLabel").unwrap()
+}
+
+#[test]
+fn reads_where_node_labels_are() {
+    let (mut doc, keys) = fixture();
+    for (id, position) in [
+        ("n0", LabelPosition::Center),
+        ("n3", LabelPosition::South),
+        ("n5", LabelPosition::Top),
+    ] {
+        let label = &node_graphics(&mut doc, &keys, id).labels[0];
+        assert_eq!(label.position(), Some(position), "{id}");
+    }
+    assert_eq!(Label::new("New").position(), Some(LabelPosition::Center));
+    // Edge labels' placements aren't read.
+    let e0 = edge_graphics(&mut doc, &keys, "e0");
+    assert_eq!(e0.labels[0].position(), None);
+}
+
+#[test]
+fn moving_a_label_within_its_model_changes_only_its_position() {
+    let (mut doc, keys) = fixture();
+    let mut n1 = node_graphics(&mut doc, &keys, "n1");
+    n1.labels[0].set_position(LabelPosition::North);
+    keys.set_node_graphics(node(&mut doc, "n1"), &n1);
+    let mut n5 = node_graphics(&mut doc, &keys, "n5");
+    n5.labels[0].set_position(LabelPosition::BottomRight);
+    keys.set_node_graphics(node(&mut doc, "n5"), &n5);
+
+    let text = doc.to_xml();
+    let changed = changed_lines(YED, &text);
+    let [(before, after), (group_before, group_after)] = &changed[..] else {
+        panic!("expected two lines to change: {changed:?}");
+    };
+    assert_eq!(
+        (before.as_str(), after.as_str()),
+        (
+            r#"<y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>"#,
+            r#"<y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.5" nodeRatioX="0.0" nodeRatioY="-0.5" offsetX="0.0" offsetY="-4.0" upX="0.0" upY="-1.0"/>"#,
+        )
+    );
+    assert_eq!(
+        *group_after,
+        group_before.replace(r#"modelPosition="t""#, r#"modelPosition="br""#)
+    );
+    let mut doc = GraphMl::parse(&text).unwrap();
+    let position = |doc: &mut GraphMl, id| node_graphics(doc, &keys, id).labels[0].position();
+    assert_eq!(position(&mut doc, "n1"), Some(LabelPosition::North));
+    assert_eq!(position(&mut doc, "n5"), Some(LabelPosition::BottomRight));
+}
+
+#[test]
+fn positions_outside_a_labels_model_switch_it_to_smart() {
+    let mut label = Label::new("Box");
+    label.set_position(LabelPosition::Top);
+    let element = |label: &Label| {
+        let mut graphics = NodeGraphics::new(NodeKind::Shape(ShapeType::Rectangle));
+        graphics.labels.push(label.clone());
+        let mut doc = new_document();
+        let keys = Keys::ensure(&mut doc);
+        let mut node = Node::new("n0");
+        keys.set_node_graphics(&mut node, &graphics);
+        doc.graphs[0].nodes.push(node);
+        let text = doc.to_xml();
+        let start = text.find("<y:NodeLabel").unwrap();
+        let end = text.find("</y:NodeLabel>").unwrap();
+        let element = text[start..end].to_owned();
+        let doc = GraphMl::parse(&text).unwrap();
+        let graphics = keys
+            .node_graphics(&doc.graphs[0].nodes[0])
+            .unwrap()
+            .unwrap();
+        (element, graphics.labels[0].position())
+    };
+    let (internal, read) = element(&label);
+    assert!(internal.contains(r#"modelName="internal" modelPosition="t""#));
+    assert_eq!(read, Some(LabelPosition::Top));
+
+    label.set_position(LabelPosition::SouthWest);
+    let (smart, read) = element(&label);
+    assert_eq!(
+        smart,
+        r##"<y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="0.0" horizontalTextPosition="center" iconTextGap="4" modelName="custom" textColor="#000000" verticalTextPosition="bottom" visible="true" width="0.0" x="0.0" y="0.0">Box<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.5" labelRatioY="-0.5" nodeRatioX="-0.5" nodeRatioY="0.5" offsetX="-4.0" offsetY="4.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          "##
+    );
+    assert_eq!(read, Some(LabelPosition::SouthWest));
+}
+
+#[test]
+fn other_placements_are_kept_until_a_position_is_set() {
+    let (mut doc, keys) = fixture();
+    let label = n1_label(&mut doc);
+    label.set_attr("modelName", "free");
+    label.set_attr("modelPosition", "anywhere");
+    let before = doc.clone();
+    let mut n1 = node_graphics(&mut doc, &keys, "n1");
+    assert_eq!(n1.labels[0].position(), None);
+    assert_eq!(n1.labels[0].placed(&n1.geometry, 24.0, 20.0), None);
+    keys.set_node_graphics(node(&mut doc, "n1"), &n1);
+    assert_eq!(doc, before);
+
+    n1.labels[0].set_position(LabelPosition::Center);
+    keys.set_node_graphics(node(&mut doc, "n1"), &n1);
+    let label = n1_label(&mut doc);
+    assert_eq!(
+        (label.attr("modelName"), label.attr("modelPosition")),
+        (Some("custom"), None)
+    );
+    let n1 = node_graphics(&mut doc, &keys, "n1");
+    assert_eq!(n1.labels[0].position(), Some(LabelPosition::Center));
+}
+
+#[test]
+fn placed_labels_get_the_bounds_yed_gives_them() {
+    let (mut doc, keys) = fixture();
+    for id in ["n0", "n1", "n3"] {
+        let graphics = node_graphics(&mut doc, &keys, id);
+        let label = &graphics.labels[0];
+        let Rect { width, height, .. } = label.bounds;
+        let placed = label.placed(&graphics.geometry, width, height);
+        assert_eq!(placed, Some(label.bounds), "{id}");
+    }
+
+    let node = Rect {
+        x: 50.0,
+        y: 50.0,
+        width: 100.0,
+        height: 60.0,
+    };
+    let mut label = Label::new("Label");
+    for (position, x, y) in [
+        (LabelPosition::Center, 30.0, 20.0),
+        (LabelPosition::TopLeft, 4.0, 4.0),
+        (LabelPosition::Bottom, 30.0, 36.0),
+        (LabelPosition::Right, 56.0, 20.0),
+        (LabelPosition::North, 30.0, -24.0),
+        (LabelPosition::SouthEast, 104.0, 64.0),
+        (LabelPosition::West, -44.0, 20.0),
+    ] {
+        label.set_position(position);
+        let placed = label.placed(&node, 40.0, 20.0);
+        let expected = Rect {
+            x,
+            y,
+            width: 40.0,
+            height: 20.0,
+        };
+        assert_eq!(placed, Some(expected), "{position:?}");
+    }
+}
+
+#[test]
+fn labels_dragged_elsewhere_are_placed_but_have_no_position() {
+    let (mut doc, keys) = fixture();
+    let parameter = n1_label(&mut doc)
+        .child_mut("ModelParameter")
+        .unwrap()
+        .child_mut("SmartNodeLabelModelParameter")
+        .unwrap();
+    parameter.set_attr("nodeRatioX", "0.5");
+    parameter.set_attr("offsetX", "10.0");
+    let n1 = node_graphics(&mut doc, &keys, "n1");
+    let label = &n1.labels[0];
+    assert_eq!(label.position(), None);
+    // Its middle is 10 right of the node's right side.
+    let placed = label.placed(&n1.geometry, 24.0, 20.0).unwrap();
+    assert_eq!((placed.x, placed.y), (48.0, 15.0));
 }
 
 #[test]

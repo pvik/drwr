@@ -1,4 +1,4 @@
-use graphml::yed::{Color, FontStyle, LineType};
+use graphml::yed::{Color, FontStyle, LabelPosition, LineType};
 
 use crate::document::{ColorProperty, LabelRef};
 use crate::tool::Tool;
@@ -28,4 +28,5 @@ pub enum Action {
     SetFontStyle(LabelRef, FontStyle),
     /// Sets a label's font size, in points.
     SetFontSize(LabelRef, u32),
+    SetLabelPosition(LabelRef, LabelPosition),
 }

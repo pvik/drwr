@@ -2,11 +2,11 @@ use std::ops::RangeInclusive;
 
 use egui::emath::{self, Numeric};
 use egui::{
-    Align, Align2, Atom, Button, ComboBox, DragValue, Grid, Id, Key, Label, Layout, Response,
-    RichText, ScrollArea, Stroke, TextStyle, Ui, Vec2, vec2,
+    Align, Align2, Atom, Button, ComboBox, DragValue, Grid, Id, IntoAtoms as _, Key, Label, Layout,
+    Response, RichText, ScrollArea, Stroke, TextStyle, Ui, Vec2, vec2,
 };
 use graphml::GraphMl;
-use graphml::yed::{self, Color, Font, FontStyle, LineType, NodeGraphics, NodeKind};
+use graphml::yed::{self, Color, Font, FontStyle, LabelPosition, LineType, NodeGraphics, NodeKind};
 
 use crate::action::Action;
 use crate::color_picker;
@@ -14,13 +14,14 @@ use crate::document::{self, ColorProperty, LabelRef};
 use crate::font_picker::FontPicker;
 use crate::fonts::{self, Fonts};
 use crate::label_field::{self, End};
+use crate::label_position;
 use crate::line_type;
 
 /// Capped, so typing "inf" can't make a border infinite.
 const BORDER_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
 /// Capped, as egui draws no glyph over 1024 pixels.
 const FONT_SIZES: RangeInclusive<u32> = 1..=500;
-/// How long the line samples are, in text heights.
+/// How long the line and label position samples are, in text heights.
 const SAMPLE_LENGTH: f32 = 2.0;
 
 /// A resizable panel right of the canvas with the properties of the selected
@@ -131,7 +132,11 @@ impl SidePanel {
                     let text = label.map_or("", |label| &label.text);
                     actions.extend(self.label_row(ui, at.clone(), text));
                     if let Some(label) = label {
-                        actions.extend(self.font_rows(ui, at, label, fonts));
+                        actions.extend(self.font_rows(ui, at.clone(), label, fonts));
+                        ui.label("Position");
+                        let position = position_box(ui, index, label.position());
+                        actions.extend(position.map(|p| Action::SetLabelPosition(at, p)));
+                        ui.end_row();
                     }
                 }
                 actions
@@ -280,6 +285,52 @@ fn font_style_box(ui: &mut Ui, index: usize, font: &Font) -> Option<FontStyle> {
             }
         });
     picked
+}
+
+/// Adds a dropdown to pick the position of the `index`th label in, which is
+/// `current`, or `None` if it's elsewhere. Returns the position picked.
+fn position_box(
+    ui: &mut Ui,
+    index: usize,
+    current: Option<LabelPosition>,
+) -> Option<LabelPosition> {
+    let selected_text = match current {
+        Some(position) => position_atoms(ui, position).into_atoms(),
+        None => "Custom".into_atoms(),
+    };
+    let mut picked = None;
+    ComboBox::from_id_salt(("label_position", index))
+        .selected_text(selected_text)
+        .width(ui.available_width())
+        // egui's 200 pt would scroll the list. Popups stay within the window
+        // anyway.
+        .height(f32::INFINITY)
+        .show_ui(ui, |ui| {
+            let groups = [&label_position::INSIDE[..], &label_position::OUTSIDE];
+            for (group, positions) in groups.into_iter().enumerate() {
+                if group > 0 {
+                    ui.separator();
+                }
+                for &position in positions {
+                    let selected = current == Some(position);
+                    let atoms = position_atoms(ui, position);
+                    if ui.selectable_label(selected, atoms).clicked() && !selected {
+                        picked = Some(position);
+                    }
+                }
+            }
+        });
+    picked
+}
+
+/// A sample of `position` and its name.
+fn position_atoms(ui: &Ui, position: LabelPosition) -> (Atom<'static>, &'static str) {
+    let height = ui.text_style_height(&TextStyle::Body);
+    let sample = Atom::paint(vec2(SAMPLE_LENGTH * height, height), move |ui, args| {
+        let stroke = Stroke::new(1.0, args.fallback_text_color);
+        label_position::paint_sample(ui.painter(), args.rect, stroke, position);
+    });
+    (sample, label_position::name(position))
 }
 
 /// A sample line of `line_type` and its name.

@@ -41,6 +41,9 @@ const HANDLES: [Align2; 8] = [
 const GRAB: f32 = 5.0;
 const MIN_SIZE: f64 = 1.0;
 
+/// Between a label's text and its bounds, as yEd measures labels.
+const LABEL_PADDING: f32 = 2.0;
+
 const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
 const EDITOR_MIN_WIDTH: f32 = 60.0;
 
@@ -193,7 +196,7 @@ impl Canvas {
             width.max(node.width()).max(EDITOR_MIN_WIDTH),
             text.y + EDITOR_MARGIN.sum().y,
         );
-        let rect = align.align_size_within_rect(size, label_rect(node, &label));
+        let rect = align.align_size_within_rect(size, label_rect(node, &label, text));
 
         let id = Id::unique("label_editor");
         let mut output = ui
@@ -491,24 +494,35 @@ fn paint_label(painter: &Painter, node: Rect, label: &Label) {
     job.halign = halign(&label.alignment);
     let align = Align2([job.halign, Align::Center]);
     let galley = painter.layout_job(job);
-    let rect = align.align_size_within_rect(galley.size(), label_rect(node, label));
+    let label_rect = label_rect(node, label, galley.size());
+    let rect = align.align_size_within_rect(galley.size(), label_rect);
     painter.galley(rect.min - galley.rect.min.to_vec2(), galley, color);
 }
 
-/// Where yEd last put a label on screen, or the whole node for a new label.
-fn label_rect(node: Rect, label: &Label) -> Rect {
+/// Where a label with text `size` big goes on screen: where yEd last put it,
+/// or for a new label, which yEd hasn't sized yet, where its position puts it.
+fn label_rect(node: Rect, label: &Label, size: Vec2) -> Rect {
+    let mut bounds = label.bounds;
+    if !(bounds.width > 0.0 && bounds.height > 0.0) {
+        let size = size + Vec2::splat(2.0 * LABEL_PADDING);
+        let geometry = yed::Rect {
+            width: node.width().into(),
+            height: node.height().into(),
+            ..yed::Rect::default()
+        };
+        match label.placed(&geometry, size.x.into(), size.y.into()) {
+            Some(placed) => bounds = placed,
+            None => return node,
+        }
+    }
     let yed::Rect {
         x,
         y,
         width,
         height,
-    } = label.bounds;
-    if width > 0.0 && height > 0.0 {
-        let min = node.min + vec2(x as f32, y as f32);
-        Rect::from_min_size(min, vec2(width as f32, height as f32))
-    } else {
-        node
-    }
+    } = bounds;
+    let min = node.min + vec2(x as f32, y as f32);
+    Rect::from_min_size(min, vec2(width as f32, height as f32))
 }
 
 /// At least a point in size, since egui can't draw text of size 0.

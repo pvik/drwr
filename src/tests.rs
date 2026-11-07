@@ -395,11 +395,13 @@ fn the_side_panel_shows_the_clicked_node() {
         "Font style",   "Plain",
         "Font size",    "12",
         "Text color",   "#000000",
+        "Position",     "Center",
         "Label",        "...", "Two\nlines",
         "Font",         "Dialog",
         "Font style",   "Plain",
         "Font size",    "12",
         "Text color",   "#000000",
+        "Position",     "Center",
     ]);
 
     harness.click(vec2(400.0, 300.0));
@@ -1264,6 +1266,107 @@ fn font_rows_edit_their_own_label() {
     let labels = harness.graphics(&id).labels;
     let sizes: Vec<_> = labels.iter().map(|label| label.font.size).collect();
     assert_eq!(sizes, [12, 20]);
+}
+
+/// Runs a frame, returning where the text `text` was painted on the canvas.
+fn canvas_text_rect(harness: &mut Harness, text: &str) -> Rect {
+    let shapes = harness.run(vec![]);
+    let canvas = canvas(&shapes);
+    let found = shapes.iter().find_map(|shape| match shape {
+        Shape::Text(shape) if shape.galley.text() == text && canvas.contains(shape.pos) => {
+            Some(shape.galley.rect.translate(shape.pos.to_vec2()))
+        }
+        _ => None,
+    });
+    found.unwrap_or_else(|| panic!("{text:?} wasn't painted on the canvas"))
+}
+
+#[test]
+fn picking_a_label_position_in_the_side_panel_moves_the_label() {
+    let mut harness = Harness::new();
+    let id = select_labelled_box(&mut harness);
+    let node = Rect::from_min_size(canvas(&harness.run(vec![])).min, vec2(150.0, 80.0))
+        .translate(vec2(100.0, 50.0));
+    let mut shown = "Center";
+    for (name, position) in [
+        ("North", yed::LabelPosition::North),
+        ("Bottom right", yed::LabelPosition::BottomRight),
+        ("Center", yed::LabelPosition::Center),
+    ] {
+        harness.click_text(shown);
+        harness.click_text(name);
+        assert_eq!(harness.graphics(&id).labels[0].position(), Some(position));
+        assert!(!Popup::is_any_open(&harness.ctx));
+        let side_panel = harness.side_panel();
+        assert!(
+            side_panel.windows(2).any(|row| row == ["Position", name]),
+            "{side_panel:?}"
+        );
+        // yEd hasn't sized the new label, so it goes 4 from the node, and its
+        // text 2 more, as yEd would put it.
+        let text = canvas_text_rect(&mut harness, "Start");
+        let (at, expected) = match position {
+            yed::LabelPosition::North => (text.center_bottom(), node.center_top() - vec2(0.0, 6.0)),
+            yed::LabelPosition::BottomRight => {
+                (text.right_bottom(), node.right_bottom() - vec2(6.0, 6.0))
+            }
+            _ => (text.center(), node.center()),
+        };
+        assert!(
+            (at - expected).length() < 0.01,
+            "{name}: {at:?} != {expected:?}"
+        );
+        shown = name;
+    }
+}
+
+#[test]
+fn the_position_list_shows_every_position() {
+    let mut harness = Harness::new();
+    select_labelled_box(&mut harness);
+    harness.click_text("Center");
+    let listed: Vec<_> = harness
+        .side_panel()
+        .into_iter()
+        .skip_while(|text| text != "Top left")
+        .collect();
+    #[rustfmt::skip]
+    assert_eq!(listed, [
+        "Top left", "Top", "Top right",
+        "Left", "Center", "Right",
+        "Bottom left", "Bottom", "Bottom right",
+        "Northwest", "North", "Northeast",
+        "West", "East",
+        "Southwest", "South", "Southeast",
+    ]);
+    // Clicks reach the last one, so the list doesn't scroll.
+    harness.click_text("Southeast");
+    assert!(!Popup::is_any_open(&harness.ctx));
+}
+
+#[test]
+fn labels_placed_elsewhere_read_as_custom() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    let realizer = harness.app.graphml.graphs[0].nodes[0].data[0]
+        .element_mut()
+        .unwrap();
+    let label = realizer.child_mut("NodeLabel").unwrap();
+    label.set_attr("modelName", "free");
+    label.set_attr("modelPosition", "anywhere");
+    harness.click(vec2(150.0, 60.0));
+    let side_panel = harness.side_panel();
+    assert!(
+        side_panel
+            .windows(2)
+            .any(|row| row == ["Position", "Custom"]),
+        "{side_panel:?}"
+    );
+
+    harness.click_text("Custom");
+    harness.click_text("Center");
+    let label = &harness.graphics(&id).labels[0];
+    assert_eq!(label.position(), Some(yed::LabelPosition::Center));
 }
 
 #[test]

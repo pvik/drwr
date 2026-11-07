@@ -1009,6 +1009,36 @@ fn labels_are_painted_where_yed_put_them() {
 }
 
 #[test]
+fn new_labels_are_painted_where_their_position_puts_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let positioned = |text, position| {
+        let mut label = Label::new(text);
+        label.set_position(position);
+        label
+    };
+    let id = harness.add_labelled_box(vec![
+        positioned("North", yed::LabelPosition::North),
+        positioned("Top left", yed::LabelPosition::TopLeft),
+    ]);
+    let shapes = harness.frame(vec![]);
+    let node = harness.node();
+
+    // Their text 2 inside where yEd will put them, once it sizes them.
+    let north = painted(&shapes, "North").unwrap();
+    assert_near(north.center_bottom(), node.center_top() - vec2(0.0, 6.0));
+    let top_left = painted(&shapes, "Top left").unwrap();
+    assert_near(top_left.left_top(), node.left_top() + vec2(6.0, 6.0));
+
+    // So is its editor, clear of the node.
+    harness.edit(&id);
+    let shapes = harness.frame(vec![]);
+    let text = painted(&shapes, "North").unwrap();
+    assert_near(text.center(), north.center());
+    let editor = frame_around(&shapes, text);
+    assert!(editor.max.y < node.min.y, "{editor:?}");
+}
+
+#[test]
 fn labels_are_painted_in_their_font_family_and_style() {
     let mut harness = Harness::new(Tool::Cursor);
     let mut label = Label::new("Mono");
