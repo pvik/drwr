@@ -2,6 +2,7 @@ use egui::accesskit::{self, Role, Toggled};
 use egui::{Context, Event, Popup, Pos2, RawInput, Rect, UiBuilder, pos2};
 
 use super::*;
+use crate::testing::{self, button, center, widgets};
 
 /// Drives a picker 200 points wide in an 800×600 window, one frame at a time.
 struct Harness {
@@ -62,10 +63,7 @@ impl Harness {
                 self.picked.extend(picked);
             });
         });
-        let update = output.platform_output.accesskit_update.take();
-        self.widgets = update.map_or_else(Vec::new, |update| {
-            update.nodes.into_iter().map(|(_, node)| node).collect()
-        });
+        self.widgets = widgets(&mut output);
         output.drop_without_applying_deltas();
     }
 
@@ -83,33 +81,16 @@ impl Harness {
 
     fn click(&mut self, find: impl Fn(&accesskit::Node) -> bool) {
         let widget = self.widgets.iter().find(|widget| find(widget));
-        let bounds = widget
-            .and_then(|widget| widget.bounds())
-            .expect("the widget is shown");
-        let at = pos2(
-            ((bounds.x0 + bounds.x1) / 2.0) as f32,
-            ((bounds.y0 + bounds.y1) / 2.0) as f32,
-        );
+        let at = center(widget.expect("the widget is shown"));
         self.frame(vec![Event::PointerMoved(at)]);
         for pressed in [true, false] {
-            self.frame(vec![Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            }]);
+            self.frame(vec![button(at, pressed)]);
         }
         self.frame(vec![]);
     }
 
     fn press(&mut self, key: Key) {
-        self.frame(vec![Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        }]);
+        self.frame(vec![testing::key(Modifiers::NONE, key)]);
         // Scrolling to the highlighted family takes another frame.
         self.frame(vec![]);
     }

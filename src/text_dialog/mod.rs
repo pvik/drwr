@@ -1,5 +1,6 @@
-use egui::text::CCursorRange;
 use egui::{Context, Id, Key, KeyboardShortcut, Modal, Modifiers, ScrollArea, TextEdit, Ui};
+
+use crate::text_field;
 
 const FIELD_WIDTH: f32 = 320.0;
 const FIELD_ROWS: usize = 6;
@@ -83,13 +84,8 @@ impl<T> Dialog<T> {
                     .desired_rows(FIELD_ROWS)
                     .show(ui)
             });
-        // Selected, so typing replaces it.
         if std::mem::take(&mut self.focus) {
-            let mut output = field.inner;
-            output.response.response.request_focus();
-            let all = CCursorRange::select_all_str(&self.text);
-            output.state.cursor.set_char_range(Some(all));
-            output.state.store(ui.ctx(), id);
+            text_field::focus_all(ui.ctx(), field.inner, &self.text);
         }
         ui.separator();
         ui.horizontal(|ui| {

@@ -1,14 +1,11 @@
 use eframe::App as _;
 use egui::{
-    Color32, Event, Key, Modifiers, PointerButton, Popup, Pos2, RawInput, Rect, Shape, Stroke,
-    Vec2, vec2,
+    Color32, Event, Key, Modifiers, Popup, Pos2, RawInput, Rect, Shape, Stroke, Vec2, vec2,
 };
 use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
 
 use super::*;
-
-/// Ctrl as egui-winit reports it outside macOS.
-const CTRL: Modifiers = Modifiers::CTRL.plus(Modifiers::COMMAND);
+use crate::testing::{self, CTRL, button};
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -172,22 +169,7 @@ impl Harness {
     }
 
     fn press(&mut self, modifiers: Modifiers, key: Key) {
-        self.run(vec![Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers,
-        }]);
-    }
-}
-
-fn button(pos: Pos2, pressed: bool) -> Event {
-    Event::PointerButton {
-        pos,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers: Modifiers::NONE,
+        self.run(vec![testing::key(modifiers, key)]);
     }
 }
 
@@ -559,13 +541,7 @@ fn typing_a_color_selects_no_tools() {
         (Key::A, "a"),
         (Key::B, "b"),
     ] {
-        let press = Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        };
+        let press = testing::key(Modifiers::NONE, key);
         harness.run(vec![press, Event::Text(text.to_owned())]);
     }
     harness.press(Modifiers::NONE, Key::Enter);
@@ -909,13 +885,7 @@ fn typing_a_label_selects_no_tools() {
     harness.app.tool = Tool::Box;
     // Each key is a tool's shortcut.
     for (key, text) in [(Key::C, "c"), (Key::A, "a"), (Key::B, "b")] {
-        let press = Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        };
+        let press = testing::key(Modifiers::NONE, key);
         harness.run(vec![press, Event::Text(text.to_owned())]);
     }
     assert_eq!(harness.app.tool, Tool::Box);
@@ -1156,13 +1126,7 @@ fn searching_fonts_selects_no_tools() {
     harness.run(vec![]);
     // Each key is a tool's shortcut.
     for (key, text) in [(Key::C, "c"), (Key::E, "e"), (Key::L, "l")] {
-        let press = Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        };
+        let press = testing::key(Modifiers::NONE, key);
         harness.run(vec![press, Event::Text(text.to_owned())]);
     }
     assert_eq!(harness.app.tool, Tool::Box);

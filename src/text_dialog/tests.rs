@@ -1,7 +1,8 @@
 use egui::accesskit::{self, Role};
-use egui::{Event, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
+use egui::{Event, Pos2, RawInput, Rect, vec2};
 
 use super::*;
+use crate::testing::{self, button, center, widgets};
 
 /// Drives a dialog in an 800×600 window, one frame at a time.
 struct Harness {
@@ -46,10 +47,7 @@ impl Harness {
         let mut output = self.ctx.run_ui(input, |ui| {
             self.accepted.extend(self.dialog.show(ui.ctx()));
         });
-        let update = output.platform_output.accesskit_update.take();
-        self.widgets = update.map_or_else(Vec::new, |update| {
-            update.nodes.into_iter().map(|(_, node)| node).collect()
-        });
+        self.widgets = widgets(&mut output);
         output.drop_without_applying_deltas();
     }
 
@@ -59,31 +57,16 @@ impl Harness {
             .iter()
             .find(|widget| widget.label() == Some(label))
             .unwrap_or_else(|| panic!("no widget is labelled {label:?}"));
-        let bounds = widget.bounds().expect("widgets have bounds");
-        let at = pos2(
-            ((bounds.x0 + bounds.x1) / 2.0) as f32,
-            ((bounds.y0 + bounds.y1) / 2.0) as f32,
-        );
+        let at = center(widget);
         self.frame(vec![Event::PointerMoved(at)]);
         for pressed in [true, false] {
-            self.frame(vec![Event::PointerButton {
-                pos: at,
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            }]);
+            self.frame(vec![button(at, pressed)]);
         }
         self.frame(vec![]);
     }
 
     fn press(&mut self, modifiers: Modifiers, key: Key) {
-        self.frame(vec![Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers,
-        }]);
+        self.frame(vec![testing::key(modifiers, key)]);
         self.frame(vec![]);
     }
 

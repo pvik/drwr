@@ -1,7 +1,8 @@
 use egui::accesskit::{self, Toggled};
-use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, pos2, vec2};
+use egui::{Event, Modifiers, Pos2, RawInput, vec2};
 
 use super::*;
+use crate::testing::{self, button, center, widgets};
 
 const ORANGE: Color = Color::rgb(0xFF, 0xCC, 0x00);
 const RED: Color = Color::rgb(0xFF, 0x00, 0x00);
@@ -56,10 +57,7 @@ impl Harness {
         let mut output = self.ctx.run_ui(input, |ui| {
             self.picked.extend(self.picker.show(ui.ctx()));
         });
-        let update = output.platform_output.accesskit_update.take();
-        self.widgets = update.map_or_else(Vec::new, |update| {
-            update.nodes.into_iter().map(|(_, node)| node).collect()
-        });
+        self.widgets = widgets(&mut output);
         output.drop_without_applying_deltas();
     }
 
@@ -72,35 +70,20 @@ impl Harness {
 
     /// Clicks the widget labelled `label` `clicks` times in a row.
     fn click(&mut self, label: &str, clicks: usize) {
-        let bounds = self.widget(label).bounds().expect("widgets have bounds");
-        let at = pos2(
-            ((bounds.x0 + bounds.x1) / 2.0) as f32,
-            ((bounds.y0 + bounds.y1) / 2.0) as f32,
-        );
+        let at = center(self.widget(label));
         // Too long since any earlier click to make this a double click.
         self.time += 1.0;
         self.frame(vec![Event::PointerMoved(at)]);
         for _ in 0..clicks {
             for pressed in [true, false] {
-                self.frame(vec![Event::PointerButton {
-                    pos: at,
-                    button: PointerButton::Primary,
-                    pressed,
-                    modifiers: Modifiers::NONE,
-                }]);
+                self.frame(vec![button(at, pressed)]);
             }
         }
         self.repaint();
     }
 
     fn press(&mut self, key: Key) {
-        self.frame(vec![Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        }]);
+        self.frame(vec![testing::key(Modifiers::NONE, key)]);
         self.repaint();
     }
 

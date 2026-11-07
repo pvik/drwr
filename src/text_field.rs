@@ -1,6 +1,8 @@
-use egui::{Event, EventFilter, Key, KeyboardShortcut, Modifiers, Response, TextEdit, Ui};
+use egui::text::CCursorRange;
+use egui::text_edit::TextEditOutput;
+use egui::{Context, Event, EventFilter, Key, KeyboardShortcut, Modifiers, Response, TextEdit, Ui};
 
-/// How typing a label in a field ended.
+/// How typing in a field ended.
 pub enum End {
     Apply,
     Cancel,
@@ -8,7 +10,7 @@ pub enum End {
 
 /// A field for a label's text, one line high until Shift+Enter adds more.
 /// See [`end`] for the keys that leave it.
-pub fn text_edit(text: &mut String) -> TextEdit<'_> {
+pub fn label_edit(text: &mut String) -> TextEdit<'_> {
     TextEdit::multiline(text)
         .desired_rows(1)
         .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
@@ -21,7 +23,7 @@ pub fn text_edit(text: &mut String) -> TextEdit<'_> {
         })
 }
 
-/// Checks the focused `field` for Enter, which applies the label typed, or
+/// Checks the focused `field` for Enter, which applies the text typed, or
 /// Escape, which cancels it. Either drops the focus.
 pub fn end(ui: &Ui, field: &Response) -> Option<End> {
     if !field.has_focus() {
@@ -45,4 +47,14 @@ pub fn end(ui: &Ui, field: &Response) -> Option<End> {
     })?;
     field.surrender_focus();
     Some(end)
+}
+
+/// Gives the field just shown the focus, with its `text` selected so that
+/// typing replaces it.
+pub fn focus_all(ctx: &Context, mut output: TextEditOutput, text: &str) {
+    let response = &output.response.response;
+    response.request_focus();
+    let all = CCursorRange::select_all_str(text);
+    output.state.cursor.set_char_range(Some(all));
+    output.state.store(ctx, response.id);
 }

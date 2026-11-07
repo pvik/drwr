@@ -6,7 +6,6 @@ mod document;
 mod error_dialog;
 mod font_picker;
 mod fonts;
-mod label_field;
 mod label_position;
 mod line_type;
 mod menu;
@@ -14,7 +13,10 @@ mod open_dialog;
 mod shortcuts;
 mod side_panel;
 mod status_bar;
+#[cfg(test)]
+mod testing;
 mod text_dialog;
+mod text_field;
 mod tool;
 mod toolbar;
 
@@ -27,6 +29,7 @@ use color_picker::ColorPicker;
 use document::{ColorProperty, LabelRef};
 use fonts::Fonts;
 use graphml::GraphMl;
+use graphml::yed::NodeGraphics;
 use open_dialog::OpenDialog;
 use side_panel::SidePanel;
 use text_dialog::TextDialog;
@@ -110,6 +113,13 @@ impl DrwrApp {
         Ok(())
     }
 
+    /// Edits the graphics of the selected node, if there is one.
+    fn edit_selected(&mut self, edit: impl FnOnce(&mut NodeGraphics)) {
+        if let Some(id) = &self.selected {
+            document::edit_graphics(&mut self.graphml, id, edit);
+        }
+    }
+
     /// Does what the user asked for, wherever they asked.
     fn perform(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
         match action {
@@ -121,14 +131,10 @@ impl DrwrApp {
                 // TODO: save the graph, asking for a file if it's unsaved.
             }
             Action::SelectTool(tool) => self.tool = tool,
-            Action::MoveBy(dx, dy) => {
-                if let Some(id) = &self.selected {
-                    document::edit_graphics(&mut self.graphml, id, |graphics| {
-                        graphics.geometry.x += dx;
-                        graphics.geometry.y += dy;
-                    });
-                }
-            }
+            Action::MoveBy(dx, dy) => self.edit_selected(|graphics| {
+                graphics.geometry.x += dx;
+                graphics.geometry.y += dy;
+            }),
             Action::EditColor(property) => {
                 if let Some(id) = &self.selected
                     && let Some(graphics) = document::graphics_of(&self.graphml, id)
@@ -140,25 +146,13 @@ impl DrwrApp {
                 }
             }
             Action::SetColor(property, color) => {
-                if let Some(id) = &self.selected {
-                    document::edit_graphics(&mut self.graphml, id, |graphics| {
-                        property.set(graphics, color);
-                    });
-                }
+                self.edit_selected(|graphics| property.set(graphics, color));
             }
             Action::SetBorderWidth(width) => {
-                if let Some(id) = &self.selected {
-                    document::edit_graphics(&mut self.graphml, id, |graphics| {
-                        graphics.border.width = width;
-                    });
-                }
+                self.edit_selected(|graphics| graphics.border.width = width);
             }
             Action::SetBorderType(line_type) => {
-                if let Some(id) = &self.selected {
-                    document::edit_graphics(&mut self.graphml, id, |graphics| {
-                        graphics.border.line_type = line_type;
-                    });
-                }
+                self.edit_selected(|graphics| graphics.border.line_type = line_type);
             }
             Action::EditLabel => {
                 if let Some(id) = &self.selected {
@@ -177,16 +171,8 @@ impl DrwrApp {
                 }
             }
             Action::SetLabel(label, text) => document::set_label(&mut self.graphml, &label, &text),
-            Action::SetFontFamily(label, family) => {
-                document::edit_label(&mut self.graphml, &label, |label| {
-                    label.font.family = family
-                });
-            }
-            Action::SetFontStyle(label, style) => {
-                document::edit_label(&mut self.graphml, &label, |label| label.font.style = style);
-            }
-            Action::SetFontSize(label, size) => {
-                document::edit_label(&mut self.graphml, &label, |label| label.font.size = size);
+            Action::SetFont(label, font) => {
+                document::edit_label(&mut self.graphml, &label, |label| label.font = font);
             }
             Action::SetLabelPosition(label, position) => {
                 document::set_label_position(&mut self.graphml, &label, position);

@@ -4,6 +4,7 @@ use egui::{Key, Modifiers, RawInput, Shape, pos2, vec2};
 
 use super::*;
 use crate::fonts::Fonts;
+use crate::testing::{self, button};
 
 /// yEd's default node fill, which new boxes get.
 const BOX_FILL: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
@@ -99,13 +100,7 @@ impl Harness {
     }
 
     fn press(&mut self, modifiers: Modifiers, key: Key) -> Vec<Shape> {
-        self.frame(vec![Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers,
-        }])
+        self.frame(vec![testing::key(modifiers, key)])
     }
 
     fn type_text(&mut self, text: &str) -> Vec<Shape> {
@@ -156,13 +151,9 @@ impl Harness {
     }
 }
 
-fn button(pos: Pos2, pressed: bool) -> Event {
-    Event::PointerButton {
-        pos,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers: Modifiers::NONE,
-    }
+/// A box with yEd's default look between two corners in graph coordinates.
+fn new_box(corner: Pos2, opposite: Pos2) -> NodeGraphics {
+    new_shape(ShapeType::Rectangle, corner, opposite)
 }
 
 fn filled_rects(shapes: &[Shape], fill: Color32) -> Vec<Rect> {
@@ -302,13 +293,7 @@ fn escape_cancels_the_box() {
     harness.frame(vec![Event::PointerMoved(from)]);
     harness.frame(vec![button(from, true)]);
     harness.frame(vec![Event::PointerMoved(to)]);
-    let escape = Event::Key {
-        key: Key::Escape,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: Modifiers::NONE,
-    };
+    let escape = testing::key(Modifiers::NONE, Key::Escape);
     let painted = harness.frame(vec![escape]);
     harness.frame(vec![button(to, false)]);
 

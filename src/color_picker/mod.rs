@@ -1,11 +1,12 @@
 use egui::color_picker::{self, Alpha};
 use egui::ecolor::{Hsva, linear_f32_from_gamma_u8, linear_f32_from_linear_u8};
-use egui::text::CCursorRange;
 use egui::{
     Color32, Context, Id, Key, Modal, Painter, Rect, Response, Role, Sense, Stroke, StrokeKind,
     TextEdit, Ui, Vec2, WidgetInfo,
 };
 use graphml::yed::Color;
+
+use crate::text_field;
 
 /// How many of the last colors picked the dialog offers.
 const RECENT: usize = 10;
@@ -193,18 +194,14 @@ impl<T> Dialog<T> {
             if invalid {
                 field = field.text_color(ui.visuals().error_fg_color);
             }
-            let mut output = field.show(ui);
+            let output = field.show(ui);
             if output.response.response.changed()
                 && let Some(color) = parse_hex(&self.hex)
             {
                 self.pick(color);
             }
-            // Selected, so typing replaces it.
             if std::mem::take(&mut self.focus_hex) {
-                output.response.response.request_focus();
-                let all = CCursorRange::select_all_str(&self.hex);
-                output.state.cursor.set_char_range(Some(all));
-                output.state.store(ui.ctx(), id);
+                text_field::focus_all(ui.ctx(), output, &self.hex);
             }
         });
     }

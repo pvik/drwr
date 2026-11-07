@@ -2,8 +2,8 @@ use std::ops::RangeInclusive;
 
 use egui::emath::{self, Numeric};
 use egui::{
-    Align, Align2, Atom, Button, ComboBox, DragValue, Grid, Id, IntoAtoms as _, Key, Label, Layout,
-    Response, RichText, ScrollArea, Stroke, TextStyle, Ui, Vec2, vec2,
+    Align, Align2, AsIdSalt, Atom, Button, ComboBox, DragValue, Grid, Id, IntoAtoms, Key, Label,
+    Layout, Painter, Rect, Response, RichText, ScrollArea, Stroke, TextStyle, Ui, vec2,
 };
 use graphml::GraphMl;
 use graphml::yed::{self, Color, Font, FontStyle, LabelPosition, LineType, NodeGraphics, NodeKind};
@@ -13,9 +13,9 @@ use crate::color_picker;
 use crate::document::{self, ColorProperty, LabelRef};
 use crate::font_picker::FontPicker;
 use crate::fonts::{self, Fonts};
-use crate::label_field::{self, End};
 use crate::label_position;
 use crate::line_type;
+use crate::text_field::{self, End};
 
 /// Capped, so typing "inf" can't make a border infinite.
 const BORDER_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
@@ -157,7 +157,7 @@ impl SidePanel {
             }
             let edit = self.edit.as_ref().filter(|edit| edit.field == field);
             let mut typed = edit.map_or(text, |edit| &edit.text).to_owned();
-            let response = label_field::text_edit(&mut typed)
+            let response = text_field::label_edit(&mut typed)
                 .id(field)
                 .desired_width(ui.available_width())
                 .align(Align2::LEFT_TOP)
@@ -165,7 +165,7 @@ impl SidePanel {
                 .response
                 .response;
             if response.has_focus() {
-                self.edit = match label_field::end(ui, &response) {
+                self.edit = match text_field::end(ui, &response) {
                     Some(End::Cancel) => None,
                     Some(End::Apply) | None => Some(FieldEdit {
                         field,
@@ -189,20 +189,36 @@ impl SidePanel {
         fonts: &Fonts,
     ) -> Vec<Action> {
         let font = &label.font;
+        let set = |font: Font| Action::SetFont(at.clone(), font);
         let mut actions = Vec::new();
         ui.label("Font");
         let family = self
             .font_picker
             .show(ui, ("font", at.index), &font.family, || fonts.families());
-        actions.extend(family.map(|family| Action::SetFontFamily(at.clone(), family)));
+        actions.extend(family.map(|family| {
+            set(Font {
+                family,
+                ..font.clone()
+            })
+        }));
         ui.end_row();
         ui.label("Font style");
         let style = font_style_box(ui, at.index, font);
-        actions.extend(style.map(|style| Action::SetFontStyle(at.clone(), style)));
+        actions.extend(style.map(|style| {
+            set(Font {
+                style,
+                ..font.clone()
+            })
+        }));
         ui.end_row();
         ui.label("Font size");
         let size = self.number_field(ui, font.size, FONT_SIZES, 0.2);
-        actions.extend(size.map(|size| Action::SetFontSize(at.clone(), size)));
+        actions.extend(size.map(|size| {
+            set(Font {
+                size,
+                ..font.clone()
+            })
+        }));
         ui.end_row();
         ui.label("Text color");
         if color_button(ui, Some(label.text_color)).clicked() {
@@ -248,43 +264,71 @@ fn row(ui: &mut Ui, name: &str, value: &str) {
     ui.end_row();
 }
 
-/// Adds a dropdown to pick a border's line type in. Returns the type picked.
-fn border_style_box(ui: &mut Ui, current: &LineType) -> Option<LineType> {
+/// Adds a dropdown listing `groups` of items, a separator between the
+/// groups, which reads `shown` while closed. `row` adds each item's row, told
+/// whether the item is `current`. Returns the item clicked, unless it's
+/// `current`.
+fn dropdown<'a, T: PartialEq + Clone>(
+    ui: &mut Ui,
+    id_salt: impl AsIdSalt,
+    shown: impl IntoAtoms<'a>,
+    groups: &[&[T]],
+    current: Option<&T>,
+    row: impl Fn(&mut Ui, &T, bool) -> Response,
+) -> Option<T> {
     let mut picked = None;
-    ComboBox::from_id_salt("border_style")
-        .selected_text(line_type_atoms(ui, current))
+    ComboBox::from_id_salt(id_salt)
+        .selected_text(shown)
         .width(ui.available_width())
+        // egui's 200 pt would scroll the position list. Popups stay within
+        // the window anyway.
+        .height(f32::INFINITY)
         .show_ui(ui, |ui| {
-            for line_type in line_type::ALL {
-                let selected = line_type == *current;
-                let atoms = line_type_atoms(ui, &line_type);
-                if ui.selectable_label(selected, atoms).clicked() && !selected {
-                    picked = Some(line_type);
+            for (group, items) in groups.iter().enumerate() {
+                if group > 0 {
+                    ui.separator();
+                }
+                for item in *items {
+                    let selected = current == Some(item);
+                    if row(ui, item, selected).clicked() && !selected {
+                        picked = Some(item.clone());
+                    }
                 }
             }
         });
     picked
 }
 
+/// Adds a dropdown to pick a border's line type in. Returns the type picked.
+fn border_style_box(ui: &mut Ui, current: &LineType) -> Option<LineType> {
+    let shown = line_type_atoms(ui, current);
+    dropdown(
+        ui,
+        "border_style",
+        shown,
+        &[&line_type::ALL],
+        Some(current),
+        |ui, line_type, selected| {
+            let atoms = line_type_atoms(ui, line_type);
+            ui.selectable_label(selected, atoms)
+        },
+    )
+}
+
 /// Adds a dropdown to pick the style of the `index`th label's `font` in,
 /// showing each in it. Returns the style picked.
 fn font_style_box(ui: &mut Ui, index: usize, font: &Font) -> Option<FontStyle> {
-    let sample = |style: &FontStyle| {
+    let styled = |style: &FontStyle| {
         RichText::new(fonts::style_name(style)).family(fonts::family(&font.family, style))
     };
-    let mut picked = None;
-    ComboBox::from_id_salt(("font_style", index))
-        .selected_text(sample(&font.style))
-        .width(ui.available_width())
-        .show_ui(ui, |ui| {
-            for style in fonts::STYLES {
-                let selected = style == font.style;
-                if ui.selectable_label(selected, sample(&style)).clicked() && !selected {
-                    picked = Some(style);
-                }
-            }
-        });
-    picked
+    dropdown(
+        ui,
+        ("font_style", index),
+        styled(&font.style),
+        &[&fonts::STYLES],
+        Some(&font.style),
+        |ui, style, selected| ui.selectable_label(selected, styled(style)),
+    )
 }
 
 /// Adds a dropdown to pick the position of the `index`th label in, which is
@@ -294,65 +338,57 @@ fn position_box(
     index: usize,
     current: Option<LabelPosition>,
 ) -> Option<LabelPosition> {
-    let selected_text = match current {
+    let shown = match current {
         Some(position) => position_atoms(ui, position).into_atoms(),
         None => "Custom".into_atoms(),
     };
-    let mut picked = None;
-    ComboBox::from_id_salt(("label_position", index))
-        .selected_text(selected_text)
-        .width(ui.available_width())
-        // egui's 200 pt would scroll the list. Popups stay within the window
-        // anyway.
-        .height(f32::INFINITY)
-        .show_ui(ui, |ui| {
-            let groups = [&label_position::INSIDE[..], &label_position::OUTSIDE];
-            for (group, positions) in groups.into_iter().enumerate() {
-                if group > 0 {
-                    ui.separator();
-                }
-                for &position in positions {
-                    let selected = current == Some(position);
-                    let atoms = position_atoms(ui, position);
-                    if ui.selectable_label(selected, atoms).clicked() && !selected {
-                        picked = Some(position);
-                    }
-                }
-            }
-        });
-    picked
+    dropdown(
+        ui,
+        ("label_position", index),
+        shown,
+        &[&label_position::INSIDE, &label_position::OUTSIDE],
+        current.as_ref(),
+        |ui, position, selected| {
+            let atoms = position_atoms(ui, *position);
+            ui.selectable_label(selected, atoms)
+        },
+    )
 }
 
 /// A sample of `position` and its name.
 fn position_atoms(ui: &Ui, position: LabelPosition) -> (Atom<'static>, &'static str) {
-    let height = ui.text_style_height(&TextStyle::Body);
-    let sample = Atom::paint(vec2(SAMPLE_LENGTH * height, height), move |ui, args| {
-        let stroke = Stroke::new(1.0, args.fallback_text_color);
-        label_position::paint_sample(ui.painter(), args.rect, stroke, position);
+    let sample = sample(ui, SAMPLE_LENGTH, move |painter, rect, stroke| {
+        label_position::paint_sample(painter, rect, stroke, position);
     });
     (sample, label_position::name(position))
 }
 
 /// A sample line of `line_type` and its name.
 fn line_type_atoms<'a>(ui: &Ui, line_type: &'a LineType) -> (Atom<'a>, &'a str) {
-    let height = ui.text_style_height(&TextStyle::Body);
-    let sample = Atom::paint(vec2(SAMPLE_LENGTH * height, height), move |ui, args| {
-        let stroke = Stroke::new(1.0, args.fallback_text_color);
-        let (x, y) = (args.rect.x_range(), args.rect.center().y);
-        line_type::paint_hline(ui.painter(), x, y, stroke, line_type);
+    let sample = sample(ui, SAMPLE_LENGTH, move |painter, rect, stroke| {
+        let (x, y) = (rect.x_range(), rect.center().y);
+        line_type::paint_hline(painter, x, y, stroke, line_type);
     });
     (sample, line_type::name(line_type))
 }
 
 /// A button showing a swatch of `color` and its hex code.
 fn color_button(ui: &mut Ui, color: Option<Color>) -> Response {
-    let size = Vec2::splat(ui.text_style_height(&TextStyle::Body));
-    let swatch = Atom::paint(size, move |ui, args| {
-        let outline = Stroke::new(1.0, args.fallback_text_color);
-        color_picker::paint_swatch(ui.painter(), args.rect, color, outline);
+    let swatch = sample(ui, 1.0, move |painter, rect, outline| {
+        color_picker::paint_swatch(painter, rect, color, outline);
     });
     let text = color.map_or("None".to_owned(), |color| color.to_string());
     ui.add(Button::new((swatch, text)))
+}
+
+/// An atom `length` text heights long and one high, which `paint` paints in
+/// the text color, e.g. as a sample of a line type.
+fn sample<'a>(ui: &Ui, length: f32, paint: impl Fn(&Painter, Rect, Stroke) + 'a) -> Atom<'a> {
+    let height = ui.text_style_height(&TextStyle::Body);
+    Atom::paint(vec2(length * height, height), move |ui, args| {
+        let stroke = Stroke::new(1.0, args.fallback_text_color);
+        paint(ui.painter(), args.rect, stroke);
+    })
 }
 
 /// Up to two decimals, so yEd's 327.33333333333337 reads as 327.33.

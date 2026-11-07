@@ -2,20 +2,9 @@ use egui::os::OperatingSystem;
 use egui::{Event, Id, Modal, RawInput};
 
 use super::*;
+use crate::testing::{CTRL, key};
 
 const NONE: Modifiers = Modifiers::NONE;
-/// Ctrl as egui-winit reports it outside macOS.
-const CTRL: Modifiers = Modifiers::CTRL.plus(Modifiers::COMMAND);
-
-fn key(modifiers: Modifiers, key: Key) -> Event {
-    Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    }
-}
 
 /// Runs a frame with `events`, returning what `f` returns in it.
 fn frame<R>(ctx: &Context, events: Vec<Event>, mut f: impl FnMut(&Context) -> R) -> R {

@@ -1,4 +1,4 @@
-use egui::text::{CCursorRange, LayoutJob};
+use egui::text::LayoutJob;
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Margin, Painter, PointerButton, Pos2,
     Rangef, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2, Visuals, vec2,
@@ -10,8 +10,8 @@ use crate::action::Action;
 use crate::color_picker::color32;
 use crate::document::{self, LabelRef};
 use crate::fonts;
-use crate::label_field::{self, End};
 use crate::line_type;
+use crate::text_field::{self, End};
 use crate::tool::Tool;
 
 /// White like paper, even in the dark theme.
@@ -50,8 +50,9 @@ const EDITOR_MIN_WIDTH: f32 = 60.0;
 /// The drawing canvas. Graph coordinates start at its top-left corner.
 #[derive(Default)]
 pub struct Canvas {
-    /// The corner the box being drawn was started from, in graph coordinates.
-    box_start: Option<Pos2>,
+    /// The corner the shape being drawn was started from, in graph
+    /// coordinates.
+    shape_start: Option<Pos2>,
     node_drag: Option<NodeDrag>,
     editor: Option<LabelEditor>,
 }
@@ -100,8 +101,8 @@ impl Canvas {
             let rect = response.rect;
             let origin = rect.min.to_vec2();
             if tool != Tool::Box {
-                // A shortcut can switch tools mid-drag, which drops the box.
-                self.box_start = None;
+                // A shortcut can switch tools mid-drag, which drops the shape.
+                self.shape_start = None;
             }
             let mut double_clicked = false;
             let drawing = match tool {
@@ -111,7 +112,10 @@ impl Canvas {
                         response.double_clicked_by(PointerButton::Primary) && selected.is_some();
                     None
                 }
-                Tool::Box => self.draw_box(response.clone(), origin, graphml, selected),
+                Tool::Box => {
+                    let response = response.clone();
+                    self.draw_shape(response, origin, graphml, selected, ShapeType::Rectangle)
+                }
                 _ => None,
             };
             let dragged = match (tool, selected.as_deref()) {
@@ -199,11 +203,11 @@ impl Canvas {
         let rect = align.align_size_within_rect(size, label_rect(node, &label, text));
 
         let id = Id::unique("label_editor");
-        let mut output = ui
+        let output = ui
             .scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                 // White like the canvas, even in the dark theme.
                 ui.style_mut().visuals = Visuals::light();
-                label_field::text_edit(&mut editor.text)
+                text_field::label_edit(&mut editor.text)
                     .id(id)
                     .font(font)
                     .margin(EDITOR_MARGIN)
@@ -212,16 +216,12 @@ impl Canvas {
                     .show(ui)
             })
             .inner;
-        // Selected, so typing replaces it.
         if std::mem::take(&mut editor.focus) {
-            output.response.response.request_focus();
-            let all = CCursorRange::select_all_str(&editor.text);
-            output.state.cursor.set_char_range(Some(all));
-            output.state.store(ui.ctx(), id);
+            text_field::focus_all(ui.ctx(), output, &editor.text);
             return None;
         }
         let response = &output.response.response;
-        match label_field::end(ui, response) {
+        match text_field::end(ui, response) {
             Some(End::Cancel) => {
                 self.editor = None;
                 return None;
@@ -233,20 +233,21 @@ impl Canvas {
         Some(Action::SetLabel(editor.label, editor.text))
     }
 
-    /// Drags out a box with the primary button, adding it to `graphml` and
-    /// selecting it on release. Returns the box while it's being drawn.
-    fn draw_box(
+    /// Drags out a `shape` with the primary button, adding it to `graphml`
+    /// and selecting it on release. Returns the shape while it's being drawn.
+    fn draw_shape(
         &mut self,
         response: Response,
         origin: Vec2,
         graphml: &mut GraphMl,
         selected: &mut Option<String>,
+        shape: ShapeType,
     ) -> Option<NodeGraphics> {
         let response = response.on_hover_cursor(CursorIcon::Crosshair);
         // Whole numbers keep the saved coordinates tidy.
         let to_graph = |pos: Pos2| (pos - origin).round();
         if response.drag_started_by(PointerButton::Primary) {
-            self.box_start = response
+            self.shape_start = response
                 .ctx
                 .input(|i| i.pointer.press_origin())
                 .map(to_graph);
@@ -254,15 +255,15 @@ impl Canvas {
         if !response.drag_stopped() {
             let end = response.interact_pointer_pos().map(to_graph);
             return self
-                .box_start
+                .shape_start
                 .zip(end)
-                .map(|(start, end)| new_box(start, end));
+                .map(|(start, end)| new_shape(shape, start, end));
         }
 
-        // Without a release, Escape stopped the drag, which cancels the box.
+        // Without a release, Escape stopped the drag, which cancels the shape.
         let end = response.ctx.input(primary_release).map(to_graph);
-        if let Some((start, end)) = self.box_start.take().zip(end) {
-            let graphics = new_box(start, end);
+        if let Some((start, end)) = self.shape_start.take().zip(end) {
+            let graphics = new_shape(shape, start, end);
             if graphics.geometry.width > 0.0 && graphics.geometry.height > 0.0 {
                 *selected = Some(document::add_node(graphml, &graphics));
             }
@@ -412,7 +413,7 @@ fn select_clicked(
     };
     // Nodes are painted in order, so the last one hit is on top.
     *selected = document::node_graphics(graphml)
-        .filter(|(_, graphics)| drawable(graphics) && screen_rect(origin, graphics).contains(pos))
+        .filter(|(_, graphics)| hit(origin, graphics, pos))
         .last()
         .map(|(id, _)| id.to_owned());
 }
@@ -431,42 +432,52 @@ fn primary_release(input: &egui::InputState) -> Option<Pos2> {
     })
 }
 
-/// A box with yEd's default look, spanning two corners in graph coordinates.
-fn new_box(corner: Pos2, opposite: Pos2) -> NodeGraphics {
-    let rect = Rect::from_two_pos(corner, opposite);
-    let mut graphics = NodeGraphics::new(NodeKind::Shape(ShapeType::Rectangle));
-    graphics.geometry = yed::Rect {
-        x: rect.min.x.into(),
-        y: rect.min.y.into(),
-        width: rect.width().into(),
-        height: rect.height().into(),
-    };
+/// A `shape` with yEd's default look, spanning two corners in graph
+/// coordinates.
+fn new_shape(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
+    let mut graphics = NodeGraphics::new(NodeKind::Shape(shape));
+    graphics.geometry = yed_rect(Rect::from_two_pos(corner, opposite));
     graphics
 }
 
-/// Whether the canvas can draw this kind of node yet.
-fn drawable(graphics: &NodeGraphics) -> bool {
-    graphics.kind == NodeKind::Shape(ShapeType::Rectangle)
+/// The shape the canvas draws a node as, if it's a kind it can draw yet.
+fn shape(graphics: &NodeGraphics) -> Option<&ShapeType> {
+    match &graphics.kind {
+        NodeKind::Shape(shape @ ShapeType::Rectangle) => Some(shape),
+        _ => None,
+    }
+}
+
+/// Whether a point on screen is on a node the canvas draws.
+fn hit(origin: Vec2, graphics: &NodeGraphics, pos: Pos2) -> bool {
+    shape(graphics).is_some() && screen_rect(origin, graphics).contains(pos)
 }
 
 /// Where a node's bounds are on screen.
 fn screen_rect(origin: Vec2, graphics: &NodeGraphics) -> Rect {
-    let yed::Rect {
-        x,
-        y,
-        width,
-        height,
-    } = graphics.geometry;
-    Rect::from_min_size(
-        Pos2::new(x as f32, y as f32) + origin,
-        Vec2::new(width as f32, height as f32),
-    )
+    egui_rect(graphics.geometry, origin)
+}
+
+/// A yEd rect as an egui one, `origin` away.
+fn egui_rect(rect: yed::Rect, origin: Vec2) -> Rect {
+    let min = Pos2::new(rect.x as f32, rect.y as f32) + origin;
+    Rect::from_min_size(min, vec2(rect.width as f32, rect.height as f32))
+}
+
+/// An egui rect as a yEd one.
+fn yed_rect(rect: Rect) -> yed::Rect {
+    yed::Rect {
+        x: rect.min.x.into(),
+        y: rect.min.y.into(),
+        width: rect.width().into(),
+        height: rect.height().into(),
+    }
 }
 
 /// Paints a node with its labels, except the one at index `hidden`, unless
 /// it's a kind the canvas can't draw yet.
 fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Option<usize>) {
-    if !drawable(graphics) {
+    if shape(graphics).is_none() {
         return;
     }
     let rect = screen_rect(origin, graphics);
@@ -515,14 +526,7 @@ fn label_rect(node: Rect, label: &Label, size: Vec2) -> Rect {
             None => return node,
         }
     }
-    let yed::Rect {
-        x,
-        y,
-        width,
-        height,
-    } = bounds;
-    let min = node.min + vec2(x as f32, y as f32);
-    Rect::from_min_size(min, vec2(width as f32, height as f32))
+    egui_rect(bounds, node.min.to_vec2())
 }
 
 /// At least a point in size, since egui can't draw text of size 0.
