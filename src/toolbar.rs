@@ -41,7 +41,7 @@ pub fn show(
             }
             let save = ui.add(icon_button(SAVE_ICON, "Save"));
             if save.on_hover_text("Save").clicked() {
-                // TODO: write the graph to its file, or ask for one if it's unsaved.
+                // TODO: save the graph, asking for a file if it's unsaved.
             }
 
             ui.separator();
