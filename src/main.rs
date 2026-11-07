@@ -1,5 +1,6 @@
 mod canvas;
 mod cli;
+mod document;
 mod error_dialog;
 mod menu;
 mod open_dialog;
@@ -10,6 +11,7 @@ mod toolbar;
 
 use std::path::{Path, PathBuf};
 
+use canvas::Canvas;
 use graphml::GraphMl;
 use open_dialog::OpenDialog;
 use tool::Tool;
@@ -57,6 +59,7 @@ struct DrwrApp {
     graphml: GraphMl,
     /// Where `graphml` is saved, as an absolute path; `None` if it isn't.
     file: Option<PathBuf>,
+    canvas: Canvas,
     open_dialog: OpenDialog,
     error: Option<String>,
 }
@@ -87,7 +90,7 @@ impl eframe::App for DrwrApp {
         toolbar::show(ui, frame, &mut self.open_dialog, &mut self.tool);
         status_bar::show(ui, self.tool, self.file.as_deref());
         side_panel::show(ui);
-        canvas::show(ui);
+        self.canvas.show(ui, self.tool, &mut self.graphml);
 
         error_dialog::show(ui, &mut self.error);
     }
