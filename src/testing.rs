@@ -1,7 +1,10 @@
 //! Helpers shared by the tests of the UI modules.
 
 use egui::accesskit;
-use egui::{Event, FullOutput, Key, Modifiers, PointerButton, Pos2, pos2};
+use egui::{
+    Event, FullOutput, Key, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, Pos2,
+    TouchPhase, pos2, vec2,
+};
 
 /// Ctrl as egui-winit reports it outside macOS.
 pub const CTRL: Modifiers = Modifiers::CTRL.plus(Modifiers::COMMAND);
@@ -19,10 +22,30 @@ pub fn key(modifiers: Modifiers, key: Key) -> Event {
 
 /// The primary button going down, or up, at `pos`.
 pub fn button(pos: Pos2, pressed: bool) -> Event {
+    pointer_button(PointerButton::Primary, pos, pressed)
+}
+
+/// The middle button going down, or up, at `pos`.
+pub fn middle_button(pos: Pos2, pressed: bool) -> Event {
+    pointer_button(PointerButton::Middle, pos, pressed)
+}
+
+fn pointer_button(button: PointerButton, pos: Pos2, pressed: bool) -> Event {
     Event::PointerButton {
         pos,
-        button: PointerButton::Primary,
+        button,
         pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// The wheel turning by `lines` notches, up if positive.
+pub fn wheel(lines: f32) -> Event {
+    Event::MouseWheel {
+        unit: MouseWheelUnit::Line,
+        delta: vec2(0.0, lines),
+        phase: TouchPhase::Move,
+        source: MouseWheelSource::Wheel,
         modifiers: Modifiers::NONE,
     }
 }

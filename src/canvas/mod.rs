@@ -1,8 +1,9 @@
-use egui::epaint::PathShape;
+use egui::emath::TSTransform;
+use egui::epaint::{PathShape, TextShape};
 use egui::text::LayoutJob;
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Margin, Painter, PointerButton, Pos2,
-    Rangef, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2, Visuals, vec2,
+    Rangef, Rect, Response, Sense, Stroke, StrokeKind, UiBuilder, Vec2, Visuals, pos2, vec2,
 };
 use graphml::GraphMl;
 use graphml::yed::{self, Alignment, Label, NodeGraphics, NodeKind, ShapeType};
@@ -14,6 +15,7 @@ use crate::fonts;
 use crate::line_type;
 use crate::text_field::{self, End};
 use crate::tool::{NodeShape, Tool};
+use crate::zoom;
 
 /// White like paper, even in the dark theme.
 const BACKGROUND: Color32 = Color32::WHITE;
@@ -44,16 +46,66 @@ const MIN_SIZE: f64 = 1.0;
 
 /// Between a label's text and its bounds, as yEd measures labels.
 const LABEL_PADDING: f32 = 2.0;
+/// The largest text the canvas draws, in pixels, as egui draws no glyph over
+/// 1024 pixels.
+const MAX_TEXT_PIXELS: f32 = 1000.0;
+/// How far labels are scaled while the zoom changes before they're laid out
+/// anew, which is too slow to do every frame.
+const MAX_TEXT_SCALE: f32 = 1.25;
 
 const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
 const EDITOR_MIN_WIDTH: f32 = 60.0;
 
-/// The drawing canvas. Graph coordinates start at its top-left corner.
+/// The drawing canvas, which shows the graph zoomed and panned.
 #[derive(Default)]
 pub struct Canvas {
+    view: View,
+    /// The size it was last shown at, to zoom about its middle.
+    size: Vec2,
+    /// The zoom it was last shown at.
+    shown_zoom: f32,
+    /// The zoom labels are laid out at, which lags while the zoom changes.
+    text_zoom: f32,
+    /// While the middle button pans the view, where the pointer was last.
+    panning: Option<Pos2>,
     shape_drag: Option<ShapeDrag>,
     node_drag: Option<NodeDrag>,
     editor: Option<LabelEditor>,
+}
+
+/// Where the graph shows on the canvas.
+#[derive(Clone, Copy)]
+struct View {
+    /// In screen points per graph point.
+    zoom: f32,
+    /// Where the graph's origin is, from the canvas's top-left corner.
+    offset: Vec2,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        View {
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+        }
+    }
+}
+
+impl View {
+    /// Zooms to `zoom`, within limits, keeping the graph point at `anchor`,
+    /// from the canvas's top-left corner, where it is.
+    fn zoom_to(&mut self, zoom: f32, anchor: Vec2) {
+        let zoom = zoom.clamp(zoom::MIN, zoom::MAX);
+        if zoom != self.zoom {
+            self.offset = anchor - (anchor - self.offset) * (zoom / self.zoom);
+            self.zoom = zoom;
+        }
+    }
+
+    /// Takes graph coordinates to screen ones, on a canvas at `rect`.
+    fn to_screen(self, rect: Rect) -> TSTransform {
+        TSTransform::new(rect.min.to_vec2() + self.offset, self.zoom)
+    }
 }
 
 /// A node being dragged out by the tool that draws it.
@@ -102,25 +154,29 @@ impl Canvas {
             let (response, painter) = ui.allocate_painter(ui.available_size(), sense);
             // Unlike a click, a drag leaves the focus in a label being typed,
             // which would then stay open while the next node is drawn.
-            if response.drag_started() {
+            if response.drag_started_by(PointerButton::Primary) {
                 ui.memory_mut(|memory| memory.stop_text_input());
             }
             let rect = response.rect;
-            let origin = rect.min.to_vec2();
+            self.size = rect.size();
+            self.zoom_with_wheel(ui, rect);
+            self.pan(ui, rect);
+            let to_screen = self.view.to_screen(rect);
+            let text_zoom = self.text_zoom(ui.ctx());
             // A shortcut can switch tools mid-drag, which drops the shape.
             self.shape_drag.take_if(|drag| drag.tool != tool);
             let mut double_clicked = false;
             let drawing = match tool {
                 Tool::Cursor => {
-                    select_clicked(&response, origin, graphml, selected);
+                    select_clicked(&response, to_screen, graphml, selected);
                     double_clicked =
                         response.double_clicked_by(PointerButton::Primary) && selected.is_some();
                     None
                 }
-                _ => self.draw_node(response.clone(), origin, graphml, selected, tool),
+                _ => self.draw_node(response.clone(), to_screen, graphml, selected, tool),
             };
             let dragged = match (tool, selected.as_deref()) {
-                (Tool::Cursor, Some(id)) => self.drag_node(ui, response, origin, graphml, id),
+                (Tool::Cursor, Some(id)) => self.drag_node(ui, response, to_screen, graphml, id),
                 // Switching tools mid-drag drops the move or resize, as it does
                 // the shape.
                 _ => {
@@ -137,14 +193,15 @@ impl Canvas {
                     if let Some(geometry) = dragged {
                         document::resize(&mut graphics, geometry);
                     }
-                    outline = Some(screen_rect(origin, &graphics).expand(SELECTION_GAP));
+                    outline = Some(screen_rect(to_screen, &graphics).expand(SELECTION_GAP));
                 }
                 // The label being edited shows in its editor instead.
                 let hidden = editing.filter(|label| label.node == id);
-                paint(&painter, origin, &graphics, hidden.map(|label| label.index));
+                let hidden = hidden.map(|label| label.index);
+                paint(&painter, to_screen, text_zoom, &graphics, hidden);
             }
             if let Some(graphics) = drawing {
-                paint(&painter, origin, &graphics, None);
+                paint(&painter, to_screen, text_zoom, &graphics, None);
             }
             // Over the nodes, so one on top can't hide it.
             if let Some(outline) = outline {
@@ -156,12 +213,94 @@ impl Canvas {
 
             // Over the nodes. An edit it applies goes first, in case the
             // double click is on the same label.
-            actions.extend(self.show_editor(ui, origin, graphml));
+            actions.extend(self.show_editor(ui, to_screen, graphml));
             if double_clicked {
                 actions.push(Action::EditLabel);
             }
+            // Last, so it wins over the cursors of the nodes and handles.
+            if self.panning.is_some() {
+                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            }
         });
         actions
+    }
+
+    /// The zoom level, in screen points per graph point.
+    pub fn zoom(&self) -> f32 {
+        self.view.zoom
+    }
+
+    /// Zooms to `zoom`, within limits, about the middle of the canvas.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.view.zoom_to(zoom, self.size / 2.0);
+    }
+
+    /// Moves the view right and down over the graph by `delta`, in screen
+    /// points.
+    pub fn pan_by(&mut self, delta: Vec2) {
+        self.view.offset -= delta;
+    }
+
+    /// Zooms about the pointer as the wheel turns, or a touchpad pinches, over
+    /// the canvas at `rect`.
+    fn zoom_with_wheel(&mut self, ui: &egui::Ui, rect: Rect) {
+        // As fast as Ctrl+wheel, which egui reports as zooming already.
+        let speed = ui.ctx().options(|o| o.input_options.scroll_zoom_speed);
+        let (pointer, factor) = ui.input(|input| {
+            let scrolled = input.smooth_scroll_delta.y;
+            let factor = input.zoom_delta() * (speed * scrolled).exp();
+            (input.pointer.interact_pos(), factor)
+        });
+        if let Some(pointer) = pointer
+            && factor != 1.0
+            && ui.rect_contains_pointer(rect)
+        {
+            let zoom = self.view.zoom * factor;
+            self.view.zoom_to(zoom, pointer - rect.min);
+        }
+    }
+
+    /// The zoom to lay labels out at: the zoom, unless it changed since the
+    /// canvas was last shown and is still near the one they're laid out at.
+    fn text_zoom(&mut self, ctx: &egui::Context) -> f32 {
+        let zoom = self.view.zoom;
+        let zooming = std::mem::replace(&mut self.shown_zoom, zoom) != zoom;
+        let scale = zoom / self.text_zoom;
+        if !zooming || !(1.0 / MAX_TEXT_SCALE..=MAX_TEXT_SCALE).contains(&scale) {
+            self.text_zoom = zoom;
+        }
+        if zooming {
+            // The toolbar showed the old zoom, and labels catch up once it
+            // stops changing.
+            ctx.request_repaint();
+        }
+        self.text_zoom
+    }
+
+    /// Pans the view while the middle button drags from the canvas at `rect`,
+    /// whatever on it the drag starts from.
+    fn pan(&mut self, ui: &egui::Ui, rect: Rect) {
+        let (pressed, released, latest, down) = ui.input(|input| {
+            (
+                button_event(input, PointerButton::Middle, true),
+                button_event(input, PointerButton::Middle, false),
+                input.pointer.latest_pos(),
+                input.pointer.button_down(PointerButton::Middle),
+            )
+        });
+        if pressed.is_some() && ui.rect_contains_pointer(rect) {
+            self.panning = pressed;
+        }
+        let Some(last) = self.panning else {
+            return;
+        };
+        if let Some(to) = released.or(latest) {
+            self.view.offset += to - last;
+            self.panning = Some(to);
+        }
+        if released.is_some() || !down {
+            self.panning = None;
+        }
     }
 
     /// Edits `label`, whose text is `text`, over where it's painted.
@@ -178,7 +317,7 @@ impl Canvas {
     fn show_editor(
         &mut self,
         ui: &mut egui::Ui,
-        origin: Vec2,
+        to_screen: TSTransform,
         graphml: &GraphMl,
     ) -> Option<Action> {
         let editor = self.editor.as_mut()?;
@@ -188,20 +327,21 @@ impl Canvas {
         };
         let label = graphics.labels.get(editor.label.index).cloned();
         let label = label.unwrap_or_else(|| Label::new(""));
-        let font = label_font(&label);
+        let font = label_font(&label, to_screen.scaling, ui.pixels_per_point());
         let align = Align2([halign(&label.alignment), Align::Center]);
         let text = ui
             .painter()
             .layout_no_wrap(editor.text.clone(), font.clone(), Color32::PLACEHOLDER)
             .size();
-        let node = screen_rect(origin, &graphics);
+        let node = screen_rect(to_screen, &graphics);
         // An em to spare, so the next letter typed doesn't wrap.
         let width = text.x + font.size + EDITOR_MARGIN.sum().x;
         let size = vec2(
             width.max(node.width()).max(EDITOR_MIN_WIDTH),
             text.y + EDITOR_MARGIN.sum().y,
         );
-        let rect = align.align_size_within_rect(size, label_rect(node, &label, text));
+        let label_rect = label_rect(to_screen, graphics.geometry, &label, text);
+        let rect = align.align_size_within_rect(size, label_rect);
 
         let id = Id::unique("label_editor");
         let output = ui
@@ -240,20 +380,20 @@ impl Canvas {
     fn draw_node(
         &mut self,
         response: Response,
-        origin: Vec2,
+        to_screen: TSTransform,
         graphml: &mut GraphMl,
         selected: &mut Option<String>,
         tool: Tool,
     ) -> Option<NodeGraphics> {
         let shape = tool.node_shape()?;
         let response = response.on_hover_cursor(CursorIcon::Crosshair);
-        // Whole numbers keep the saved coordinates tidy.
-        let to_graph = |pos: Pos2| (pos - origin).round();
-        // Within egui's click distance a press is a click, which draws
-        // nothing, even if it slips across a whole number.
+        let to_graph = |pos: Pos2| graph_point(to_screen, pos);
+        // Within egui's click distance on screen a press is a click, which
+        // draws nothing, even if it slips across a whole number.
         let max_click_dist = response.ctx.options(|o| o.input_options.max_click_dist);
         let node = |(drag, end): (ShapeDrag, Pos2)| {
-            (drag.from.distance(end) > max_click_dist).then(|| new_node(&shape, drag.from, end))
+            let distance = drag.from.distance(end) * to_screen.scaling;
+            (distance > max_click_dist).then(|| new_node(&shape, drag.from, end))
         };
         if response.drag_started_by(PointerButton::Primary) {
             let from = response.ctx.input(|i| i.pointer.press_origin());
@@ -287,16 +427,15 @@ impl Canvas {
         &mut self,
         ui: &egui::Ui,
         canvas: Response,
-        origin: Vec2,
+        to_screen: TSTransform,
         graphml: &mut GraphMl,
         id: &str,
     ) -> Option<yed::Rect> {
         let graphics = document::graphics_of(graphml, id)?;
-        let node = screen_rect(origin, &graphics);
+        let node = screen_rect(to_screen, &graphics);
         let geometry = graphics.geometry;
-        // Whole numbers, as when drawing a box.
-        let to_graph = |pos: Pos2| (pos - origin).round();
-        let inside = |pos: Pos2| hit(origin, &graphics, pos);
+        let to_graph = |pos: Pos2| graph_point(to_screen, pos);
+        let inside = |pos: Pos2| hit(to_screen, &graphics, pos);
         let moving = self.node_drag.is_some_and(|drag| drag.handle.is_none());
         if moving || canvas.hover_pos().is_some_and(inside) {
             ui.ctx().set_cursor_icon(CursorIcon::Move);
@@ -409,7 +548,7 @@ fn resize_cursor(handle: Align2) -> CursorIcon {
 /// misses them all.
 fn select_clicked(
     response: &Response,
-    origin: Vec2,
+    to_screen: TSTransform,
     graphml: &GraphMl,
     selected: &mut Option<String>,
 ) {
@@ -422,23 +561,34 @@ fn select_clicked(
     };
     // Nodes are painted in order, so the last one hit is on top.
     *selected = document::node_graphics(graphml)
-        .filter(|(_, graphics)| hit(origin, graphics, pos))
+        .filter(|(_, graphics)| hit(to_screen, graphics, pos))
         .last()
         .map(|(id, _)| id.to_owned());
 }
 
-/// Where the primary button was released this frame. The pointer may have
-/// moved on since, in the same frame.
+/// Where the primary button was released this frame.
 fn primary_release(input: &egui::InputState) -> Option<Pos2> {
-    input.events.iter().find_map(|event| match event {
+    button_event(input, PointerButton::Primary, false)
+}
+
+/// Where `button` was pressed, or released, this frame. The pointer may have
+/// moved on since, in the same frame.
+fn button_event(input: &egui::InputState, button: PointerButton, pressed: bool) -> Option<Pos2> {
+    input.events.iter().find_map(|event| match *event {
         Event::PointerButton {
             pos,
-            button: PointerButton::Primary,
-            pressed: false,
+            button: b,
+            pressed: p,
             ..
-        } => Some(*pos),
+        } if b == button && p == pressed => Some(pos),
         _ => None,
     })
+}
+
+/// The point in graph coordinates at `pos` on screen, in whole numbers,
+/// which keep the saved coordinates tidy.
+fn graph_point(to_screen: TSTransform, pos: Pos2) -> Pos2 {
+    (to_screen.inverse() * pos).round()
 }
 
 /// A node of `shape` with yEd's default look, dragged out between two
@@ -478,8 +628,8 @@ fn shape(graphics: &NodeGraphics) -> Option<Outline> {
 }
 
 /// Whether a point on screen is on a node the canvas draws.
-fn hit(origin: Vec2, graphics: &NodeGraphics, pos: Pos2) -> bool {
-    let rect = screen_rect(origin, graphics);
+fn hit(to_screen: TSTransform, graphics: &NodeGraphics, pos: Pos2) -> bool {
+    let rect = screen_rect(to_screen, graphics);
     match shape(graphics) {
         Some(Outline::Rect) => rect.contains(pos),
         Some(Outline::Ellipse) => in_ellipse(rect, pos),
@@ -495,14 +645,15 @@ fn in_ellipse(rect: Rect, pos: Pos2) -> bool {
 }
 
 /// Where a node's bounds are on screen.
-fn screen_rect(origin: Vec2, graphics: &NodeGraphics) -> Rect {
-    egui_rect(graphics.geometry, origin)
+fn screen_rect(to_screen: TSTransform, graphics: &NodeGraphics) -> Rect {
+    egui_rect(graphics.geometry, to_screen)
 }
 
-/// A yEd rect as an egui one, `origin` away.
-fn egui_rect(rect: yed::Rect, origin: Vec2) -> Rect {
-    let min = Pos2::new(rect.x as f32, rect.y as f32) + origin;
-    Rect::from_min_size(min, vec2(rect.width as f32, rect.height as f32))
+/// A yEd rect as an egui one, taken by `transform`.
+fn egui_rect(rect: yed::Rect, transform: TSTransform) -> Rect {
+    let min = transform * pos2(rect.x as f32, rect.y as f32);
+    let size = vec2(rect.width as f32, rect.height as f32) * transform.scaling;
+    Rect::from_min_size(min, size)
 }
 
 /// An egui rect as a yEd one.
@@ -517,15 +668,21 @@ fn yed_rect(rect: Rect) -> yed::Rect {
 
 /// Paints a node with its labels, except the one at index `hidden`, unless
 /// it's a kind the canvas can't draw yet.
-fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Option<usize>) {
+fn paint(
+    painter: &Painter,
+    to_screen: TSTransform,
+    text_zoom: f32,
+    graphics: &NodeGraphics,
+    hidden: Option<usize>,
+) {
     let Some(outline) = shape(graphics) else {
         return;
     };
-    let rect = screen_rect(origin, graphics);
+    let rect = screen_rect(to_screen, graphics);
     let fill = graphics.fill.color.map_or(Color32::TRANSPARENT, color32);
     let border = &graphics.border;
     let stroke = border.color.map_or(Stroke::NONE, |color| {
-        Stroke::new(border.width as f32, color32(color))
+        Stroke::new(border.width as f32 * to_screen.scaling, color32(color))
     });
     // Like yEd, which centers borders on the outline, over the fill.
     match outline {
@@ -542,48 +699,71 @@ fn paint(painter: &Painter, origin: Vec2, graphics: &NodeGraphics, hidden: Optio
 
     for (index, label) in graphics.labels.iter().enumerate() {
         if label.visible && hidden != Some(index) {
-            paint_label(painter, rect, label);
+            paint_label(painter, to_screen, text_zoom, graphics.geometry, label);
         }
     }
 }
 
-/// Paints a label where yEd last put it, lined up by its alignment, in its
-/// font and color.
-fn paint_label(painter: &Painter, node: Rect, label: &Label) {
+/// Paints a label of the node at `node` where yEd last put it, lined up by
+/// its alignment, in its font and color. It's laid out at `text_zoom`, then
+/// scaled to the zoom.
+fn paint_label(
+    painter: &Painter,
+    to_screen: TSTransform,
+    text_zoom: f32,
+    node: yed::Rect,
+    label: &Label,
+) {
     let color = color32(label.text_color);
-    let mut job = LayoutJob::simple(label.text.clone(), label_font(label), color, f32::INFINITY);
+    let font = label_font(label, text_zoom, painter.pixels_per_point());
+    let mut job = LayoutJob::simple(label.text.clone(), font, color, f32::INFINITY);
     job.halign = halign(&label.alignment);
     let align = Align2([job.halign, Align::Center]);
     let galley = painter.layout_job(job);
-    let label_rect = label_rect(node, label, galley.size());
-    let rect = align.align_size_within_rect(galley.size(), label_rect);
-    painter.galley(rect.min - galley.rect.min.to_vec2(), galley, color);
+    let scale = to_screen.scaling / text_zoom;
+    let size = galley.size() * scale;
+    let rect = align.align_size_within_rect(size, label_rect(to_screen, node, label, size));
+    let pos = rect.min - galley.rect.min.to_vec2() * scale;
+    if scale == 1.0 {
+        painter.galley(pos, galley, color);
+    } else {
+        let mut text = TextShape::new(pos, galley, color);
+        // About `pos`.
+        text.transform(TSTransform::new(pos.to_vec2() * (1.0 - scale), scale));
+        painter.add(text);
+    }
 }
 
-/// Where a label with text `size` big goes on screen: where yEd last put it,
-/// or for a new label, which yEd hasn't sized yet, where its position puts it.
-fn label_rect(node: Rect, label: &Label, size: Vec2) -> Rect {
+/// Where a label of the node at `node`, with text `size` big on screen, goes
+/// on screen: where yEd last put it, or for a new label, which yEd hasn't
+/// sized yet, where its position puts it.
+fn label_rect(to_screen: TSTransform, node: yed::Rect, label: &Label, size: Vec2) -> Rect {
     let mut bounds = label.bounds;
     if !(bounds.width > 0.0 && bounds.height > 0.0) {
-        let size = size + Vec2::splat(2.0 * LABEL_PADDING);
+        let size = size / to_screen.scaling + Vec2::splat(2.0 * LABEL_PADDING);
         let geometry = yed::Rect {
-            width: node.width().into(),
-            height: node.height().into(),
+            width: node.width,
+            height: node.height,
             ..yed::Rect::default()
         };
         match label.placed(&geometry, size.x.into(), size.y.into()) {
             Some(placed) => bounds = placed,
-            None => return node,
+            None => return egui_rect(node, to_screen),
         }
     }
-    egui_rect(bounds, node.min.to_vec2())
+    // Relative to the node.
+    let node_min = to_screen * pos2(node.x as f32, node.y as f32);
+    let to_node = TSTransform::new(node_min.to_vec2(), to_screen.scaling);
+    egui_rect(bounds, to_node)
 }
 
-/// At least a point in size, since egui can't draw text of size 0.
-fn label_font(label: &Label) -> FontId {
+/// A label's font at `zoom`. Its size counts as at least a point, since egui
+/// can't draw text of size 0, and is capped at what egui can draw.
+fn label_font(label: &Label, zoom: f32, pixels_per_point: f32) -> FontId {
     let font = &label.font;
+    let size = font.size.max(1) as f32 * zoom;
     FontId::new(
-        font.size.max(1) as f32,
+        size.min(MAX_TEXT_PIXELS / pixels_per_point),
         fonts::family(&font.family, &font.style),
     )
 }

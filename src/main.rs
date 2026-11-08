@@ -19,6 +19,7 @@ mod text_dialog;
 mod text_field;
 mod tool;
 mod toolbar;
+mod zoom;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -68,9 +69,7 @@ fn run_gui(app: DrwrApp) -> eframe::Result {
         "drwr",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
-            // Needed to render the toolbar's SVG icons.
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            cc.egui_ctx.add_font_provider(app.fonts.clone());
+            app.init(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
@@ -99,6 +98,15 @@ struct DrwrApp {
 }
 
 impl DrwrApp {
+    /// Sets up `ctx` to show the app in.
+    fn init(&self, ctx: &egui::Context) {
+        // Needed to render the toolbar's SVG icons.
+        egui_extras::install_image_loaders(ctx);
+        ctx.add_font_provider(self.fonts.clone());
+        // Ctrl+Plus, Ctrl+Minus and Ctrl+0 zoom the canvas instead.
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
+    }
+
     /// Replaces the graph with the GraphML file at `path`, or keeps it on error.
     fn open(&mut self, path: &Path) -> Result<(), graphml::Error> {
         let path = std::path::absolute(path)?;
@@ -131,6 +139,18 @@ impl DrwrApp {
                 // TODO: save the graph, asking for a file if it's unsaved.
             }
             Action::SelectTool(tool) => self.tool = tool,
+            Action::ZoomIn => {
+                if let Some(zoom) = zoom::step_in(self.canvas.zoom()) {
+                    self.canvas.set_zoom(zoom);
+                }
+            }
+            Action::ZoomOut => {
+                if let Some(zoom) = zoom::step_out(self.canvas.zoom()) {
+                    self.canvas.set_zoom(zoom);
+                }
+            }
+            Action::SetZoom(zoom) => self.canvas.set_zoom(zoom),
+            Action::PanBy(dx, dy) => self.canvas.pan_by(egui::vec2(dx, dy)),
             Action::MoveBy(dx, dy) => self.edit_selected(|graphics| {
                 graphics.geometry.x += dx;
                 graphics.geometry.y += dy;
@@ -201,7 +221,8 @@ impl eframe::App for DrwrApp {
         if let Some(action) = menu::show(ui, &self.open_dialog) {
             self.perform(action, ui.ctx(), frame);
         }
-        if let Some(action) = toolbar::show(ui, &self.open_dialog, self.tool) {
+        let zoom = self.canvas.zoom();
+        if let Some(action) = toolbar::show(ui, &self.open_dialog, self.tool, zoom) {
             self.perform(action, ui.ctx(), frame);
         }
         status_bar::show(ui, self.tool, self.file.as_deref());

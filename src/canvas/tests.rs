@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use egui::epaint::{ClippedShape, ColorMode, Primitive, Vertex};
-use egui::{Key, Modifiers, RawInput, Shape, pos2, vec2};
+use egui::{Key, Modifiers, RawInput, Shape, ViewportId, pos2, vec2};
 
 use super::*;
 use crate::fonts::Fonts;
-use crate::testing::{self, button};
+use crate::testing::{self, button, middle_button};
 
 /// yEd's default node fill, which new boxes get.
 const BOX_FILL: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
@@ -22,6 +23,8 @@ struct Harness {
     actions: Vec<Action>,
     /// The mouse cursor the last frame asked for.
     cursor: CursorIcon,
+    /// How soon the last frame asked for the next.
+    repaint_delay: Duration,
     time: f64,
     /// The canvas's top-left corner on screen.
     origin: Pos2,
@@ -39,6 +42,7 @@ impl Harness {
             selected: None,
             actions: Vec::new(),
             cursor: CursorIcon::Default,
+            repaint_delay: Duration::MAX,
             time: 0.0,
             origin: Pos2::ZERO,
         };
@@ -63,6 +67,7 @@ impl Harness {
             self.actions.extend(actions);
         });
         self.cursor = output.platform_output.cursor_icon;
+        self.repaint_delay = output.viewport_output[&ViewportId::ROOT].repaint_delay;
         let shapes = std::mem::take(&mut output.shapes);
         output.drop_without_applying_deltas();
         shapes.into_iter().map(|clipped| clipped.shape).collect()
@@ -99,6 +104,37 @@ impl Harness {
         for pressed in [true, false, true, false] {
             self.frame(vec![button(at, pressed)]);
         }
+    }
+
+    /// Drags between two points relative to the canvas with the middle
+    /// button, returning what the frame with the release painted.
+    fn middle_drag(&mut self, from: Vec2, to: Vec2) -> Vec<Shape> {
+        let (from, to) = (self.origin + from, self.origin + to);
+        self.frame(vec![Event::PointerMoved(from)]);
+        self.frame(vec![middle_button(from, true)]);
+        self.frame(vec![Event::PointerMoved(to)]);
+        self.frame(vec![middle_button(to, false)])
+    }
+
+    /// Turns the wheel by `lines` notches over a point relative to the
+    /// canvas, returning what was painted once egui had applied it all.
+    fn wheel(&mut self, at: Vec2, lines: f32) -> Vec<Shape> {
+        self.frame(vec![
+            Event::PointerMoved(self.origin + at),
+            testing::wheel(lines),
+        ]);
+        // egui spreads a notch over a few frames.
+        let mut shapes = Vec::new();
+        for _ in 0..5 {
+            shapes = self.frame(vec![]);
+        }
+        shapes
+    }
+
+    /// Zooms by `factor` about the canvas's top-left corner, as a pinch
+    /// there does, so graph points end up `factor` times as far from it.
+    fn zoom(&mut self, factor: f32) {
+        self.frame(vec![Event::PointerMoved(self.origin), Event::Zoom(factor)]);
     }
 
     fn press(&mut self, modifiers: Modifiers, key: Key) -> Vec<Shape> {
@@ -149,6 +185,13 @@ impl Harness {
     /// Where the node in [`NODE`] is on screen.
     fn node(&self) -> Rect {
         NODE.translate(self.origin.to_vec2())
+    }
+
+    /// Where the node in [`NODE`] is on screen once [`Self::zoom`]ed by
+    /// `factor`.
+    fn zoomed_node(&self, factor: f32) -> Rect {
+        let corner = |pos: Pos2| self.origin + pos.to_vec2() * factor;
+        Rect::from_min_max(corner(NODE.min), corner(NODE.max))
     }
 
     /// The geometry of each box in the document.
@@ -1640,4 +1683,356 @@ fn the_editor_closes_when_its_node_is_gone() {
     harness.frame(vec![]);
     assert!(harness.canvas.editor.is_none());
     assert_eq!(harness.actions, []);
+}
+
+/// The size of the font `text` was painted in.
+fn font_size(shapes: &[Shape], text: &str) -> f32 {
+    let size = shapes.iter().find_map(|shape| match shape {
+        Shape::Text(shape) if shape.galley.text() == text => {
+            Some(shape.galley.job.sections[0].format.font_id.size)
+        }
+        _ => None,
+    });
+    size.unwrap_or_else(|| panic!("{text:?} wasn't painted"))
+}
+
+#[test]
+fn the_wheel_zooms_in_and_out_about_the_pointer() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    let at = vec2(400.0, 300.0);
+    let painted = harness.wheel(at, 1.0);
+
+    // As fast as egui zooms with Ctrl held: 40 points a notch, 200 an e-fold.
+    let notch = 0.2_f32.exp();
+    assert!((harness.canvas.zoom() - notch).abs() < 1e-4);
+    // The point under the pointer stays put, and the node grows away from it.
+    let pointer = harness.origin + at;
+    let zoomed = |pos: Pos2| pointer + (pos - at.to_pos2()) * notch;
+    let [node] = filled_rects(&painted, BOX_FILL)[..] else {
+        panic!("expected one node");
+    };
+    assert_near(node.min, zoomed(NODE.min));
+    assert_near(node.max, zoomed(NODE.max));
+
+    let painted = harness.wheel(at, -1.0);
+    assert!((harness.canvas.zoom() - 1.0).abs() < 1e-4);
+    let [node] = filled_rects(&painted, BOX_FILL)[..] else {
+        panic!("expected one node");
+    };
+    assert_near(node.min, harness.node().min);
+    assert_near(node.max, harness.node().max);
+}
+
+#[test]
+fn pinches_and_ctrl_wheel_zoom_too() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.zoom(1.5);
+    assert_eq!(harness.canvas.zoom(), 1.5);
+
+    let ctrl_wheel = Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: vec2(0.0, 1.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: testing::CTRL,
+    };
+    harness.frame(vec![ctrl_wheel]);
+    for _ in 0..5 {
+        harness.frame(vec![]);
+    }
+    assert!((harness.canvas.zoom() - 1.5 * 0.2_f32.exp()).abs() < 1e-4);
+}
+
+#[test]
+fn zoom_stays_within_its_limits() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.zoom(100.0);
+    assert_eq!(harness.canvas.zoom(), zoom::MAX);
+    harness.zoom(1e-6);
+    assert_eq!(harness.canvas.zoom(), zoom::MIN);
+    harness.canvas.set_zoom(50.0);
+    assert_eq!(harness.canvas.zoom(), zoom::MAX);
+}
+
+#[test]
+fn the_wheel_zooms_only_over_the_canvas() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.frame(vec![Event::PointerMoved(harness.origin - vec2(2.0, 2.0))]);
+    harness.frame(vec![testing::wheel(1.0)]);
+    for _ in 0..5 {
+        harness.frame(vec![]);
+    }
+    assert_eq!(harness.canvas.zoom(), 1.0);
+}
+
+#[test]
+fn setting_the_zoom_keeps_the_middle_of_the_canvas_in_place() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let canvas = filled_rects(&harness.frame(vec![]), BACKGROUND)[0];
+    let middle = (canvas.size() / 2.0).to_pos2();
+    harness.add_box(middle - vec2(20.0, 10.0), middle + vec2(20.0, 10.0));
+    harness.canvas.set_zoom(2.0);
+    let painted = harness.frame(vec![]);
+
+    let [node] = filled_rects(&painted, BOX_FILL)[..] else {
+        panic!("expected one node");
+    };
+    let zoomed = Rect::from_center_size(canvas.center(), vec2(80.0, 40.0));
+    assert_near(node.min, zoomed.min);
+    assert_near(node.max, zoomed.max);
+}
+
+#[test]
+fn dragging_with_the_middle_button_pans_the_view() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    let (from, to) = (vec2(400.0, 300.0), vec2(430.0, 280.0));
+    let painted = harness.middle_drag(from, to);
+
+    assert_eq!(
+        filled_rects(&painted, BOX_FILL),
+        [harness.node().translate(to - from)]
+    );
+    // Only the view moved.
+    assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 150.0, 80.0)]);
+}
+
+#[test]
+fn panning_by_a_distance_moves_the_view_that_far_on_screen() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    harness.canvas.pan_by(vec2(40.0, -20.0));
+    let painted = harness.frame(vec![]);
+
+    // The view moves right and up, so the graph shows left and down.
+    let moved = vec2(-40.0, 20.0);
+    assert_eq!(
+        filled_rects(&painted, BOX_FILL),
+        [harness.node().translate(moved)]
+    );
+    assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 150.0, 80.0)]);
+
+    // In screen points, whatever the zoom.
+    harness.canvas.set_zoom(2.0);
+    let zoomed = filled_rects(&harness.frame(vec![]), BOX_FILL)[0];
+    harness.canvas.pan_by(vec2(40.0, -20.0));
+    let panned = filled_rects(&harness.frame(vec![]), BOX_FILL)[0];
+    assert_near(panned.min, zoomed.min + moved);
+    assert_near(panned.max, zoomed.max + moved);
+}
+
+#[test]
+fn the_view_follows_the_pointer_while_panning() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    let from = harness.origin + vec2(400.0, 300.0);
+    harness.frame(vec![Event::PointerMoved(from)]);
+    harness.frame(vec![middle_button(from, true)]);
+    for step in 1..=3 {
+        let moved = vec2(10.0, 5.0) * step as f32;
+        let painted = harness.frame(vec![Event::PointerMoved(from + moved)]);
+        assert_eq!(
+            filled_rects(&painted, BOX_FILL),
+            [harness.node().translate(moved)]
+        );
+        assert_eq!(harness.cursor, CursorIcon::Grabbing);
+    }
+}
+
+#[test]
+fn middle_drags_pan_whatever_they_start_on() {
+    // Inside the selected node and on its right side, where primary drags
+    // would move or resize it, and where the node tools would draw.
+    for (tool, from) in [
+        (Tool::Cursor, vec2(175.0, 90.0)),
+        (Tool::Cursor, vec2(250.0, 90.0)),
+        (Tool::Box, vec2(400.0, 300.0)),
+        (Tool::Circle, vec2(400.0, 300.0)),
+        (Tool::Line, vec2(400.0, 300.0)),
+    ] {
+        let mut harness = Harness::new(tool);
+        harness.add_selected_box();
+        let moved = vec2(30.0, 20.0);
+        let painted = harness.middle_drag(from, from + moved);
+
+        assert_eq!(
+            filled_rects(&painted, BOX_FILL),
+            [harness.node().translate(moved)],
+            "{tool:?} {from:?}"
+        );
+        assert_eq!(
+            harness.boxes(),
+            [geometry(100.0, 50.0, 150.0, 80.0)],
+            "{tool:?} {from:?}"
+        );
+        assert_eq!(harness.ellipses(), [], "{tool:?} {from:?}");
+    }
+}
+
+#[test]
+fn panning_keeps_the_label_being_typed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    harness.type_text("Stop");
+    let moved = vec2(30.0, 20.0);
+    let shapes = harness.middle_drag(vec2(400.0, 300.0), vec2(400.0, 300.0) + moved);
+
+    // Still in its editor, which moved with the node.
+    let text = painted(&shapes, "Stop").unwrap();
+    assert_near(text.center(), harness.node().center() + moved);
+    assert_eq!(harness.actions, []);
+    assert!(harness.canvas.editor.is_some());
+}
+
+#[test]
+fn nodes_drawn_zoomed_and_panned_go_where_they_were_drawn() {
+    let mut harness = Harness::new(Tool::Box);
+    harness.zoom(2.0);
+    harness.middle_drag(vec2(300.0, 300.0), vec2(400.0, 350.0));
+    harness.drag(vec2(300.0, 200.0), vec2(500.0, 360.0));
+    // The pan away, at 2 points a graph point.
+    assert_eq!(harness.boxes(), [geometry(100.0, 75.0, 100.0, 80.0)]);
+}
+
+#[test]
+fn clicks_select_the_node_shown_under_them_when_zoomed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_box(NODE.min, NODE.max);
+    harness.zoom(2.0);
+    // The node shows from (200, 100) to (500, 260).
+    harness.click(vec2(480.0, 250.0));
+    assert_eq!(harness.selected, Some(id));
+    harness.click(vec2(510.0, 250.0));
+    assert_eq!(harness.selected, None);
+}
+
+#[test]
+fn zoomed_moves_and_resizes_go_by_graph_points() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_box();
+    harness.zoom(2.0);
+    harness.drag(vec2(350.0, 180.0), vec2(390.0, 200.0));
+    assert_eq!(harness.boxes(), [geometry(120.0, 60.0, 150.0, 80.0)]);
+    // Its right side shows at 540 now, and is grabbed 4 points off it, as
+    // when not zoomed.
+    harness.drag(vec2(544.0, 220.0), vec2(574.0, 220.0));
+    assert_eq!(harness.boxes(), [geometry(120.0, 60.0, 165.0, 80.0)]);
+}
+
+#[test]
+fn zoomed_out_clicks_still_draw_nothing() {
+    let mut harness = Harness::new(Tool::Box);
+    harness.zoom(0.25);
+    // 5 points on screen is 20 graph points, but still a click.
+    harness.drag(vec2(100.0, 100.0), vec2(104.0, 103.0));
+    assert_eq!(harness.boxes(), []);
+    harness.drag(vec2(100.0, 100.0), vec2(110.0, 104.0));
+    assert_eq!(harness.boxes(), [geometry(400.0, 400.0, 40.0, 16.0)]);
+}
+
+#[test]
+fn borders_and_labels_scale_with_the_zoom() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.zoom(2.0);
+    let shapes = harness.frame(vec![]);
+
+    let node = harness.zoomed_node(2.0);
+    assert_eq!(filled_rects(&shapes, BOX_FILL), [node]);
+    let borders: Vec<f32> = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(rect) if rect.rect == node && !rect.stroke.is_empty() => {
+                Some(rect.stroke.width)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(borders, [2.0]);
+    assert_eq!(font_size(&shapes, "Start"), 24.0);
+    assert_near(painted(&shapes, "Start").unwrap().center(), node.center());
+}
+
+#[test]
+fn dashed_borders_scale_with_the_zoom() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut graphics = new_box(NODE.min, NODE.max);
+    graphics.border.line_type = yed::LineType::Dashed;
+    graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    document::add_node(&mut harness.graphml, &graphics);
+    let dashes = quads(&harness.frame(vec![]), RED);
+    harness.zoom(2.0);
+    let zoomed = quads(&harness.frame(vec![]), RED);
+
+    // As many, each twice as long and thick.
+    assert_eq!(zoomed.len(), dashes.len());
+    assert_eq!(zoomed[0].size(), dashes[0].size() * 2.0);
+}
+
+#[test]
+fn the_selection_outline_keeps_its_size_when_zoomed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_box();
+    harness.zoom(2.0);
+    let shapes = harness.frame(vec![]);
+    let outline = harness.zoomed_node(2.0).expand(SELECTION_GAP);
+    assert_eq!(stroked_rects(&shapes, SELECTION.color), [outline]);
+}
+
+#[test]
+fn the_label_editor_zooms_with_the_canvas() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.zoom(2.0);
+    harness.edit(&id);
+    let shapes = harness.frame(vec![]);
+    assert_eq!(font_size(&shapes, "Start"), 24.0);
+    let text = painted(&shapes, "Start").unwrap();
+    assert_near(text.center(), harness.zoomed_node(2.0).center());
+}
+
+#[test]
+fn labels_are_painted_however_far_the_view_zooms() {
+    // Zoomed in, the text gets too big for egui's glyphs, so it stops growing.
+    for (factor, size, painted_size) in [(zoom::MIN, 1, 0.1), (zoom::MAX, 500, MAX_TEXT_PIXELS)] {
+        let mut harness = Harness::new(Tool::Cursor);
+        let mut label = Label::new("Label");
+        label.font.size = size;
+        harness.add_labelled_box(vec![label]);
+        harness.zoom(factor);
+        let shapes = harness.frame(vec![]);
+        assert_eq!(font_size(&shapes, "Label"), painted_size, "{factor}");
+    }
+}
+
+#[test]
+fn labels_keep_their_layout_while_the_zoom_changes() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_labelled_box(vec![Label::new("Start")]);
+    let before = painted(&harness.frame(vec![]), "Start").unwrap();
+    // As the toolbar does, before the canvas shows.
+    harness.canvas.set_zoom(1.125);
+    let shapes = harness.frame(vec![]);
+
+    // Scaled, as laying text out anew each frame is slow.
+    assert_eq!(font_size(&shapes, "Start"), 12.0);
+    let text = painted(&shapes, "Start").unwrap();
+    assert!((text.width() - before.width() * 1.125).abs() < 0.01);
+    let middle = filled_rects(&shapes, BACKGROUND)[0].center();
+    let zoomed = middle + (harness.node().center() - middle) * 1.125;
+    assert_near(text.center(), zoomed);
+    // Laid out anew once the zoom stops changing.
+    assert_eq!(harness.repaint_delay, Duration::ZERO);
+    let shapes = harness.frame(vec![]);
+    assert_eq!(font_size(&shapes, "Start"), 13.5);
+}
+
+#[test]
+fn labels_are_laid_out_anew_once_the_zoom_strays_far() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.canvas.set_zoom(1.5);
+    assert_eq!(font_size(&harness.frame(vec![]), "Start"), 18.0);
 }

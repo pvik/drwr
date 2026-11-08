@@ -26,10 +26,18 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::O, Action::Open),
         (CTRL, Key::S, Action::Save),
         (CTRL, Key::Enter, Action::EditLabel),
+        (CTRL, Key::Plus, Action::ZoomIn),
+        (CTRL, Key::Equals, Action::ZoomIn),
+        (CTRL, Key::Minus, Action::ZoomOut),
+        (CTRL, Key::Num0, Action::SetZoom(1.0)),
         (CTRL, Key::ArrowLeft, Action::MoveBy(-1.0, 0.0)),
         (CTRL, Key::ArrowRight, Action::MoveBy(1.0, 0.0)),
         (CTRL, Key::ArrowUp, Action::MoveBy(0.0, -1.0)),
         (CTRL, Key::ArrowDown, Action::MoveBy(0.0, 1.0)),
+        (NONE, Key::ArrowLeft, Action::PanBy(-40.0, 0.0)),
+        (NONE, Key::ArrowRight, Action::PanBy(40.0, 0.0)),
+        (NONE, Key::ArrowUp, Action::PanBy(0.0, -40.0)),
+        (NONE, Key::ArrowDown, Action::PanBy(0.0, 40.0)),
         (NONE, Key::Escape, Action::SelectTool(Tool::Cursor)),
         (NONE, Key::B, Action::SelectTool(Tool::Box)),
         (NONE, Key::C, Action::SelectTool(Tool::Circle)),
@@ -66,16 +74,23 @@ fn every_press_in_a_frame_picks_its_action() {
 #[test]
 fn other_keys_pick_nothing() {
     let ctx = Context::default();
-    for (modifiers, k) in [
-        (NONE, Key::O),
-        (CTRL, Key::B),
-        (Modifiers::ALT, Key::F),
-        // Plain arrows are left to egui, which moves the focus with them.
-        (NONE, Key::ArrowRight),
-    ] {
+    for (modifiers, k) in [(NONE, Key::O), (CTRL, Key::B), (Modifiers::ALT, Key::F)] {
         let picked = frame(&ctx, vec![key(modifiers, k)], |ctx| pressed(ctx, false));
         assert!(picked.is_empty(), "{modifiers:?} {k:?}: {picked:?}");
     }
+}
+
+#[test]
+fn a_focused_widget_keeps_the_plain_arrows() {
+    let ctx = Context::default();
+    // As when tabbed to.
+    frame(&ctx, vec![], |ctx| {
+        ctx.memory_mut(|memory| memory.request_focus(Id::unique("button")));
+    });
+    let arrows = vec![key(NONE, Key::ArrowRight), key(CTRL, Key::ArrowRight)];
+    let picked = frame(&ctx, arrows, |ctx| pressed(ctx, false));
+    // Egui moves the focus on with plain arrows only.
+    assert_eq!(picked, [Action::MoveBy(1.0, 0.0)]);
 }
 
 #[test]
@@ -136,4 +151,6 @@ fn text_reads_like_the_shortcut() {
     assert_eq!(text(&ctx, &Action::Open).as_deref(), Some("Ctrl+O"));
     let cursor = text(&ctx, &Action::SelectTool(Tool::Cursor));
     assert_eq!(cursor.as_deref(), Some("Escape"));
+    // The first of an action's shortcuts.
+    assert_eq!(text(&ctx, &Action::ZoomIn).as_deref(), Some("Ctrl+Plus"));
 }
