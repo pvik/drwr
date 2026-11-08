@@ -7,6 +7,10 @@ use graphml::yed::{
 };
 use graphml::{AttrType, Data, Edge, Graph, GraphMl, Key, KeyDomain, Node};
 
+mod clipboard;
+
+pub use clipboard::{copy, paste};
+
 /// The corner radius yEd draws every round rectangle with.
 const YED_CORNER_RADIUS: f64 = 4.0;
 /// The node attribute other corner radii are kept in. yEd keeps it, but
@@ -147,14 +151,19 @@ pub fn add_node(doc: &mut GraphMl, graphics: &NodeGraphics) -> String {
     let id = unused_node_id(doc);
     let mut node = Node::new(id.clone());
     keys.set_node_graphics(&mut node, graphics);
+    top_graph_mut(doc).nodes.push(node);
+    id
+}
+
+/// The top-level graph, added if missing.
+fn top_graph_mut(doc: &mut GraphMl) -> &mut Graph {
     if doc.graphs.is_empty() {
         doc.graphs.push(Graph {
             id: Some("G".to_owned()),
             ..Graph::default()
         });
     }
-    doc.graphs[0].nodes.push(node);
-    id
+    &mut doc.graphs[0]
 }
 
 /// The readable graphics of the top-level graph's nodes, with their ids and,
@@ -286,11 +295,7 @@ fn ensure_radius_key(doc: &mut GraphMl) -> String {
     if let Some(id) = radius_key(doc) {
         return id.to_owned();
     }
-    // yEd numbers its keys d0, d1, …
-    let id = (0..)
-        .map(|n| format!("d{n}"))
-        .find(|id| doc.keys.iter().all(|key| key.id != *id))
-        .expect("the ids are endless");
+    let id = unused_key_id(doc);
     doc.keys.push(Key {
         id: id.clone(),
         domain: KeyDomain::Node,
@@ -299,6 +304,14 @@ fn ensure_radius_key(doc: &mut GraphMl) -> String {
         ..Key::default()
     });
     id
+}
+
+/// The first of yEd's key ids d0, d1, … that no key in the document has.
+fn unused_key_id(doc: &GraphMl) -> String {
+    (0..)
+        .map(|n| format!("d{n}"))
+        .find(|id| doc.keys.iter().all(|key| key.id != *id))
+        .expect("the ids are endless")
 }
 
 /// The top-level graph's node with id `id`.
@@ -464,13 +477,7 @@ pub fn add_edge(doc: &mut GraphMl, source: &str, target: &str, graphics: &EdgeGr
     let mut edge = Edge::new(source, target);
     edge.id = Some(unused_edge_id(doc));
     keys.set_edge_graphics(&mut edge, graphics);
-    if doc.graphs.is_empty() {
-        doc.graphs.push(Graph {
-            id: Some("G".to_owned()),
-            ..Graph::default()
-        });
-    }
-    let edges = &mut doc.graphs[0].edges;
+    let edges = &mut top_graph_mut(doc).edges;
     edges.push(edge);
     edges.len() - 1
 }

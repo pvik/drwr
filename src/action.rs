@@ -9,6 +9,16 @@ pub enum Action {
     New,
     Open,
     Save,
+    /// Copies, then removes what's selected.
+    Cut,
+    /// Puts the selected nodes, with the selected edges between them, on the
+    /// clipboard.
+    Copy,
+    /// Asks for the clipboard's text, which comes back next frame as a
+    /// [`Action::PasteText`].
+    Paste,
+    /// Pastes the nodes and edges of this GraphML; other text does nothing.
+    PasteText(String),
     SelectTool(Tool),
     /// Zooms the canvas in to the next zoom level.
     ZoomIn,

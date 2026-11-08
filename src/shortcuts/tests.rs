@@ -25,6 +25,9 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::N, Action::New),
         (CTRL, Key::O, Action::Open),
         (CTRL, Key::S, Action::Save),
+        (CTRL, Key::X, Action::Cut),
+        (CTRL, Key::C, Action::Copy),
+        (CTRL, Key::V, Action::Paste),
         (CTRL, Key::Enter, Action::EditLabel),
         (CTRL, Key::Plus, Action::ZoomIn),
         (CTRL, Key::Equals, Action::ZoomIn),
@@ -69,6 +72,29 @@ fn every_press_in_a_frame_picks_its_action() {
     let picked = frame(&ctx, events, |ctx| pressed(ctx, false));
     let right = Action::MoveBy(1.0, 0.0);
     assert_eq!(picked, [right.clone(), right, Action::MoveBy(0.0, 1.0)]);
+}
+
+#[test]
+fn clipboard_events_pick_their_actions() {
+    let ctx = Context::default();
+    let events = vec![Event::Cut, Event::Copy, Event::Paste("text".to_owned())];
+    let (picked, left) = frame(&ctx, events, |ctx| {
+        (pressed(ctx, false), ctx.input(|i| i.events.len()))
+    });
+    let paste = Action::PasteText("text".to_owned());
+    assert_eq!(picked, [Action::Cut, Action::Copy, paste]);
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn a_field_typed_in_keeps_the_clipboard_events() {
+    let ctx = Context::default();
+    let events = vec![Event::Copy, Event::Paste("text".to_owned())];
+    let (picked, left) = frame(&ctx, events, |ctx| {
+        (pressed(ctx, true), ctx.input(|i| i.events.len()))
+    });
+    assert!(picked.is_empty(), "{picked:?}");
+    assert_eq!(left, 2);
 }
 
 #[test]
@@ -149,6 +175,7 @@ fn text_reads_like_the_shortcut() {
     let ctx = Context::default();
     ctx.set_os(OperatingSystem::Nix);
     assert_eq!(text(&ctx, &Action::Open).as_deref(), Some("Ctrl+O"));
+    assert_eq!(text(&ctx, &Action::Paste).as_deref(), Some("Ctrl+V"));
     let cursor = text(&ctx, &Action::SelectTool(Tool::Cursor));
     assert_eq!(cursor.as_deref(), Some("Escape"));
     // The first of an action's shortcuts.

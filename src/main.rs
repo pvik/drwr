@@ -134,6 +134,42 @@ impl DrwrApp {
         }
     }
 
+    /// Puts the selected nodes, with the selected edges between them, on the
+    /// clipboard. Returns whether any nodes were selected.
+    fn copy(&self, ctx: &egui::Context) -> bool {
+        let Some(copied) = document::copy(&self.graphml, self.selected.items()) else {
+            return false;
+        };
+        ctx.copy_text(copied.to_xml());
+        true
+    }
+
+    /// Removes everything selected, nodes with their edges.
+    fn remove_selected(&mut self) {
+        let selected = std::mem::take(&mut self.selected);
+        document::remove_items(&mut self.graphml, selected.items());
+        // The Delete button's click would otherwise apply a label edited on
+        // the canvas to the edge moved into its place.
+        self.canvas.cancel_label_edit();
+    }
+
+    /// Performs `action`, clicked in the menu or toolbar, unless it's Cut or
+    /// Copy. Those go on `copies`, to wait for the side panel and the canvas,
+    /// which apply a label typed there when the click takes away the focus.
+    fn perform_or_wait(
+        &mut self,
+        action: Option<Action>,
+        copies: &mut Vec<Action>,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
+        match action {
+            Some(action @ (Action::Cut | Action::Copy)) => copies.push(action),
+            Some(action) => self.perform(action, ctx, frame),
+            None => {}
+        }
+    }
+
     /// Does what the user asked for, wherever they asked.
     fn perform(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
         match action {
@@ -143,6 +179,27 @@ impl DrwrApp {
             Action::Open => self.open_dialog.open(ctx, frame),
             Action::Save => {
                 // TODO: save the graph, asking for a file if it's unsaved.
+            }
+            Action::Cut => {
+                if self.copy(ctx) {
+                    self.remove_selected();
+                }
+            }
+            Action::Copy => {
+                self.copy(ctx);
+            }
+            Action::Paste => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                // For the frame the paste event comes in.
+                ctx.request_repaint();
+            }
+            Action::PasteText(text) => {
+                if let Ok(copied) = GraphMl::parse(&text) {
+                    let pasted = document::paste(&mut self.graphml, copied);
+                    if !pasted.is_empty() {
+                        self.selected = Selection::of(pasted);
+                    }
+                }
             }
             Action::SelectTool(tool) => self.tool = tool,
             Action::ZoomIn => {
@@ -168,13 +225,7 @@ impl DrwrApp {
                     document::remove_bend(&mut self.graphml, index, bend);
                     self.selected = Selection::edge(index);
                 }
-                _ if !self.selected.is_empty() => {
-                    let selected = std::mem::take(&mut self.selected);
-                    document::remove_items(&mut self.graphml, selected.items());
-                    // The Delete button's click would otherwise apply a label
-                    // edited on the canvas to the edge moved into its place.
-                    self.canvas.cancel_label_edit();
-                }
+                _ if !self.selected.is_empty() => self.remove_selected(),
                 _ => {}
             },
             Action::EditColor(property) => {
@@ -277,13 +328,13 @@ impl eframe::App for DrwrApp {
         }
         // Panels are laid out outside-in in the order they're added, so the
         // canvas (the central panel) must come last.
-        if let Some(action) = menu::show(ui, &self.open_dialog) {
-            self.perform(action, ui.ctx(), frame);
-        }
-        let zoom = self.canvas.zoom();
-        if let Some(action) = toolbar::show(ui, &self.open_dialog, self.tool, zoom) {
-            self.perform(action, ui.ctx(), frame);
-        }
+        let can_copy = self.selected.nodes().next().is_some();
+        let mut copies = Vec::new();
+        let menu = menu::show(ui, &self.open_dialog, can_copy);
+        self.perform_or_wait(menu, &mut copies, ui.ctx(), frame);
+        let (tool, zoom) = (self.tool, self.canvas.zoom());
+        let toolbar = toolbar::show(ui, &self.open_dialog, can_copy, tool, zoom);
+        self.perform_or_wait(toolbar, &mut copies, ui.ctx(), frame);
         status_bar::show(ui, self.tool, self.file.as_deref());
         for action in self
             .side_panel
@@ -294,7 +345,7 @@ impl eframe::App for DrwrApp {
         let actions = self
             .canvas
             .show(ui, self.tool, &mut self.graphml, &mut self.selected);
-        for action in actions {
+        for action in actions.into_iter().chain(copies) {
             self.perform(action, ui.ctx(), frame);
         }
 

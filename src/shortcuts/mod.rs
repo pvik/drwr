@@ -1,4 +1,4 @@
-use egui::{Context, Key, KeyboardShortcut, Modifiers, Popup};
+use egui::{Context, Event, Key, KeyboardShortcut, Modifiers, Popup};
 
 use crate::action::Action;
 use crate::tool::Tool;
@@ -11,10 +11,13 @@ const PAN_STEP: f32 = 40.0;
 
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 24] = [
+const SHORTCUTS: [(Modifiers, Key, Action); 27] = [
     (Modifiers::COMMAND, Key::N,          Action::New),
     (Modifiers::COMMAND, Key::O,          Action::Open),
     (Modifiers::COMMAND, Key::S,          Action::Save),
+    (Modifiers::COMMAND, Key::X,          Action::Cut),
+    (Modifiers::COMMAND, Key::C,          Action::Copy),
+    (Modifiers::COMMAND, Key::V,          Action::Paste),
     (Modifiers::COMMAND, Key::Enter,      Action::EditLabel),
     (Modifiers::COMMAND, Key::Plus,       Action::ZoomIn),
     // Like browsers, as + takes Shift on many keyboards.
@@ -50,7 +53,7 @@ pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
     // A widget with the focus keeps the keys that move the focus on.
     let focused = ctx.memory(|memory| memory.focused().is_some());
     ctx.input_mut(|input| {
-        SHORTCUTS
+        let mut actions: Vec<_> = SHORTCUTS
             .into_iter()
             .filter(|&(modifiers, key, _)| !(focused && moves_focus(modifiers, key)))
             .flat_map(|(modifiers, key, action)| {
@@ -58,7 +61,18 @@ pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
                 let presses = input.count_and_consume_key(modifiers, key);
                 std::iter::repeat_n(action, presses)
             })
-            .collect()
+            .collect();
+        // egui-winit sends Ctrl+X, Ctrl+C and Ctrl+V as these, not as keys.
+        input.events.retain(|event| {
+            actions.push(match event {
+                Event::Cut => Action::Cut,
+                Event::Copy => Action::Copy,
+                Event::Paste(text) => Action::PasteText(text.clone()),
+                _ => return true,
+            });
+            false
+        });
+        actions
     })
 }
 

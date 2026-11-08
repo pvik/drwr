@@ -9,6 +9,9 @@ use crate::zoom;
 const NEW_ICON: ImageSource<'static> = include_image!("../assets/icons/new.svg");
 const OPEN_ICON: ImageSource<'static> = include_image!("../assets/icons/open.svg");
 const SAVE_ICON: ImageSource<'static> = include_image!("../assets/icons/save.svg");
+const CUT_ICON: ImageSource<'static> = include_image!("../assets/icons/cut.svg");
+const COPY_ICON: ImageSource<'static> = include_image!("../assets/icons/copy.svg");
+const PASTE_ICON: ImageSource<'static> = include_image!("../assets/icons/paste.svg");
 const ZOOM_IN_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_in.svg");
 const ZOOM_OUT_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_out.svg");
 const DELETE_ICON: ImageSource<'static> = include_image!("../assets/icons/delete.svg");
@@ -30,38 +33,50 @@ const BUTTON_PADDING: Vec2 = Vec2::splat(4.0);
 /// Wide enough for "400%", so the zoom dropdown keeps its width.
 const ZOOM_BOX_WIDTH: f32 = 64.0;
 
-/// Shows the New, Open and Save buttons, a button per tool with the
-/// `selected` one highlighted, then the zoom buttons and a dropdown showing
-/// `zoom`. Returns the action clicked.
+/// Shows the New, Open and Save buttons, the Cut, Copy and Paste buttons with
+/// Cut and Copy enabled if `can_copy`, a button per tool with the `selected`
+/// one highlighted, then the zoom buttons and a dropdown showing `zoom`.
+/// Returns the action clicked.
 pub fn show(
     ui: &mut egui::Ui,
     open_dialog: &OpenDialog,
+    can_copy: bool,
     selected: Tool,
     zoom: f32,
 ) -> Option<Action> {
-    let mut clicked = None;
-    egui::Panel::top("toolbar").show(ui, |ui| {
+    let toolbar = egui::Panel::top("toolbar").show(ui, |ui| {
         button_row(ui, |ui| {
             // So the zoom dropdown is as tall as the icon buttons.
             ui.spacing_mut().interact_size.y = ICON_SIZE.y + 2.0 * BUTTON_PADDING.y;
 
-            for (action, name, icon, enabled) in [
-                (Action::New, "New", NEW_ICON, true),
-                (Action::Open, "Open", OPEN_ICON, !open_dialog.is_open()),
-                (Action::Save, "Save", SAVE_ICON, true),
-            ] {
-                if add(ui, icon_button(icon, name), enabled, name, &action) {
-                    clicked = Some(action);
-                }
-            }
+            let file = action_buttons(
+                ui,
+                [
+                    (Action::New, "New", NEW_ICON, true),
+                    (Action::Open, "Open", OPEN_ICON, !open_dialog.is_open()),
+                    (Action::Save, "Save", SAVE_ICON, true),
+                ],
+            );
 
             ui.separator();
 
+            let edit = action_buttons(
+                ui,
+                [
+                    (Action::Cut, "Cut", CUT_ICON, can_copy),
+                    (Action::Copy, "Copy", COPY_ICON, can_copy),
+                    (Action::Paste, "Paste", PASTE_ICON, true),
+                ],
+            );
+
+            ui.separator();
+
+            let mut picked = None;
             for (tool, name, icon) in TOOLS {
                 let action = Action::SelectTool(tool);
                 let button = icon_button(icon, name).selected(selected == tool);
                 if add(ui, button, true, name, &action) {
-                    clicked = Some(action);
+                    picked = Some(action);
                 }
             }
 
@@ -69,19 +84,31 @@ pub fn show(
 
             let can_zoom_in = zoom::step_in(zoom).is_some();
             let can_zoom_out = zoom::step_out(zoom).is_some();
-            for (action, name, icon, enabled) in [
-                (Action::ZoomIn, "Zoom In", ZOOM_IN_ICON, can_zoom_in),
-                (Action::ZoomOut, "Zoom Out", ZOOM_OUT_ICON, can_zoom_out),
-            ] {
-                if add(ui, icon_button(icon, name), enabled, name, &action) {
-                    clicked = Some(action);
-                }
-            }
-            if let Some(zoom) = zoom_box(ui, zoom) {
-                clicked = Some(Action::SetZoom(zoom));
-            }
-        });
+            let zoom_step = action_buttons(
+                ui,
+                [
+                    (Action::ZoomIn, "Zoom In", ZOOM_IN_ICON, can_zoom_in),
+                    (Action::ZoomOut, "Zoom Out", ZOOM_OUT_ICON, can_zoom_out),
+                ],
+            );
+            let preset = zoom_box(ui, zoom).map(Action::SetZoom);
+            file.or(edit).or(picked).or(zoom_step).or(preset)
+        })
     });
+    toolbar.inner
+}
+
+/// Adds an icon button per action, enabled or not. Returns the action clicked.
+fn action_buttons<const N: usize>(
+    ui: &mut egui::Ui,
+    buttons: [(Action, &str, ImageSource<'static>, bool); N],
+) -> Option<Action> {
+    let mut clicked = None;
+    for (action, name, icon, enabled) in buttons {
+        if add(ui, icon_button(icon, name), enabled, name, &action) {
+            clicked = Some(action);
+        }
+    }
     clicked
 }
 
