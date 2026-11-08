@@ -515,9 +515,9 @@ fn remove_edges(graph: &mut Graph, nodes: &HashSet<String>) {
     }
 }
 
-/// Moves the `end` of the top-level graph's edge at `index` to the middle of
-/// the node with id `node`.
-pub fn reconnect(doc: &mut GraphMl, index: usize, end: EdgeEnd, node: &str) {
+/// Moves the port at the `end` of the top-level graph's edge at `index` onto
+/// the node with id `node`, `port` from its middle.
+pub fn move_port(doc: &mut GraphMl, index: usize, end: EdgeEnd, node: &str, port: Point) {
     let Some(edge) = doc
         .graphs
         .first_mut()
@@ -529,13 +529,12 @@ pub fn reconnect(doc: &mut GraphMl, index: usize, end: EdgeEnd, node: &str) {
         EdgeEnd::Source => &mut edge.source,
         EdgeEnd::Target => &mut edge.target,
     };
-    if joined == node {
-        return;
+    if joined != node {
+        *joined = node.to_owned();
     }
-    *joined = node.to_owned();
     edit_edge_graphics(doc, index, |graphics| match end {
-        EdgeEnd::Source => graphics.path.source = Point::default(),
-        EdgeEnd::Target => graphics.path.target = Point::default(),
+        EdgeEnd::Source => graphics.path.source = port,
+        EdgeEnd::Target => graphics.path.target = port,
     });
 }
 

@@ -596,22 +596,28 @@ fn removing_a_node_removes_the_edges_of_it_and_of_the_nodes_in_it() {
 }
 
 #[test]
-fn reconnecting_moves_an_end_to_the_middle_of_another_node() {
+fn ports_move_within_their_node_or_onto_another() {
     let mut doc = fixture();
     edit_edge_graphics(&mut doc, 0, |graphics| {
         graphics.path.target = point(5.0, 5.0)
     });
     let before = doc.clone();
-    reconnect(&mut doc, 0, EdgeEnd::Target, "n1");
+    move_port(&mut doc, 0, EdgeEnd::Target, "n1", point(5.0, 5.0));
     assert_eq!(doc, before);
 
-    reconnect(&mut doc, 0, EdgeEnd::Target, "n3");
-    reconnect(&mut doc, 0, EdgeEnd::Source, "n2");
+    move_port(&mut doc, 0, EdgeEnd::Target, "n1", point(-10.0, 2.5));
+    assert_eq!(doc.graphs[0].edges[0].target, "n1");
+    let path = edge_graphics_of(&doc, 0).unwrap().path;
+    assert_eq!(path.target, point(-10.0, 2.5));
+
+    move_port(&mut doc, 0, EdgeEnd::Target, "n3", point(0.0, 0.0));
+    move_port(&mut doc, 0, EdgeEnd::Source, "n2", point(3.0, -4.0));
     let edge = &doc.graphs[0].edges[0];
     assert_eq!((edge.source.as_str(), edge.target.as_str()), ("n2", "n3"));
+    let path = edge_graphics_of(&doc, 0).unwrap().path;
     assert_eq!(
-        edge_graphics_of(&doc, 0).unwrap().path.target,
-        point(0.0, 0.0)
+        (path.source, path.target),
+        (point(3.0, -4.0), point(0.0, 0.0))
     );
 }
 

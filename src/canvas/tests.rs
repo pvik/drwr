@@ -2452,24 +2452,35 @@ fn clicking_an_edge_label_selects_the_edge() {
     assert_eq!(harness.selected, Some(Selection::edge(0)));
 }
 
+/// The centers of the handles painted on the selected edge's ports.
+fn port_handles(shapes: &[Shape]) -> Vec<Pos2> {
+    (shapes.iter())
+        .filter_map(|shape| match shape {
+            Shape::Circle(circle) if circle.stroke.color == SELECTION.color => Some(circle.center),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn the_selected_edge_shows_handles_on_its_ends_and_bends() {
+fn the_selected_edge_shows_handles_on_its_ports_and_bends() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
-    harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
+    let index = harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
+    document::edit_edge_graphics(&mut harness.graphml, index, |graphics| {
+        graphics.path.target = point(25.0, 20.0);
+    });
     harness.selected = Some(Selection::edge(0));
     let shapes = harness.frame(vec![]);
 
     let origin = harness.origin.to_vec2();
     let handle = Rect::from_center_size(pos2(325.0, 250.0) + origin, Vec2::splat(HANDLE_SIZE));
     assert_eq!(stroked_rects(&shapes, SELECTION.color), [handle]);
-    let ends: Vec<_> = (shapes.iter())
-        .filter_map(|shape| match shape {
-            Shape::Circle(circle) if circle.stroke.color == SELECTION.color => Some(circle.center),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(ends.len(), 2);
+    // Inside the nodes, where the line would start if it weren't cut.
+    assert_eq!(
+        port_handles(&shapes),
+        [pos2(175.0, 90.0) + origin, pos2(500.0, 110.0) + origin]
+    );
     // A halo under the line.
     assert_eq!(lines(&shapes, HALO.color).len(), 1);
 }
@@ -2545,26 +2556,103 @@ fn escape_cancels_the_drag_of_a_bend() {
 }
 
 #[test]
-fn dragging_an_end_onto_another_node_moves_the_edge_there() {
+fn dragging_a_port_moves_it_within_its_node() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[]);
+    harness.selected = Some(Selection::edge(0));
+    // Grabbed off its middle, it keeps its distance from the pointer.
+    harness.drag(vec2(477.0, 92.0), vec2(502.0, 112.0));
+
+    let edges = harness.edges();
+    assert_eq!((&edges[0].0, &edges[0].1), (&node, &other));
+    let path = &edges[0].2.path;
+    assert_eq!(
+        (path.source, path.target),
+        (point(0.0, 0.0), point(25.0, 20.0))
+    );
+    assert_eq!(harness.selected, Some(Selection::edge(0)));
+}
+
+#[test]
+fn ports_snap_to_the_middle_of_their_node() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    let index = harness.add_edge(&node, &other, &[]);
+    document::edit_edge_graphics(&mut harness.graphml, index, |graphics| {
+        graphics.path.target = point(25.0, 20.0);
+    });
+    harness.selected = Some(Selection::edge(0));
+    harness.drag(vec2(500.0, 110.0), vec2(481.0, 94.0));
+    assert_eq!(harness.edges()[0].2.path.target, point(6.0, 4.0));
+    harness.drag(vec2(481.0, 94.0), vec2(478.0, 93.0));
+    assert_eq!(harness.edges()[0].2.path.target, point(0.0, 0.0));
+}
+
+#[test]
+fn dragging_a_port_onto_another_node_moves_the_edge_there() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     let third = harness.add_box(THIRD.min, THIRD.max);
-    let index = harness.add_edge(&node, &other, &[]);
-    document::edit_edge_graphics(&mut harness.graphml, index, |graphics| {
-        graphics.path.target = point(10.0, 0.0);
-    });
+    harness.add_edge(&node, &other, &[]);
     harness.selected = Some(Selection::edge(0));
-    // Off the nodes, the end goes back, and on its node it stays as it was.
-    harness.drag(vec2(400.0, 90.0), vec2(325.0, 200.0));
-    harness.drag(vec2(400.0, 90.0), vec2(500.0, 100.0));
+    // Off the nodes, the port goes back.
+    harness.drag(vec2(475.0, 90.0), vec2(325.0, 200.0));
     assert_eq!(harness.edges()[0].1, other);
-    assert_eq!(harness.edges()[0].2.path.target, point(10.0, 0.0));
+    assert_eq!(harness.edges()[0].2.path.target, point(0.0, 0.0));
 
-    harness.drag(vec2(400.0, 90.0), vec2(475.0, 300.0));
+    harness.drag(vec2(475.0, 90.0), vec2(500.0, 300.0));
     let edges = harness.edges();
     assert_eq!((&edges[0].0, &edges[0].1), (&node, &third));
-    // To the node's middle.
-    assert_eq!(edges[0].2.path.target, point(0.0, 0.0));
+    // Where it was let go, from the node's middle.
+    assert_eq!(edges[0].2.path.target, point(25.0, 10.0));
+}
+
+#[test]
+fn ports_go_onto_the_other_end_s_node_only_through_a_bend() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[]);
+    harness.selected = Some(Selection::edge(0));
+    harness.drag(vec2(475.0, 90.0), vec2(200.0, 100.0));
+    assert_eq!(harness.edges()[0].1, other);
+
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
+    harness.selected = Some(Selection::edge(0));
+    harness.drag(vec2(475.0, 90.0), vec2(200.0, 100.0));
+    let edges = harness.edges();
+    assert_eq!((&edges[0].0, &edges[0].1), (&node, &node));
+    assert_eq!(edges[0].2.path.target, point(25.0, 10.0));
+}
+
+#[test]
+fn the_edge_follows_its_port_while_it_is_dragged() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_box(THIRD.min, THIRD.max);
+    harness.add_edge(&node, &other, &[]);
+    harness.selected = Some(Selection::edge(0));
+    let origin = harness.origin.to_vec2();
+    let shapes = harness.drag_and_hold(vec2(475.0, 90.0), vec2(475.0, 110.0));
+
+    // Aimed at the port, cut at the sides of the nodes.
+    assert_path_near(
+        &lines(&shapes, Color32::BLACK)[0],
+        &[pos2(250.0, 95.0) + origin, pos2(400.0, 105.0) + origin],
+    );
+    assert_eq!(port_handles(&shapes)[1], pos2(475.0, 110.0) + origin);
+    // The node it would go onto is outlined.
+    let outlined = |shapes: &[Shape]| stroked_rects(shapes, SELECTION.color);
+    let onto = |node: Rect| node.translate(origin).expand(SELECTION_GAP);
+    assert_eq!(outlined(&shapes), [onto(OTHER)]);
+    let shapes = harness.frame(vec![Event::PointerMoved(pos2(475.0, 300.0) + origin)]);
+    assert_eq!(outlined(&shapes), [onto(THIRD)]);
+    let shapes = harness.frame(vec![Event::PointerMoved(pos2(325.0, 200.0) + origin)]);
+    assert_eq!(outlined(&shapes), []);
+    assert_eq!(port_handles(&shapes)[1], pos2(325.0, 200.0) + origin);
+    assert_eq!(harness.edges()[0].2.path, yed::Path::default());
 }
 
 #[test]

@@ -169,7 +169,8 @@ enum EdgePart {
     Bend(usize),
     /// Its line, which adds a bend at this index where the drag ends.
     Line(usize),
-    /// An end, by its handle, which moves it to another node.
+    /// An end, by the handle on its port, which moves the port within its
+    /// node or onto another.
     End(EdgeEnd),
     /// The label at this index.
     Label(usize),
@@ -382,11 +383,23 @@ impl Canvas {
             }
             if let Some(look) = &drawn_edge {
                 paint_edge(&painter, shown, text_zoom, look, false, None);
-                // The node the edge would end on.
-                if let Anchor::Node(node) = look.target {
-                    let target = shown.node_rect(node).expand(SELECTION_GAP);
-                    painter.rect_stroke(target, 0.0, SELECTION, StrokeKind::Outside);
-                }
+            }
+            // The node the edge being drawn, or the port being dragged, would
+            // end on.
+            let ending = match (&drawn_edge, self.edge_drag) {
+                (Some(look), _) => Some(look.target),
+                (
+                    None,
+                    Some(EdgeDrag {
+                        part: EdgePart::End(end),
+                        ..
+                    }),
+                ) => dragged_edge.as_ref().map(|look| look.anchor(end)),
+                _ => None,
+            };
+            if let Some(Anchor::Node(node)) = ending {
+                let rect = shown.node_rect(node).expand(SELECTION_GAP);
+                painter.rect_stroke(rect, 0.0, SELECTION, StrokeKind::Outside);
             }
             if let Some(graphics) = drawing {
                 // New boxes have square corners.
@@ -730,6 +743,7 @@ impl Canvas {
         };
         let look = EdgeLook::of(edge);
         let path = shown.path(&look);
+        let route = shown.unclipped(&look);
         let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
         // The part of the edge, other than a handle, at `pos` on screen.
         let owner = Owner::Edge(shown.route(&look));
@@ -747,7 +761,6 @@ impl Canvas {
             }
             let near = edge::nearest_segment(&path, pos).is_some_and(|(_, d)| d <= GRAB);
             // The bend goes on the segment of the whole route nearest `pos`.
-            let route = shown.unclipped(&look);
             near.then(|| edge::nearest_segment(&route, pos))
                 .flatten()
                 .map(|(segment, _)| EdgePart::Line(segment))
@@ -775,15 +788,15 @@ impl Canvas {
                 )
             });
         let ends = [
-            (EdgeEnd::Source, path[0]),
-            (EdgeEnd::Target, path[path.len() - 1]),
+            (EdgeEnd::Source, route[0]),
+            (EdgeEnd::Target, route[route.len() - 1]),
         ];
         let ends = ends.map(|(end, at)| {
             let rect = Rect::from_center_size(at, Vec2::splat(2.0 * GRAB));
-            let response = ui.interact(rect, Id::unique(("end_handle", end)), Sense::drag());
+            let response = ui.interact(rect, Id::unique(("port_handle", end)), Sense::drag());
             (
                 Some(EdgePart::End(end)),
-                response.on_hover_cursor(CursorIcon::Crosshair),
+                response.on_hover_cursor(CursorIcon::Move),
             )
         });
         let parts: Vec<_> = std::iter::once((None, canvas))
@@ -862,16 +875,41 @@ impl Canvas {
                 document::keep_labels(look.graphics.to_mut(), &old, &new);
             }
             EdgePart::End(end) => {
-                let (port, anchor) = match end {
-                    EdgeEnd::Source => (&mut path.source, &mut look.source),
-                    EdgeEnd::Target => (&mut path.target, &mut look.target),
+                let bends = !path.points.is_empty();
+                let (port, anchor, node, other) = match end {
+                    EdgeEnd::Source => {
+                        (&mut path.source, &mut look.source, edge.source, edge.target)
+                    }
+                    EdgeEnd::Target => {
+                        (&mut path.target, &mut look.target, edge.target, edge.source)
+                    }
                 };
-                let to = shown
-                    .node_at(pointer)
-                    .map_or(Anchor::Point(to), Anchor::Node);
-                // Back on its node, it stays as it was.
-                if to != *anchor {
-                    (*port, *anchor) = (yed::Point::default(), to);
+                let center = shown.center(node);
+                let moved = yed::Point {
+                    x: center.x + port.x + f64::from(delta.x),
+                    y: center.y + port.y + f64::from(delta.y),
+                };
+                let at = pos2(moved.x as f32, moved.y as f32);
+                // Like a new edge, it loops back to its other node only through
+                // a bend.
+                let onto = shown
+                    .node_at(shown.to_screen * at)
+                    .filter(|&onto| onto == node || onto != other || bends);
+                match onto {
+                    Some(onto) => {
+                        let center = shown.center(onto);
+                        let mut offset = yed::Point {
+                            x: moved.x - center.x,
+                            y: moved.y - center.y,
+                        };
+                        // Near the middle it snaps there, where new edges' ports are.
+                        let zoom = f64::from(shown.to_screen.scaling);
+                        if offset.x.hypot(offset.y) * zoom <= f64::from(GRAB) {
+                            offset = yed::Point::default();
+                        }
+                        (*port, *anchor) = (offset, Anchor::Node(onto));
+                    }
+                    None => *anchor = Anchor::Point(at),
                 }
             }
             EdgePart::Label(index) => {
@@ -1069,12 +1107,15 @@ fn commit_edge(
             }
         }
         EdgePart::End(end) => {
-            let anchor = match end {
-                EdgeEnd::Source => moved.source,
-                EdgeEnd::Target => moved.target,
+            let path = &moved.graphics.path;
+            let port = match end {
+                EdgeEnd::Source => path.source,
+                EdgeEnd::Target => path.target,
             };
-            if let Anchor::Node(node) = anchor {
-                document::reconnect(graphml, edge.index, end, &shown.scene.nodes[node].id);
+            // Off the nodes, it goes back.
+            if let Anchor::Node(node) = moved.anchor(end) {
+                let id = &shown.scene.nodes[node].id;
+                document::move_port(graphml, edge.index, end, id, port);
             }
         }
     }
@@ -1146,6 +1187,13 @@ impl<'a> EdgeLook<'a> {
             target: self.target,
         }
     }
+
+    fn anchor(&self, end: EdgeEnd) -> Anchor {
+        match end {
+            EdgeEnd::Source => self.source,
+            EdgeEnd::Target => self.target,
+        }
+    }
 }
 
 impl Shown<'_> {
@@ -1160,6 +1208,15 @@ impl Shown<'_> {
     /// Where the bounds of the node at index `node` are on screen.
     fn node_rect(&self, node: usize) -> Rect {
         egui_rect(self.geometry(node), self.to_screen)
+    }
+
+    /// The middle of the node at index `node`, in graph coordinates.
+    fn center(&self, node: usize) -> yed::Point {
+        let node = self.geometry(node);
+        yed::Point {
+            x: node.x + node.width / 2.0,
+            y: node.y + node.height / 2.0,
+        }
     }
 
     /// Whether `pos` on screen is inside the node at index `node`, or its
@@ -1185,10 +1242,8 @@ impl Shown<'_> {
     fn unclipped(&self, look: &EdgeLook) -> Vec<Pos2> {
         let port = |anchor: Anchor, offset: yed::Point| match anchor {
             Anchor::Node(node) => {
-                let node = self.geometry(node);
-                let x = node.x + node.width / 2.0 + offset.x;
-                let y = node.y + node.height / 2.0 + offset.y;
-                pos2(x as f32, y as f32)
+                let center = self.center(node);
+                pos2((center.x + offset.x) as f32, (center.y + offset.y) as f32)
             }
             Anchor::Point(point) => point,
         };
@@ -1275,14 +1330,14 @@ fn paint_edge(
     }
 }
 
-/// Paints the handles on the ends and bends of the selected edge, as `look`
+/// Paints the handles on the ports and bends of the selected edge, as `look`
 /// has it, filling the one on the bend at index `bend`.
 fn paint_handles(painter: &Painter, shown: Shown, look: &EdgeLook, bend: Option<usize>) {
-    let path = shown.path(look);
+    let route = shown.unclipped(look);
     let outline = Stroke::new(1.0, SELECTION.color);
-    for end in [path[0], path[path.len() - 1]] {
+    for port in [route[0], route[route.len() - 1]] {
         painter.add(CircleShape {
-            center: end,
+            center: port,
             radius: HANDLE_SIZE / 2.0,
             fill: Color32::WHITE,
             stroke: outline,
