@@ -1,4 +1,5 @@
 use super::codec::{get_or, qualified, set};
+use super::edge_placement::SmartEdge;
 use super::{Point, Rect};
 use crate::{
     Error,
@@ -93,12 +94,14 @@ impl LabelPosition {
     }
 }
 
-/// How yEd places a node label: by its model and its position in it.
+/// How yEd places a label: by its model and its position in it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Placement {
-    /// A position in a model with fixed ones.
+    /// A position in a node label model with fixed ones.
     Fixed(Model, LabelPosition),
     Smart(Smart),
+    /// By the Smart model for edge labels.
+    Edge(SmartEdge),
     /// Any other placement, such as a free one, kept as written.
     Other,
 }
@@ -132,6 +135,9 @@ impl Placement {
     pub(crate) const NEW: Placement = Placement::Fixed(Model::Internal, LabelPosition::Center);
 
     pub(crate) fn read(label: &Element) -> Result<Self, Error> {
+        if label.local_name() == "EdgeLabel" {
+            return Ok(SmartEdge::read(label)?.map_or(Placement::Other, Placement::Edge));
+        }
         let name = label.attr("modelName");
         if name == Some("custom") {
             return Ok(Smart::read(label)?.map_or(Placement::Other, Placement::Smart));
@@ -159,6 +165,7 @@ impl Placement {
                 label.attributes.remove("modelPosition");
                 smart.write(label);
             }
+            Placement::Edge(edge) => edge.write(label),
             Placement::Other => {}
         }
     }
@@ -169,7 +176,7 @@ impl Placement {
             Placement::Smart(smart) => LabelPosition::ALL
                 .into_iter()
                 .find(|&position| smart.at(position) == *smart),
-            Placement::Other => None,
+            Placement::Edge(_) | Placement::Other => None,
         }
     }
 
@@ -179,6 +186,7 @@ impl Placement {
         match self {
             Placement::Fixed(model, _) if model.has(position) => Placement::Fixed(model, position),
             Placement::Smart(smart) => Placement::Smart(smart.at(position)),
+            Placement::Edge(_) => self,
             _ => Placement::Smart(Smart::default().at(position)),
         }
     }
@@ -190,7 +198,7 @@ impl Placement {
             // The fixed models' default distance is the Smart model's.
             Placement::Fixed(_, position) => Smart::default().at(position),
             Placement::Smart(smart) => smart,
-            Placement::Other => return None,
+            Placement::Edge(_) | Placement::Other => return None,
         };
         let x = node.width * (0.5 + smart.node_ratio.x) + smart.offset.x
             - width * (0.5 + smart.label_ratio.x);
@@ -332,7 +340,7 @@ impl Smart {
 
 /// The element `inner` inside `label`'s child `outer`. If `outer` holds no
 /// such element, it's replaced by one that does, after the other children.
-fn inner_mut<'a>(label: &'a mut Element, outer: &str, inner: &str) -> &'a mut Element {
+pub(crate) fn inner_mut<'a>(label: &'a mut Element, outer: &str, inner: &str) -> &'a mut Element {
     if label.child(outer).and_then(|o| o.child(inner)).is_none() {
         let element =
             Element::new(qualified(label, outer)).with_child(Element::new(qualified(label, inner)));

@@ -81,6 +81,16 @@ impl Codec for u32 {
     }
 }
 
+impl Codec for i32 {
+    fn decode(text: &str) -> Option<Self> {
+        text.trim().parse().ok()
+    }
+
+    fn encode(&self) -> String {
+        self.to_string()
+    }
+}
+
 impl Codec for bool {
     fn decode(text: &str) -> Option<Self> {
         match text.trim() {

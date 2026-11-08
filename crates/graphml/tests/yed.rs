@@ -3,8 +3,8 @@ use graphml::{
     xml::Element,
     yed::{
         Alignment, Arrow, Arrows, Color, EdgeGraphics, EdgeKind, Fill, Font, FontStyle, Keys,
-        Label, LabelPosition, LineType, NAMESPACE, NodeGraphics, NodeKind, Point, Rect, ShapeType,
-        Stroke, new_document,
+        Label, LabelPosition, LineType, NAMESPACE, NodeGraphics, NodeKind, Path, Point, Rect,
+        Route, ShapeType, Stroke, new_document,
     },
 };
 
@@ -299,7 +299,7 @@ fn reads_where_node_labels_are() {
         assert_eq!(label.position(), Some(position), "{id}");
     }
     assert_eq!(Label::new("New").position(), Some(LabelPosition::Center));
-    // Edge labels' placements aren't read.
+    // Edge labels have no node positions.
     let e0 = edge_graphics(&mut doc, &keys, "e0");
     assert_eq!(e0.labels[0].position(), None);
 }
@@ -459,6 +459,230 @@ fn labels_dragged_elsewhere_are_placed_but_have_no_position() {
     assert_eq!((placed.x, placed.y), (48.0, 15.0));
 }
 
+fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn point(x: f64, y: f64) -> Point {
+    Point { x, y }
+}
+
+/// A route from the right side of a 40×20 node at the origin to the left
+/// side of one at x 200: from (40, 10) to (200, 10).
+fn straight_route() -> Route {
+    Route::new(
+        &Path::default(),
+        rect(0.0, 0.0, 40.0, 20.0),
+        rect(200.0, 0.0, 40.0, 20.0),
+    )
+}
+
+/// An edge label 20×10 in yEd's Smart model with `parameter`.
+fn smart_label(parameter: &[(&str, &str)]) -> Label {
+    let parameter = parameter.iter().fold(
+        Element::new("y:SmartEdgeLabelModelParameter"),
+        |element, &(name, value)| element.with_attr(name, value),
+    );
+    let label = Element::new("y:EdgeLabel")
+        .with_attr("modelName", "custom")
+        .with_attr("width", "20.0")
+        .with_attr("height", "10.0")
+        .with_child(Element::new("y:LabelModel").with_child(Element::new("y:SmartEdgeLabelModel")))
+        .with_child(Element::new("y:ModelParameter").with_child(parameter));
+    let edge = Element::new("y:PolyLineEdge").with_child(label);
+    EdgeGraphics::from_element(&edge).unwrap().labels.remove(0)
+}
+
+#[test]
+fn routes_run_between_the_bounds_of_their_nodes() {
+    assert_eq!(
+        straight_route().points,
+        [point(40.0, 10.0), point(200.0, 10.0)]
+    );
+
+    let (source, target) = (rect(0.0, 0.0, 40.0, 20.0), rect(200.0, 90.0, 40.0, 20.0));
+    let path = Path {
+        source: point(10.0, 0.0),
+        target: Point::default(),
+        // The first bend is inside the source, so the route leaves it later.
+        points: vec![point(35.0, 5.0), point(35.0, 100.0)],
+    };
+    assert_eq!(
+        Route::new(&path, source, target).points,
+        [point(35.0, 20.0), point(35.0, 100.0), point(200.0, 100.0)]
+    );
+
+    // A target inside its source leaves no route in between.
+    let inside = rect(10.0, 5.0, 20.0, 10.0);
+    assert_eq!(
+        Route::new(&Path::default(), source, inside).points,
+        [point(20.0, 10.0), point(20.0, 10.0)]
+    );
+}
+
+#[test]
+fn edge_labels_are_placed_by_yeds_smart_model() {
+    let route = straight_route();
+    for (parameter, x, y) in [
+        // Between the nodes, keeping 5 points from each.
+        (&[("position", "center"), ("ratio", "0.5")][..], 110.0, 5.0),
+        (&[("position", "center"), ("ratio", "0.0")], 45.0, 5.0),
+        (&[("position", "center"), ("ratio", "1.0")], 175.0, 5.0),
+        // Ratios outside 0..=1 are points before or after those.
+        (&[("position", "center"), ("ratio", "-10.0")], 35.0, 5.0),
+        (&[("position", "center"), ("ratio", "12.0")], 187.0, 5.0),
+        // Labels clear of the nodes needn't keep away from them.
+        (
+            &[("position", "left"), ("distance", "30.0"), ("ratio", "0.0")],
+            30.0,
+            -25.0,
+        ),
+        (
+            &[
+                ("position", "right"),
+                ("distance", "5.0"),
+                ("distanceToCenter", "false"),
+                ("ratio", "1.0"),
+            ],
+            175.0,
+            15.0,
+        ),
+    ] {
+        let label = smart_label(parameter);
+        let placed = label.placed_on(&route, 20.0, 10.0);
+        assert_eq!(placed, Some(rect(x, y, 20.0, 10.0)), "{parameter:?}");
+    }
+
+    // Negative segments count from the target.
+    let bent = Route::new(
+        &Path {
+            points: vec![point(20.0, 100.0)],
+            ..Path::default()
+        },
+        rect(0.0, 0.0, 40.0, 20.0),
+        rect(200.0, 90.0, 40.0, 20.0),
+    );
+    let label = smart_label(&[("position", "center"), ("ratio", "0.5"), ("segment", "-1")]);
+    assert_eq!(
+        label.placed_on(&bent, 20.0, 10.0),
+        Some(rect(92.5, 95.0, 20.0, 10.0))
+    );
+    // Turned labels and other models aren't placed.
+    let turned = smart_label(&[("angle", "1.0")]);
+    assert_eq!(turned.placed_on(&route, 20.0, 10.0), None);
+    let (mut doc, keys) = fixture();
+    let n1 = node_graphics(&mut doc, &keys, "n1");
+    assert_eq!(n1.labels[0].placed_on(&route, 20.0, 10.0), None);
+}
+
+#[test]
+fn edge_labels_go_where_they_are_put() {
+    let route = straight_route();
+    let mut label = Label::new_on_edge("Label");
+    assert_eq!(
+        label.placed_on(&route, 20.0, 10.0),
+        Some(rect(110.0, 5.0, 20.0, 10.0))
+    );
+    for center in [
+        point(120.0, 10.0),
+        point(60.0, -30.0),
+        point(150.0, 40.0),
+        point(10.0, 10.0),
+        point(230.0, 50.0),
+    ] {
+        label.place_on(&route, center, 20.0, 10.0);
+        let placed = label.placed_on(&route, 20.0, 10.0).unwrap();
+        let moved = point(placed.x + 10.0, placed.y + 5.0);
+        assert!(
+            (moved.x - center.x).abs() < 1e-9 && (moved.y - center.y).abs() < 1e-9,
+            "{center:?} went to {moved:?}"
+        );
+        // Relative to where the route starts.
+        assert_eq!(
+            label.bounds,
+            rect(center.x - 50.0, center.y - 15.0, 20.0, 10.0)
+        );
+    }
+    // Labels put nearly on their edge go on it.
+    label.place_on(&route, point(80.0, 10.4), 20.0, 10.0);
+    let placed = label.placed_on(&route, 20.0, 10.0).unwrap();
+    assert_eq!((placed.x, placed.y), (70.0, 5.0));
+}
+
+#[test]
+fn moving_an_edge_label_changes_only_its_bounds_and_parameter() {
+    let (mut doc, keys) = fixture();
+    let n0 = node_graphics(&mut doc, &keys, "n0").geometry;
+    let n1 = node_graphics(&mut doc, &keys, "n1").geometry;
+    let mut e0 = edge_graphics(&mut doc, &keys, "e0");
+    let route = Route::new(&e0.path, n0, n1);
+    let Rect { width, height, .. } = e0.labels[0].bounds;
+    // Left of the middle of the segment between the bends, along y 20.
+    e0.labels[0].place_on(&route, point(292.5, 0.0), width, height);
+    keys.set_edge_graphics(edge(&mut doc, "e0"), &e0);
+
+    let changed = changed_lines(YED, &doc.to_xml());
+    let [(before, after)] = &changed[..] else {
+        panic!("expected one line to change: {changed:?}");
+    };
+    let expected = before
+        .replace(
+            r#"x="22.5""#,
+            &format!(r#"x="{:?}""#, 275.0 - route.points[0].x),
+        )
+        .replace(
+            r#"y="-25.0""#,
+            &format!(r#"y="{:?}""#, -8.984375 - route.points[0].y),
+        )
+        .replace(r#"position="right""#, r#"position="left""#)
+        .replace(
+            r#"distance="30.0" distanceToCenter"#,
+            r#"distance="20.0" distanceToCenter"#,
+        )
+        .replace(r#"segment="0""#, r#"segment="1""#);
+    assert_eq!(*after, expected);
+}
+
+#[test]
+fn removing_a_bend_keeps_labels_on_their_segments() {
+    let (source, target) = (rect(0.0, 0.0, 40.0, 20.0), rect(200.0, 90.0, 40.0, 20.0));
+    let route = |bends: Vec<Point>| {
+        let path = Path {
+            points: bends,
+            ..Path::default()
+        };
+        Route::new(&path, source, target)
+    };
+    let three = route(vec![point(100.0, 10.0), point(100.0, 100.0)]);
+    let two = route(vec![point(100.0, 100.0)]);
+    // Whether the center of `label` is on the segment at `index` of `route`.
+    let on = |route: &Route, index: usize, label: &Label| {
+        let placed = label.placed_on(route, 20.0, 10.0).unwrap();
+        let center = point(placed.x + 10.0, placed.y + 5.0);
+        let (from, to) = (route.points[index], route.points[index + 1]);
+        let (dx, dy) = (to.x - from.x, to.y - from.y);
+        let across = ((center.x - from.x) * dy - (center.y - from.y) * dx) / dx.hypot(dy);
+        let along = ((center.x - from.x) * dx + (center.y - from.y) * dy) / dx.hypot(dy);
+        across.abs() < 1e-9 && (0.0..=dx.hypot(dy)).contains(&along)
+    };
+    for (segment, before, after) in [("0", 0, 0), ("1", 1, 0), ("2", 2, 1), ("-1", 2, 1)] {
+        let parameter = [
+            ("segment", segment),
+            ("position", "center"),
+            ("ratio", "0.5"),
+        ];
+        let mut label = smart_label(&parameter);
+        assert!(on(&three, before, &label), "{segment}");
+        label.remove_bend(0, 3);
+        assert!(on(&two, after, &label), "{segment}");
+    }
+}
+
 #[test]
 fn group_nodes_edit_the_realizer_in_use() {
     let (mut doc, keys) = fixture();
@@ -573,6 +797,42 @@ fn new_graphics_look_like_yeds() {
 </graphml>
 "##;
     assert_eq!(doc.to_xml(), expected);
+}
+
+#[test]
+fn new_edge_labels_look_like_yeds() {
+    let mut doc = new_document();
+    let keys = Keys::ensure(&mut doc);
+    let mut edge = Edge::new("n0", "n1");
+    let mut graphics = EdgeGraphics::new(EdgeKind::PolyLine);
+    graphics.labels.push(Label::new_on_edge("Label"));
+    keys.set_edge_graphics(&mut edge, &graphics);
+    doc.graphs[0].edges.push(edge);
+
+    let text = doc.to_xml();
+    let start = text.find("          <y:EdgeLabel").unwrap();
+    let end = text.find("          <y:BendStyle").unwrap();
+    assert_eq!(
+        &text[start..end],
+        r##"          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="0.0" horizontalTextPosition="center" iconTextGap="4" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" verticalTextPosition="bottom" visible="true" width="0.0" x="0.0" y="0.0">Label<y:LabelModel>
+              <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartEdgeLabelModelParameter angle="0.0" distance="30.0" distanceToCenter="true" position="center" ratio="0.5" segment="0"/>
+            </y:ModelParameter>
+            <y:PreferredPlacementDescriptor angle="0.0" angleOffsetOnRightSide="0" angleReference="absolute" angleRotationOnRightSide="co" distance="-1.0" frozen="true" placement="anywhere" side="anywhere" sideReference="relative_to_edge_flow"/>
+          </y:EdgeLabel>
+"##
+    );
+    let doc = GraphMl::parse(&text).unwrap();
+    let read = keys
+        .edge_graphics(&doc.graphs[0].edges[0])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        read.labels[0].placed_on(&straight_route(), 20.0, 10.0),
+        Some(rect(110.0, 5.0, 20.0, 10.0))
+    );
 }
 
 #[test]

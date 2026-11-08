@@ -1,6 +1,7 @@
 use super::codec::{Part, get_color, get_or, keyword_enum, set, set_color};
+use super::edge_placement::SmartEdge;
 use super::placement::{LabelPosition, Placement};
-use super::{Color, Rect};
+use super::{Color, Point, Rect, Route};
 use crate::{
     Error,
     xml::{Element, XmlNode},
@@ -19,9 +20,9 @@ pub struct Label {
     /// How the lines of multi-line text line up.
     pub alignment: Alignment,
     /// The bounds yEd last computed, relative to the node's top-left corner
-    /// for node labels.
+    /// for node labels, and to the start of the edge's [`Route`] for edge
+    /// labels.
     pub bounds: Rect,
-    /// Read and written for node labels only.
     placement: Placement,
     source: Option<Element>,
 }
@@ -76,6 +77,14 @@ impl Label {
         }
     }
 
+    /// A new edge label, which yEd puts on the middle of its edge.
+    pub fn new_on_edge(text: impl Into<String>) -> Self {
+        Label {
+            placement: Placement::Edge(SmartEdge::default()),
+            ..Label::new(text)
+        }
+    }
+
     pub(crate) fn from_element(element: &Element) -> Result<Self, Error> {
         Ok(Label {
             text: element.text(),
@@ -118,7 +127,8 @@ impl Label {
         set_color(&mut element, "hasLineColor", "lineColor", self.border);
         set(&mut element, "alignment", &self.alignment);
         self.bounds.write(&mut element);
-        if crate::xml::local_name(name) == "NodeLabel" {
+        let edge = crate::xml::local_name(name) == "EdgeLabel";
+        if edge == matches!(self.placement, Placement::Edge(_)) {
             self.placement.write(&mut element);
         }
         element
@@ -143,6 +153,44 @@ impl Label {
     pub fn placed(&self, node: &Rect, width: f64, height: f64) -> Option<Rect> {
         self.placement.place(node, width, height)
     }
+
+    /// The bounds yEd gives this edge label if it's `width` by `height`, on
+    /// an edge along `route`. `None` if it's placed by a label model this
+    /// library doesn't read, or turned.
+    pub fn placed_on(&self, route: &Route, width: f64, height: f64) -> Option<Rect> {
+        match &self.placement {
+            Placement::Edge(edge) => edge.place(route, width, height),
+            _ => None,
+        }
+    }
+
+    /// Puts this edge label, `width` by `height`, with its center at
+    /// `center` beside an edge along `route`, in yEd's Smart model, and moves
+    /// its bounds there.
+    pub fn place_on(&mut self, route: &Route, center: Point, width: f64, height: f64) {
+        let old = match self.placement {
+            Placement::Edge(edge) => Some(edge),
+            _ => None,
+        };
+        let edge = SmartEdge::through(route, center, width, height, old);
+        self.placement = Placement::Edge(edge);
+        let start = route.points[0];
+        self.bounds = Rect {
+            x: center.x - width / 2.0 - start.x,
+            y: center.y - height / 2.0 - start.y,
+            width,
+            height,
+        };
+    }
+
+    /// Keeps this edge label on its segment, or on the one it's merged into,
+    /// once the bend at index `bend` is removed from an edge whose route had
+    /// `segments` segments.
+    pub fn remove_bend(&mut self, bend: usize, segments: usize) {
+        if let Placement::Edge(edge) = self.placement {
+            self.placement = Placement::Edge(edge.without_bend(bend, segments));
+        }
+    }
 }
 
 /// A new label with the attributes yEd writes that `Label` doesn't model.
@@ -152,12 +200,58 @@ fn template(name: &str) -> Element {
         .with_attr("iconTextGap", "4")
         .with_attr("verticalTextPosition", "bottom");
     if crate::xml::local_name(name) == "EdgeLabel" {
+        let child = |local_name: &str, attributes: &[(&str, &str)]| {
+            let name = match crate::xml::prefix(name) {
+                Some(prefix) => format!("{prefix}:{local_name}"),
+                None => local_name.to_owned(),
+            };
+            let element = Element::new(name);
+            attributes.iter().fold(element, |element, &(name, value)| {
+                element.with_attr(name, value)
+            })
+        };
+        let model = child(
+            "SmartEdgeLabelModel",
+            &[
+                ("autoRotationEnabled", "false"),
+                ("defaultAngle", "0.0"),
+                ("defaultDistance", "10.0"),
+            ],
+        );
+        let parameter = child(
+            "SmartEdgeLabelModelParameter",
+            &[
+                ("angle", "0.0"),
+                ("distance", "30.0"),
+                ("distanceToCenter", "true"),
+                ("position", "center"),
+                ("ratio", "0.5"),
+                ("segment", "0"),
+            ],
+        );
+        let descriptor = child(
+            "PreferredPlacementDescriptor",
+            &[
+                ("angle", "0.0"),
+                ("angleOffsetOnRightSide", "0"),
+                ("angleReference", "absolute"),
+                ("angleRotationOnRightSide", "co"),
+                ("distance", "-1.0"),
+                ("frozen", "true"),
+                ("placement", "anywhere"),
+                ("side", "anywhere"),
+                ("sideReference", "relative_to_edge_flow"),
+            ],
+        );
         element
+            .with_attr("configuration", "AutoFlippingLabel")
             .with_attr("distance", "2.0")
-            .with_attr("modelName", "centered")
-            .with_attr("modelPosition", "center")
+            .with_attr("modelName", "custom")
             .with_attr("preferredPlacement", "anywhere")
             .with_attr("ratio", "0.5")
+            .with_child(child("LabelModel", &[]).with_child(model))
+            .with_child(child("ModelParameter", &[]).with_child(parameter))
+            .with_child(descriptor)
     } else {
         element.with_attr("autoSizePolicy", "content")
     }

@@ -5,15 +5,18 @@
 
 mod codec;
 mod edge;
+mod edge_placement;
 mod label;
 mod node;
 mod placement;
+mod route;
 mod style;
 
 pub use edge::{Arrow, Arrows, EdgeGraphics, EdgeKind, Path};
 pub use label::{Alignment, Font, FontStyle, Label};
 pub use node::{Fill, NodeGraphics, NodeKind, ShapeType};
 pub use placement::LabelPosition;
+pub use route::Route;
 pub use style::{Color, LineType, Point, Rect, Stroke};
 
 use crate::{
