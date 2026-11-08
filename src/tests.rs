@@ -10,7 +10,7 @@ use crate::testing::{self, CTRL, button};
 impl DrwrApp {
     /// The id of the selected node.
     fn selected_node(&self) -> Option<&str> {
-        match &self.selected.as_ref()?.item {
+        match self.selected.single()? {
             Item::Node(id) => Some(id),
             Item::Edge(_) => None,
         }
@@ -179,6 +179,13 @@ impl Harness {
 
     fn press(&mut self, modifiers: Modifiers, key: Key) {
         self.run(vec![testing::key(modifiers, key)]);
+    }
+
+    /// Does `act` with Ctrl held.
+    fn with_ctrl(&mut self, act: impl FnOnce(&mut Self)) {
+        self.run(vec![Event::ModifiersChanged(CTRL)]);
+        act(self);
+        self.run(vec![Event::ModifiersChanged(Modifiers::NONE)]);
     }
 
     /// Runs a frame, returning the widget labelled `label`, e.g. a toolbar
@@ -353,7 +360,7 @@ fn failed_open_keeps_the_graph() {
     app.open(Path::new(FIXTURE)).unwrap();
     let before = app.graphml.clone();
 
-    app.selected = Some(Selection::node("n0".to_owned()));
+    app.selected = Selection::node("n0".to_owned());
 
     let not_graphml = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/box.svg");
     let err = app.open(Path::new(not_graphml)).unwrap_err();
@@ -371,11 +378,11 @@ fn failed_open_keeps_the_graph() {
 #[test]
 fn open_clears_the_selection() {
     let mut app = DrwrApp {
-        selected: Some(Selection::node("n0")),
+        selected: Selection::node("n0"),
         ..DrwrApp::default()
     };
     app.open(Path::new(FIXTURE)).unwrap();
-    assert_eq!(app.selected, None);
+    assert!(app.selected.is_empty());
 }
 
 #[test]
@@ -961,7 +968,7 @@ fn clicking_away_from_the_side_panel_applies_the_label() {
     // The same click selects nothing, but the label still goes to the box.
     harness.click(vec2(400.0, 300.0));
     assert_eq!(harness.label(&id), "Stop");
-    assert_eq!(harness.app.selected, None);
+    assert!(harness.app.selected.is_empty());
 }
 
 #[test]
@@ -969,17 +976,7 @@ fn a_node_without_labels_gets_one_from_the_side_panel() {
     let mut harness = Harness::new();
     let id = document::add_node(&mut harness.app.graphml, &new_box());
     harness.click(vec2(150.0, 60.0));
-    let shapes = harness.run(vec![]);
-    let side_panel = canvas(&shapes).max.x;
-    let field = shapes
-        .iter()
-        .find_map(|shape| match shape {
-            Shape::Text(text) if text.pos.x > side_panel && text.galley.text().is_empty() => {
-                Some(text.pos + text.galley.rect.center().to_vec2())
-            }
-            _ => None,
-        })
-        .expect("the side panel has an empty label field");
+    let field = harness.empty_field();
     harness.click_at(field);
     harness.type_text("Hello");
     harness.press(Modifiers::NONE, Key::Enter);
@@ -1206,7 +1203,7 @@ fn open_drops_the_labels_being_edited() {
     harness.run(vec![]);
     assert_eq!(harness.label("n0"), "Order\nservice");
 
-    harness.app.selected = Some(Selection::node("n0".to_owned()));
+    harness.app.selected = Selection::node("n0".to_owned());
     harness.press(CTRL, Key::Enter);
     harness.run(vec![]);
     harness.type_text("Stop");
@@ -1223,7 +1220,11 @@ fn open_closes_the_label_dialog() {
         item: Item::Node("n0".to_owned()),
         index: 0,
     };
-    app.label_dialog.open(label, "Label", "Start");
+    let edit = LabelEdit {
+        labels: vec![label],
+        text: "Start".to_owned(),
+    };
+    app.label_dialog.open(edit, "Label", "Start");
     app.open(Path::new(FIXTURE)).unwrap();
     assert!(!app.label_dialog.is_open());
 }
@@ -1595,7 +1596,7 @@ fn middle_dragging_the_canvas_pans_it() {
 
     // The box at (100, 50) shows 50 left and 20 up from there, unmoved.
     harness.click_at(origin + vec2(60.0, 40.0));
-    assert_eq!(harness.app.selected, Some(Selection::node(id.clone())));
+    assert_eq!(harness.app.selected, Selection::node(id.clone()));
     assert_eq!(harness.graphics(&id).geometry, new_box().geometry);
 }
 
@@ -1609,7 +1610,7 @@ fn arrows_pan_the_canvas() {
 
     // The box at (100, 50) shows 80 left and 40 up from there, unmoved.
     harness.click(vec2(60.0, 40.0));
-    assert_eq!(harness.app.selected, Some(Selection::node(id.clone())));
+    assert_eq!(harness.app.selected, Selection::node(id.clone()));
     assert_eq!(harness.graphics(&id).geometry, new_box().geometry);
 }
 
@@ -1624,7 +1625,7 @@ fn arrows_pan_while_ctrl_arrows_move_the_selected_node() {
 
     // The box spans 99 to 249 across, and shows 40 right of there.
     harness.click(vec2(270.0, 60.0));
-    assert_eq!(harness.app.selected, Some(Selection::node(id)));
+    assert_eq!(harness.app.selected, Selection::node(id));
 }
 
 #[test]
@@ -1641,7 +1642,7 @@ fn arrows_in_a_label_field_move_the_text_cursor() {
 
     // Unpanned, the box at (100, 50) is still there.
     harness.click(vec2(110.0, 60.0));
-    assert_eq!(harness.app.selected, Some(Selection::node(id)));
+    assert_eq!(harness.app.selected, Selection::node(id));
 }
 
 /// Opens the yEd fixture: its edge e0 runs from n0 to n1 through two bends
@@ -1667,17 +1668,44 @@ impl Harness {
 
     /// Runs a frame, returning the check boxes in the side panel, top down.
     fn checkboxes(&mut self) -> Vec<egui::accesskit::Node> {
+        self.widgets_of(egui::accesskit::Role::CheckBox)
+    }
+
+    /// Runs a frame, returning the widgets in `role`, top down.
+    fn widgets_of(&mut self, role: egui::accesskit::Role) -> Vec<egui::accesskit::Node> {
         self.ctx.enable_accesskit();
         let mut output = self
             .ctx
             .run_ui(RawInput::default(), |ui| self.app.ui(ui, &mut self.frame));
         let widgets = testing::widgets(&mut output);
         output.drop_without_applying_deltas();
-        let mut boxes: Vec<_> = (widgets.into_iter())
-            .filter(|widget| widget.role() == egui::accesskit::Role::CheckBox)
+        let mut found: Vec<_> = (widgets.into_iter())
+            .filter(|widget| widget.role() == role)
             .collect();
-        boxes.sort_by(|a, b| testing::center(a).y.total_cmp(&testing::center(b).y));
-        boxes
+        found.sort_by(|a, b| testing::center(a).y.total_cmp(&testing::center(b).y));
+        found
+    }
+
+    /// Clicks the `index`th number field in the side panel, top down.
+    fn click_number_field(&mut self, index: usize) {
+        let fields = self.widgets_of(egui::accesskit::Role::SpinButton);
+        self.click_at(testing::center(&fields[index]));
+    }
+
+    /// Runs a frame, returning the middle of the first label's field in the
+    /// side panel, which must be empty.
+    fn empty_field(&mut self) -> Pos2 {
+        // Beside the field.
+        let dots = self.text_at("...");
+        let shapes = self.run(vec![]);
+        let field = shapes.iter().find_map(|shape| match shape {
+            Shape::Text(text) if text.galley.text().is_empty() => {
+                let at = text.pos + text.galley.rect.center().to_vec2();
+                (at.x < dots.x && (at.y - dots.y).abs() < 8.0).then_some(at)
+            }
+            _ => None,
+        });
+        field.expect("the first label's field is empty")
     }
 }
 
@@ -1688,17 +1716,14 @@ fn bend(x: f64, y: f64) -> yed::Point {
 #[test]
 fn delete_removes_the_selected_bend_then_its_edge() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection {
-        item: Item::Edge(0),
-        bend: Some(1),
-    });
+    harness.app.selected = Selection::bend_of(0, 1);
     harness.press(Modifiers::NONE, Key::Delete);
     assert_eq!(harness.edge(0).path.points, [bend(260.0, 20.0)]);
-    assert_eq!(harness.app.selected, Some(Selection::edge(0)));
+    assert_eq!(harness.app.selected, Selection::edge(0));
 
     harness.press(Modifiers::NONE, Key::Delete);
     assert_eq!(harness.edge_ids(), ["e1"]);
-    assert_eq!(harness.app.selected, None);
+    assert!(harness.app.selected.is_empty());
 }
 
 #[test]
@@ -1708,29 +1733,29 @@ fn delete_removes_the_selected_node_with_its_edges() {
     harness.press(Modifiers::NONE, Key::Delete);
     assert_eq!(harness.app.graphml, unchanged);
 
-    harness.app.selected = Some(Selection::node("n1"));
+    harness.app.selected = Selection::node("n1");
     harness.press(Modifiers::NONE, Key::Delete);
     assert_eq!(document::graphics_of(&harness.app.graphml, "n1"), None);
     assert_eq!(harness.edge_ids(), ["e1"]);
-    assert_eq!(harness.app.selected, None);
+    assert!(harness.app.selected.is_empty());
 }
 
 #[test]
 fn the_side_panels_delete_button_deletes_the_selected_node() {
     let mut harness = fixture_harness();
     assert!(harness.widget("Delete").is_disabled());
-    harness.app.selected = Some(Selection::node("n1"));
+    harness.app.selected = Selection::node("n1");
     harness.click_widget("Delete");
     assert_eq!(document::graphics_of(&harness.app.graphml, "n1"), None);
     assert_eq!(harness.edge_ids(), ["e1"]);
-    assert_eq!(harness.app.selected, None);
+    assert!(harness.app.selected.is_empty());
     assert!(harness.widget("Delete").is_disabled());
 }
 
 #[test]
 fn the_delete_button_keeps_the_label_typed_off_the_next_edge() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection::edge(0));
+    harness.app.selected = Selection::edge(0);
     // The side panel is painted first, so this is its field, not the canvas.
     harness.click_text("reads");
     harness.press(CTRL, Key::A);
@@ -1743,7 +1768,7 @@ fn the_delete_button_keeps_the_label_typed_off_the_next_edge() {
 #[test]
 fn the_delete_button_keeps_the_label_edited_on_the_canvas_off_the_next_edge() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection::edge(0));
+    harness.app.selected = Selection::edge(0);
     harness.press(CTRL, Key::Enter);
     harness.run(vec![]);
     harness.type_text("writes");
@@ -1755,7 +1780,7 @@ fn the_delete_button_keeps_the_label_edited_on_the_canvas_off_the_next_edge() {
 #[test]
 fn the_side_panel_shows_the_selected_edge() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection::edge(0));
+    harness.app.selected = Selection::edge(0);
     let side_panel = harness.side_panel();
     for (name, value) in [
         ("Id", "e0"),
@@ -1783,7 +1808,7 @@ fn the_side_panel_shows_the_selected_edge() {
 #[test]
 fn the_arrow_check_boxes_set_the_arrowheads() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection::edge(0));
+    harness.app.selected = Selection::edge(0);
     let [start, end] = harness.checkboxes().try_into().unwrap();
     harness.click_at(testing::center(&start));
     harness.click_at(testing::center(&end));
@@ -1797,7 +1822,7 @@ fn the_arrow_check_boxes_set_the_arrowheads() {
 #[test]
 fn line_properties_apply_to_the_selected_edge() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection::edge(0));
+    harness.app.selected = Selection::edge(0);
     let red = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
     for action in [
         Action::SetLineWidth(2.5),
@@ -1816,16 +1841,13 @@ fn line_properties_apply_to_the_selected_edge() {
 #[test]
 fn ctrl_arrows_move_the_selected_bend_or_else_all_bends() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection::edge(0));
+    harness.app.selected = Selection::edge(0);
     harness.press(CTRL, Key::ArrowRight);
     assert_eq!(
         harness.edge(0).path.points,
         [bend(261.0, 20.0), bend(326.0, 20.0)]
     );
-    harness.app.selected = Some(Selection {
-        item: Item::Edge(0),
-        bend: Some(1),
-    });
+    harness.app.selected = Selection::bend_of(0, 1);
     harness.press(CTRL, Key::ArrowDown);
     assert_eq!(
         harness.edge(0).path.points,
@@ -1836,7 +1858,7 @@ fn ctrl_arrows_move_the_selected_bend_or_else_all_bends() {
 #[test]
 fn ctrl_enter_edits_the_selected_edges_label_on_the_canvas() {
     let mut harness = fixture_harness();
-    harness.app.selected = Some(Selection::edge(0));
+    harness.app.selected = Selection::edge(0);
     harness.press(CTRL, Key::Enter);
     harness.run(vec![]);
     // The label's text is selected, so typing replaces it.
@@ -1858,7 +1880,7 @@ fn the_line_tool_joins_nodes_and_its_edges_get_labels_beside_them() {
 
     let edge = &harness.app.graphml.graphs[0].edges[0];
     assert_eq!((&edge.source, &edge.target), (&left, &right));
-    assert_eq!(harness.app.selected, Some(Selection::edge(0)));
+    assert_eq!(harness.app.selected, Selection::edge(0));
     harness.press(CTRL, Key::Enter);
     harness.run(vec![]);
     harness.type_text("joins");
@@ -1882,4 +1904,353 @@ fn route_of(harness: &Harness, index: usize) -> yed::Route {
         bounds(&edge.source),
         bounds(&edge.target),
     )
+}
+
+/// [`new_box`] moved right by `dx` and down by `dy`.
+fn box_at(dx: f64, dy: f64) -> NodeGraphics {
+    let mut graphics = new_box();
+    graphics.geometry.x += dx;
+    graphics.geometry.y += dy;
+    graphics
+}
+
+/// An edge with yEd's look through `bends`.
+fn edge_through(bends: &[(f64, f64)]) -> yed::EdgeGraphics {
+    let mut graphics = yed::EdgeGraphics::new(yed::EdgeKind::PolyLine);
+    graphics.path.points = bends.iter().map(|&(x, y)| bend(x, y)).collect();
+    graphics
+}
+
+#[test]
+fn the_side_panel_shows_what_the_selected_nodes_share() {
+    let mut harness = Harness::new();
+    let mut left = labelled_box("Same");
+    left.border.width = 2.0;
+    let mut right = labelled_box("Same");
+    right.geometry.x = 400.0;
+    right.geometry.width = 100.0;
+    right.fill.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    right.labels.push(yed::Label::new("Second"));
+    let graphml = &mut harness.app.graphml;
+    document::add_node(graphml, &left);
+    document::add_node(graphml, &right);
+    harness.click(vec2(150.0, 60.0));
+    harness.with_ctrl(|harness| harness.click(vec2(450.0, 60.0)));
+    // Blank where they differ: X, Width, Fill and Border width.
+    #[rustfmt::skip]
+    assert_eq!(harness.side_panel(), [
+        "Selected",      "2 nodes",
+        "Shape",         "rectangle",
+        "X",             "",
+        "Y",             "50",
+        "Width",         "",
+        "Height",        "80",
+        // A blank swatch.
+        "Fill",
+        "Gradient",      "None",
+        "Border",        "#000000",
+        "Border width",  "",
+        "Border style",  "Solid",
+        "Corner radius", "0",
+        // Only the label both have.
+        "Label",         "...", "Same",
+        "Font",          "Dialog",
+        "Font style",    "Plain",
+        "Font size",     "12",
+        "Text color",    "#000000",
+        "Position",      "Center",
+    ]);
+}
+
+#[test]
+fn nodes_and_lines_selected_together_share_line_rows() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &labelled_box("Same"));
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    let mut line = edge_through(&[]);
+    line.line.width = 2.0;
+    line.labels = vec![yed::Label::new_on_edge("Same")];
+    document::add_edge(graphml, &left, &right, &line);
+    harness.app.selected = Selection::of([Item::Node(left), Item::Edge(0)]);
+    // No fill or label position, which only nodes have.
+    #[rustfmt::skip]
+    assert_eq!(harness.side_panel(), [
+        "Selected",   "1 node, 1 line",
+        "Line",       "#000000",
+        "Line width", "",
+        "Line style", "Solid",
+        "Label",      "...", "Same",
+        "Font",       "Dialog",
+        "Font style", "Plain",
+        "Font size",  "12",
+        "Text color", "#000000",
+    ]);
+}
+
+#[test]
+fn the_side_panel_shows_what_the_selected_lines_share() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &new_box());
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    let below = document::add_node(graphml, &box_at(0.0, 300.0));
+    let mut line = edge_through(&[]);
+    line.arrows.target = yed::Arrow::None;
+    document::add_edge(graphml, &left, &right, &edge_through(&[]));
+    document::add_edge(graphml, &left, &below, &line);
+    harness.app.selected = Selection::of([Item::Edge(0), Item::Edge(1)]);
+    #[rustfmt::skip]
+    assert_eq!(harness.side_panel(), [
+        "Selected",    "2 lines",
+        "Source",      "n0",
+        "Target",      "",
+        "Line",        "#000000",
+        "Line width",  "1",
+        "Line style",  "Solid",
+        // The check boxes' empty texts.
+        "Start arrow", "",
+        "End arrow",   "",
+        "Label",       "...", "",
+    ]);
+    // Neither checked nor not where they differ, and then set on both.
+    let [start, end] = harness.checkboxes().try_into().unwrap();
+    assert_eq!(start.toggled(), Some(egui::accesskit::Toggled::False));
+    assert_eq!(end.toggled(), Some(egui::accesskit::Toggled::Mixed));
+    harness.click_at(testing::center(&end));
+    for index in [0, 1] {
+        assert_eq!(harness.edge(index).arrows.target, yed::Arrow::Standard);
+    }
+}
+
+#[test]
+fn values_set_in_the_side_panel_go_to_every_selected_item() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let mut thick = new_box();
+    thick.border.width = 2.0;
+    let thick = document::add_node(graphml, &thick);
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    let line = document::add_edge(graphml, &thick, &right, &edge_through(&[]));
+    let items = [
+        Item::Node(thick.clone()),
+        Item::Node(right.clone()),
+        Item::Edge(line),
+    ];
+    harness.app.selected = Selection::of(items);
+    // Blank, as the widths differ. The first's width still goes to the rest.
+    harness.click_number_field(0);
+    harness.type_text("2");
+    harness.press(Modifiers::NONE, Key::Enter);
+    let widths = [
+        harness.graphics(&thick).border.width,
+        harness.graphics(&right).border.width,
+        harness.edge(line).line.width,
+    ];
+    assert_eq!(widths, [2.0; 3]);
+    assert_eq!(rows(&harness.side_panel(), "Line width"), ["2"]);
+
+    harness.click_text("Solid");
+    harness.click_text("Dotted");
+    let dotted = yed::LineType::Dotted;
+    assert_eq!(harness.graphics(&thick).border.line_type, dotted);
+    assert_eq!(harness.graphics(&right).border.line_type, dotted);
+    assert_eq!(harness.edge(line).line.line_type, dotted);
+}
+
+#[test]
+fn colors_picked_in_the_side_panel_go_to_every_selected_node() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &new_box());
+    let mut right = box_at(300.0, 0.0);
+    right.fill.color = Some(yed::Color::rgb(0x00, 0x00, 0xFF));
+    let right = document::add_node(graphml, &right);
+    harness.app.selected = Selection::of([Item::Node(left.clone()), Item::Node(right.clone())]);
+    // The blank swatch beside "Fill".
+    let fill = harness.text_at("Fill");
+    let buttons = harness.widgets_of(egui::accesskit::Role::Button);
+    let swatch = (buttons.iter().map(testing::center))
+        .find(|at| at.x > fill.x && (at.y - fill.y).abs() < 8.0)
+        .expect("a button is beside Fill");
+    harness.click_at(swatch);
+    assert!(harness.painted("Fill color"));
+    harness.run(vec![Event::Text("#FF0000".to_owned())]);
+    harness.press(Modifiers::NONE, Key::Enter);
+    let red = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    assert_eq!(harness.graphics(&left).fill.color, red);
+    assert_eq!(harness.graphics(&right).fill.color, red);
+}
+
+#[test]
+fn a_blank_label_field_sets_every_label_only_once_typed_in() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &labelled_box("Left"));
+    let mut right = labelled_box("Right");
+    right.geometry.x = 400.0;
+    let right = document::add_node(graphml, &right);
+    harness.app.selected = Selection::of([Item::Node(left.clone()), Item::Node(right.clone())]);
+    let labels = |harness: &Harness| [harness.label(&left), harness.label(&right)];
+
+    let field = harness.empty_field();
+    harness.click_at(field);
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(labels(&harness), ["Left", "Right"]);
+    harness.click_at(field);
+    harness.type_text("Both");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(labels(&harness), ["Both", "Both"]);
+}
+
+#[test]
+fn the_label_dialog_sets_every_selected_label_once_changed() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &labelled_box("Left"));
+    // Without a label, which it gets.
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    harness.app.selected = Selection::of([Item::Node(left.clone()), Item::Node(right.clone())]);
+    let labels = |harness: &Harness| [harness.label(&left), harness.label(&right)];
+
+    harness.click_text("...");
+    harness.run(vec![]);
+    harness.click_text("OK");
+    assert!(!harness.app.label_dialog.is_open());
+    assert_eq!(labels(&harness), ["Left", ""]);
+    harness.click_text("...");
+    harness.run(vec![]);
+    harness.type_text("Both");
+    harness.click_text("OK");
+    assert_eq!(labels(&harness), ["Both", "Both"]);
+}
+
+#[test]
+fn font_changes_go_to_every_selected_label_keeping_the_rest_of_each_font() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &labelled_box("Left"));
+    let mut right = labelled_box("Right");
+    right.geometry.x = 400.0;
+    right.labels[0].font.family = "Monospaced".to_owned();
+    right.labels[0].font.size = 20;
+    let right = document::add_node(graphml, &right);
+    harness.app.selected = Selection::of([Item::Node(left.clone()), Item::Node(right.clone())]);
+    let side_panel = harness.side_panel();
+    assert_eq!(rows(&side_panel, "Font"), [""]);
+    assert_eq!(rows(&side_panel, "Font size"), [""]);
+
+    // After the border width and corner radius.
+    harness.click_number_field(2);
+    harness.type_text("16");
+    harness.press(Modifiers::NONE, Key::Enter);
+    let fonts = [&left, &right].map(|id| harness.graphics(id).labels[0].font.clone());
+    let fonts = fonts.map(|font| (font.family, font.size));
+    assert_eq!(
+        fonts,
+        [("Dialog".to_owned(), 16), ("Monospaced".to_owned(), 16)]
+    );
+}
+
+#[test]
+fn only_boxes_together_have_a_corner_radius() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let mut ellipse = box_at(300.0, 0.0);
+    ellipse.kind = NodeKind::Shape(ShapeType::Ellipse);
+    let items = [new_box(), box_at(0.0, 200.0), ellipse]
+        .map(|graphics| Item::Node(document::add_node(graphml, &graphics)));
+    harness.app.selected = Selection::of(items[..2].iter().cloned());
+    assert_eq!(rows(&harness.side_panel(), "Corner radius"), ["0"]);
+    harness.app.selected = Selection::of(items);
+    assert_eq!(rows(&harness.side_panel(), "Corner radius"), [""; 0]);
+}
+
+#[test]
+fn ctrl_arrows_move_everything_selected() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &new_box());
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    let below = document::add_node(graphml, &box_at(0.0, 300.0));
+    // Between the two moved nodes, and to the one left behind.
+    document::add_edge(graphml, &left, &right, &edge_through(&[(325.0, 20.0)]));
+    document::add_edge(graphml, &right, &below, &edge_through(&[(600.0, 200.0)]));
+    harness.app.selected = Selection::of([Item::Node(left.clone()), Item::Node(right.clone())]);
+    harness.press(CTRL, Key::ArrowRight);
+
+    let x = |id: &str| harness.graphics(id).geometry.x;
+    assert_eq!([x(&left), x(&right), x(&below)], [101.0, 401.0, 100.0]);
+    assert_eq!(harness.edge(0).path.points, [bend(326.0, 20.0)]);
+    assert_eq!(harness.edge(1).path.points, [bend(600.0, 200.0)]);
+}
+
+#[test]
+fn delete_removes_everything_selected() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let left = document::add_node(graphml, &new_box());
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    let below = document::add_node(graphml, &box_at(0.0, 300.0));
+    for (source, target) in [(&left, &right), (&right, &below), (&left, &below)] {
+        document::add_edge(graphml, source, target, &edge_through(&[]));
+    }
+    harness.app.selected = Selection::of([Item::Edge(0), Item::Edge(2)]);
+    harness.press(Modifiers::NONE, Key::Delete);
+    assert_eq!(harness.edge_ids(), ["e1"]);
+    assert!(harness.app.selected.is_empty());
+
+    harness.app.selected = Selection::of([Item::Edge(0), Item::Node(left.clone())]);
+    harness.click_widget("Delete");
+    assert_eq!(harness.edge_ids(), [""; 0]);
+    assert_eq!(document::graphics_of(&harness.app.graphml, &left), None);
+    assert!(document::graphics_of(&harness.app.graphml, &right).is_some());
+}
+
+#[test]
+fn font_rows_show_for_the_labels_that_some_selected_items_have() {
+    let mut harness = Harness::new();
+    let graphml = &mut harness.app.graphml;
+    let mut labelled = labelled_box("Box");
+    labelled.labels[0].font.size = 20;
+    let red = yed::Color::rgb(0xFF, 0x00, 0x00);
+    labelled.labels[0].text_color = red;
+    let left = document::add_node(graphml, &labelled);
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    document::add_edge(graphml, &left, &right, &edge_through(&[]));
+    // The line, which has no label, first.
+    let items = [
+        Item::Edge(0),
+        Item::Node(left.clone()),
+        Item::Node(right.clone()),
+    ];
+    harness.app.selected = Selection::of(items);
+    #[rustfmt::skip]
+    assert_eq!(harness.side_panel(), [
+        "Selected",   "2 nodes, 1 line",
+        "Line",       "#000000",
+        "Line width", "1",
+        "Line style", "Solid",
+        // Blank, as only the box has a label, whose font shows below.
+        "Label",      "...", "",
+        "Font",       "Dialog",
+        "Font style", "Plain",
+        "Font size",  "20",
+        "Text color", "#FF0000",
+    ]);
+
+    // After the line width. The others get no labels.
+    harness.click_number_field(1);
+    harness.type_text("16");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.graphics(&left).labels[0].font.size, 16);
+    assert_eq!(harness.graphics(&right).labels, []);
+    assert_eq!(harness.edge(0).labels, []);
+    // The picker starts on the label's color, so OK keeps it.
+    harness.click_text("#FF0000");
+    assert!(harness.painted("Text color"));
+    harness.run(vec![]);
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert!(!harness.app.color_picker.is_open());
+    assert_eq!(harness.graphics(&left).labels[0].text_color, red);
 }

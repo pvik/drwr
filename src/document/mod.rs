@@ -22,7 +22,7 @@ pub enum Item {
 
 /// A label of a top-level node or edge. The index one past its last label
 /// stands for a new label.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LabelRef {
     pub item: Item,
     pub index: usize,
@@ -194,9 +194,12 @@ pub fn edit_graphics(doc: &mut GraphMl, id: &str, edit: impl FnOnce(&mut NodeGra
 /// `None` if there's no such box. Boxes are yEd's rectangles, which have
 /// square corners, and its round rectangles.
 pub fn corner_radius(doc: &GraphMl, id: &str) -> Option<f64> {
-    let node = node(doc, id)?;
-    let graphics = Keys::find(doc).node_graphics(node).ok().flatten()?;
-    box_corner_radius(&graphics, node, radius_key(doc))
+    corner_radius_of(doc, id, &graphics_of(doc, id)?)
+}
+
+/// Like [`corner_radius`], with the box's graphics, `graphics`, read already.
+pub fn corner_radius_of(doc: &GraphMl, id: &str, graphics: &NodeGraphics) -> Option<f64> {
+    box_corner_radius(graphics, node(doc, id)?, radius_key(doc))
 }
 
 /// Rounds the corners of the top-level box with id `id` to `radius`, making
@@ -481,6 +484,27 @@ pub fn remove_edge(doc: &mut GraphMl, index: usize) {
     }
 }
 
+/// Removes the top-level nodes and edges `items`, nodes with their edges.
+pub fn remove_items(doc: &mut GraphMl, items: &[Item]) {
+    let mut edges: Vec<usize> = (items.iter())
+        .filter_map(|item| match item {
+            Item::Edge(index) => Some(*index),
+            Item::Node(_) => None,
+        })
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    // Last first, as each removal moves the edges after it down.
+    for index in edges.into_iter().rev() {
+        remove_edge(doc, index);
+    }
+    for item in items {
+        if let Item::Node(id) = item {
+            remove_node(doc, id);
+        }
+    }
+}
+
 /// Removes the top-level node with id `id`, with the edges of it and of the
 /// nodes nested in it.
 pub fn remove_node(doc: &mut GraphMl, id: &str) {
@@ -594,6 +618,47 @@ pub fn move_bends(doc: &mut GraphMl, index: usize, bend: Option<usize>, dx: f64,
             }
         }
     });
+}
+
+/// Moves the top-level nodes and edges `items` right and down by these
+/// distances: nodes with their labels, edges by their bends. The bends of
+/// edges joining two of the nodes move too, so those edges keep their shape.
+pub fn move_items(doc: &mut GraphMl, items: &[Item], dx: f64, dy: f64) {
+    let edges = bends_moved_with(doc, items);
+    for item in items {
+        if let Item::Node(id) = item {
+            edit_graphics(doc, id, |graphics| {
+                graphics.geometry.x += dx;
+                graphics.geometry.y += dy;
+            });
+        }
+    }
+    for index in edges {
+        move_bends(doc, index, None, dx, dy);
+    }
+}
+
+/// The indexes of the top-level edges whose bends [`move_items`] moves with
+/// `items`: those in `items`, and those joining two nodes in them.
+pub fn bends_moved_with(doc: &GraphMl, items: &[Item]) -> HashSet<usize> {
+    let nodes: HashSet<&str> = (items.iter())
+        .filter_map(|item| match item {
+            Item::Node(id) => Some(id.as_str()),
+            Item::Edge(_) => None,
+        })
+        .collect();
+    let edges = doc
+        .graphs
+        .first()
+        .into_iter()
+        .flat_map(|graph| &graph.edges);
+    (edges.enumerate())
+        .filter(|(index, edge)| {
+            items.contains(&Item::Edge(*index))
+                || nodes.contains(edge.source.as_str()) && nodes.contains(edge.target.as_str())
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// The first of yEd's ids e0, e1, … that no edge in the document has.

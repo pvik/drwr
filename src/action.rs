@@ -1,4 +1,4 @@
-use graphml::yed::{Color, Font, LabelPosition, LineType};
+use graphml::yed::{Color, FontStyle, LabelPosition, LineType};
 
 use crate::document::{ColorProperty, EdgeEnd, LabelRef};
 use crate::tool::Tool;
@@ -18,28 +18,38 @@ pub enum Action {
     /// Moves the view right and down over the graph by these distances, in
     /// screen points.
     PanBy(f32, f32),
-    /// Moves the selected node, or the selected edge's selected bend or else
-    /// all its bends, right and down by these distances, in points.
+    /// Moves the selected bend, or else everything selected, right and down
+    /// by these distances, in points; see [`crate::document::move_items`].
     MoveBy(f64, f64),
-    /// Removes the selected bend, or else the selected edge or node, a node
-    /// with its edges.
+    /// Removes the selected bend, or else everything selected, nodes with
+    /// their edges.
     Delete,
-    /// Opens the color picker on a color of the selected node or edge.
+    /// Opens the color picker on a color of the selected nodes and edges.
     EditColor(ColorProperty),
-    /// Sets a color of the selected node or edge; `None` removes it.
+    /// Sets a color of the selected nodes and edges; `None` removes it.
     SetColor(ColorProperty, Option<Color>),
-    /// Sets the width of the selected node's border or edge's line.
+    /// Sets the width of the selected nodes' borders and edges' lines.
     SetLineWidth(f64),
-    /// Sets the line type of the selected node's border or edge's line.
+    /// Sets the line type of the selected nodes' borders and edges' lines.
     SetLineType(LineType),
-    /// Rounds the corners of the selected box to this radius.
+    /// Rounds the corners of the selected boxes to this radius.
     SetCornerRadius(f64),
-    /// Sets whether an end of the selected edge has an arrowhead.
+    /// Sets whether an end of the selected edges has an arrowhead.
     SetArrow(EdgeEnd, bool),
-    /// Edits the first label of the selected node or edge on the canvas.
+    /// Edits the first label of the selected node or edge on the canvas, if
+    /// it's the only one selected.
     EditLabel,
-    EditLabelInDialog(LabelRef),
+    /// Opens the label dialog on these labels, which all get the text typed.
+    EditLabelInDialog(Vec<LabelRef>),
     SetLabel(LabelRef, String),
-    SetFont(LabelRef, Font),
+    SetFont(LabelRef, FontPart),
     SetLabelPosition(LabelRef, LabelPosition),
+}
+
+/// A part of a label's font, which leaves the other parts as they are.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FontPart {
+    Family(String),
+    Style(FontStyle),
+    Size(u32),
 }

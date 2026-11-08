@@ -720,3 +720,48 @@ fn edges_have_labels_like_nodes() {
     set_label_position(&mut doc, &label, LabelPosition::North);
     assert_eq!(doc, before);
 }
+
+#[test]
+fn moving_items_takes_along_the_bends_of_edges_between_moved_nodes() {
+    let mut doc = GraphMl::default();
+    for _ in 0..3 {
+        add_node(&mut doc, &rectangle());
+    }
+    let mut graphics = EdgeGraphics::new(EdgeKind::PolyLine);
+    graphics.path.points = vec![point(5.0, 5.0)];
+    add_edge(&mut doc, "n0", "n1", &graphics);
+    add_edge(&mut doc, "n1", "n2", &graphics);
+    let nodes = [Item::Node("n0".to_owned()), Item::Node("n1".to_owned())];
+    assert_eq!(bends_moved_with(&doc, &nodes), HashSet::from([0]));
+
+    move_items(&mut doc, &nodes, 1.0, 2.0);
+    let corner = |doc: &GraphMl, id: &str| {
+        let geometry = graphics_of(doc, id).unwrap().geometry;
+        (geometry.x, geometry.y)
+    };
+    let bends = |doc: &GraphMl, index: usize| edge_graphics_of(doc, index).unwrap().path.points;
+    assert_eq!(corner(&doc, "n0"), (1.0, 2.0));
+    assert_eq!(corner(&doc, "n1"), (1.0, 2.0));
+    assert_eq!(corner(&doc, "n2"), (0.0, 0.0));
+    assert_eq!(bends(&doc, 0), [point(6.0, 7.0)]);
+    assert_eq!(bends(&doc, 1), [point(5.0, 5.0)]);
+    // A selected edge's bends move without its nodes.
+    move_items(&mut doc, &[Item::Edge(1)], -5.0, 0.0);
+    assert_eq!(bends(&doc, 1), [point(0.0, 5.0)]);
+    assert_eq!(corner(&doc, "n2"), (0.0, 0.0));
+}
+
+#[test]
+fn removing_items_removes_edges_by_their_indexes_and_nodes_with_theirs() {
+    let mut doc = fixture();
+    let graphics = EdgeGraphics::new(EdgeKind::PolyLine);
+    add_edge(&mut doc, "n3", "n4", &graphics);
+    assert_eq!(edge_ids(&doc), ["e0", "e1", "e2"]);
+    // Each edge once, however many times it's listed.
+    remove_items(&mut doc, &[Item::Edge(2), Item::Edge(0), Item::Edge(2)]);
+    assert_eq!(edge_ids(&doc), ["e1"]);
+    // e1 joins n2.
+    remove_items(&mut doc, &[Item::Node("n2".to_owned())]);
+    assert_eq!(edge_ids(&doc), [""; 0]);
+    assert_eq!(graphics_of(&doc, "n2"), None);
+}
