@@ -1,8 +1,11 @@
 use std::collections::HashSet;
 
 use graphml::xml::XmlNode;
-use graphml::yed::{Color, Keys, Label, LabelPosition, NodeGraphics, NodeKind, Rect, ShapeType};
-use graphml::{AttrType, Data, Graph, GraphMl, Key, KeyDomain, Node};
+use graphml::yed::{
+    Arrow, Color, EdgeGraphics, Keys, Label, LabelPosition, NodeGraphics, NodeKind, Point, Rect,
+    Route, ShapeType, Stroke,
+};
+use graphml::{AttrType, Data, Edge, Graph, GraphMl, Key, KeyDomain, Node};
 
 /// The corner radius yEd draws every round rectangle with.
 const YED_CORNER_RADIUS: f64 = 4.0;
@@ -10,21 +13,75 @@ const YED_CORNER_RADIUS: f64 = 4.0;
 /// draws its own radius.
 const CORNER_RADIUS: &str = "drwr.cornerRadius";
 
-/// A label of a top-level node. The index one past its last label stands for
-/// a new label.
+/// A node of the top-level graph, by its id, or an edge, by its index.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Item {
+    Node(String),
+    Edge(usize),
+}
+
+/// A label of a top-level node or edge. The index one past its last label
+/// stands for a new label.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LabelRef {
-    pub node: String,
+    pub item: Item,
     pub index: usize,
 }
 
-/// A color of a node's graphics.
+/// An end of an edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EdgeEnd {
+    Source,
+    Target,
+}
+
+/// The graphics of a node or an edge.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Graphics {
+    Node(NodeGraphics),
+    Edge(EdgeGraphics),
+}
+
+impl Graphics {
+    pub fn labels(&self) -> &[Label] {
+        match self {
+            Graphics::Node(graphics) => &graphics.labels,
+            Graphics::Edge(graphics) => &graphics.labels,
+        }
+    }
+
+    pub fn labels_mut(&mut self) -> &mut Vec<Label> {
+        match self {
+            Graphics::Node(graphics) => &mut graphics.labels,
+            Graphics::Edge(graphics) => &mut graphics.labels,
+        }
+    }
+
+    /// A node's border, or an edge's line.
+    pub fn stroke(&self) -> &Stroke {
+        match self {
+            Graphics::Node(graphics) => &graphics.border,
+            Graphics::Edge(graphics) => &graphics.line,
+        }
+    }
+
+    pub fn stroke_mut(&mut self) -> &mut Stroke {
+        match self {
+            Graphics::Node(graphics) => &mut graphics.border,
+            Graphics::Edge(graphics) => &mut graphics.line,
+        }
+    }
+}
+
+/// A color of a node's or an edge's graphics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorProperty {
     Fill,
     /// The color the fill fades to.
     Gradient,
     Border,
+    /// An edge's line.
+    Line,
     /// The text color of the label at this index.
     Text(usize),
 }
@@ -42,37 +99,42 @@ impl ColorProperty {
             ColorProperty::Fill => "Fill",
             ColorProperty::Gradient => "Gradient",
             ColorProperty::Border => "Border",
+            ColorProperty::Line => "Line",
             ColorProperty::Text(_) => "Text",
         }
     }
 
-    /// Whether the node can have none of this color.
+    /// Whether there can be none of this color.
     pub fn optional(self) -> bool {
         !matches!(self, ColorProperty::Text(_))
     }
 
-    /// `None` if the node has no such color.
-    pub fn get(self, graphics: &NodeGraphics) -> Option<Color> {
-        match self {
-            ColorProperty::Fill => graphics.fill.color,
-            ColorProperty::Gradient => graphics.fill.gradient,
-            ColorProperty::Border => graphics.border.color,
-            ColorProperty::Text(index) => graphics.labels.get(index).map(|label| label.text_color),
+    /// `None` if the graphics have no such color.
+    pub fn get(self, graphics: &Graphics) -> Option<Color> {
+        match (self, graphics) {
+            (ColorProperty::Fill, Graphics::Node(node)) => node.fill.color,
+            (ColorProperty::Gradient, Graphics::Node(node)) => node.fill.gradient,
+            (ColorProperty::Border | ColorProperty::Line, _) => graphics.stroke().color,
+            (ColorProperty::Text(index), _) => {
+                graphics.labels().get(index).map(|label| label.text_color)
+            }
+            (ColorProperty::Fill | ColorProperty::Gradient, Graphics::Edge(_)) => None,
         }
     }
 
     /// Sets the color, or removes it if it's `None` and [`Self::optional`].
-    pub fn set(self, graphics: &mut NodeGraphics, color: Option<Color>) {
-        let property = match self {
-            ColorProperty::Fill => &mut graphics.fill.color,
-            ColorProperty::Gradient => &mut graphics.fill.gradient,
-            ColorProperty::Border => &mut graphics.border.color,
-            ColorProperty::Text(index) => {
-                if let Some((label, color)) = graphics.labels.get_mut(index).zip(color) {
+    pub fn set(self, graphics: &mut Graphics, color: Option<Color>) {
+        let property = match (self, &mut *graphics) {
+            (ColorProperty::Fill, Graphics::Node(node)) => &mut node.fill.color,
+            (ColorProperty::Gradient, Graphics::Node(node)) => &mut node.fill.gradient,
+            (ColorProperty::Border | ColorProperty::Line, _) => &mut graphics.stroke_mut().color,
+            (ColorProperty::Text(index), _) => {
+                if let Some((label, color)) = graphics.labels_mut().get_mut(index).zip(color) {
                     label.text_color = color;
                 }
                 return;
             }
+            (ColorProperty::Fill | ColorProperty::Gradient, Graphics::Edge(_)) => return,
         };
         *property = color;
     }
@@ -246,13 +308,42 @@ fn node_mut<'a>(doc: &'a mut GraphMl, id: &str) -> Option<&'a mut Node> {
     nodes.iter_mut().find(|node| node.id == id)
 }
 
+/// The readable graphics of `item`.
+pub fn graphics(doc: &GraphMl, item: &Item) -> Option<Graphics> {
+    match item {
+        Item::Node(id) => graphics_of(doc, id).map(Graphics::Node),
+        Item::Edge(index) => edge_graphics_of(doc, *index).map(Graphics::Edge),
+    }
+}
+
+/// Edits the readable graphics of `item`.
+pub fn edit(doc: &mut GraphMl, item: &Item, edit: impl FnOnce(&mut Graphics)) {
+    match item {
+        Item::Node(id) => edit_graphics(doc, id, |node| {
+            let mut graphics = Graphics::Node(node.clone());
+            edit(&mut graphics);
+            if let Graphics::Node(edited) = graphics {
+                *node = edited;
+            }
+        }),
+        Item::Edge(index) => edit_edge_graphics(doc, *index, |edge| {
+            let mut graphics = Graphics::Edge(edge.clone());
+            edit(&mut graphics);
+            if let Graphics::Edge(edited) = graphics {
+                *edge = edited;
+            }
+        }),
+    }
+}
+
 /// A label's text: empty for a new label, `None` if there's no such label.
 pub fn label_text(doc: &GraphMl, label: &LabelRef) -> Option<String> {
-    let labels = graphics_of(doc, &label.node)?.labels;
+    let graphics = graphics(doc, &label.item)?;
+    let labels = graphics.labels();
     if label.index == labels.len() {
         return Some(String::new());
     }
-    labels.into_iter().nth(label.index).map(|label| label.text)
+    labels.get(label.index).map(|label| label.text.clone())
 }
 
 /// Sets a label's text. A new label is added with yEd's defaults, unless the
@@ -261,26 +352,34 @@ pub fn set_label(doc: &mut GraphMl, label: &LabelRef, text: &str) {
     if label_text(doc, label).is_none_or(|old| old == text) {
         return;
     }
-    edit_graphics(doc, &label.node, |graphics| {
-        match graphics.labels.get_mut(label.index) {
+    let new = match label.item {
+        Item::Node(_) => Label::new(text),
+        Item::Edge(_) => Label::new_on_edge(text),
+    };
+    edit(doc, &label.item, |graphics| {
+        let labels = graphics.labels_mut();
+        match labels.get_mut(label.index) {
             Some(existing) => existing.text = text.to_owned(),
-            None => graphics.labels.push(Label::new(text)),
+            None => labels.push(new),
         }
     });
 }
 
-/// Edits a label of a top-level node, if the node has that label.
-pub fn edit_label(doc: &mut GraphMl, label: &LabelRef, edit: impl FnOnce(&mut Label)) {
-    edit_graphics(doc, &label.node, |graphics| {
-        if let Some(label) = graphics.labels.get_mut(label.index) {
-            edit(label);
+/// Edits a label of a top-level node or edge, if it has that label.
+pub fn edit_label(doc: &mut GraphMl, label: &LabelRef, edit_label: impl FnOnce(&mut Label)) {
+    edit(doc, &label.item, |graphics| {
+        if let Some(label) = graphics.labels_mut().get_mut(label.index) {
+            edit_label(label);
         }
     });
 }
 
 /// Puts a label of a top-level node at `position`, keeping its size.
 pub fn set_label_position(doc: &mut GraphMl, label: &LabelRef, position: LabelPosition) {
-    edit_graphics(doc, &label.node, |graphics| {
+    let Item::Node(id) = &label.item else {
+        return;
+    };
+    edit_graphics(doc, id, |graphics| {
         let node = graphics.geometry;
         if let Some(label) = graphics.labels.get_mut(label.index) {
             label.set_position(position);
@@ -315,6 +414,207 @@ fn label_shift(center: f64, old: f64, new: f64) -> f64 {
     } else {
         new - old
     }
+}
+
+/// The readable graphics of the top-level graph's edges, with their indexes
+/// and the ids of the nodes they join.
+pub fn edge_graphics(doc: &GraphMl) -> impl Iterator<Item = (usize, &Edge, EdgeGraphics)> {
+    let keys = Keys::find(doc);
+    let edges = doc
+        .graphs
+        .first()
+        .into_iter()
+        .flat_map(|graph| &graph.edges);
+    edges.enumerate().filter_map(move |(index, edge)| {
+        let graphics = keys.edge_graphics(edge).ok().flatten()?;
+        Some((index, edge, graphics))
+    })
+}
+
+/// The readable graphics of the top-level graph's edge at `index`.
+pub fn edge_graphics_of(doc: &GraphMl, index: usize) -> Option<EdgeGraphics> {
+    let edge = doc.graphs.first()?.edges.get(index)?;
+    Keys::find(doc).edge_graphics(edge).ok().flatten()
+}
+
+/// Edits the readable graphics of the top-level graph's edge at `index`.
+pub fn edit_edge_graphics(doc: &mut GraphMl, index: usize, edit: impl FnOnce(&mut EdgeGraphics)) {
+    let keys = Keys::find(doc);
+    let Some(edge) = doc
+        .graphs
+        .first_mut()
+        .and_then(|graph| graph.edges.get_mut(index))
+    else {
+        return;
+    };
+    if let Ok(Some(mut graphics)) = keys.edge_graphics(edge) {
+        edit(&mut graphics);
+        keys.set_edge_graphics(edge, &graphics);
+    }
+}
+
+/// Adds an edge from the node with id `source` to the one with id `target`
+/// to the top-level graph, adding the graph and keys if missing. Returns the
+/// edge's index.
+pub fn add_edge(doc: &mut GraphMl, source: &str, target: &str, graphics: &EdgeGraphics) -> usize {
+    let keys = Keys::ensure(doc);
+    let mut edge = Edge::new(source, target);
+    edge.id = Some(unused_edge_id(doc));
+    keys.set_edge_graphics(&mut edge, graphics);
+    if doc.graphs.is_empty() {
+        doc.graphs.push(Graph {
+            id: Some("G".to_owned()),
+            ..Graph::default()
+        });
+    }
+    let edges = &mut doc.graphs[0].edges;
+    edges.push(edge);
+    edges.len() - 1
+}
+
+/// Removes the top-level graph's edge at `index`.
+pub fn remove_edge(doc: &mut GraphMl, index: usize) {
+    if let Some(graph) = doc.graphs.first_mut()
+        && index < graph.edges.len()
+    {
+        graph.edges.remove(index);
+    }
+}
+
+/// Removes the top-level node with id `id`, with the edges of it and of the
+/// nodes nested in it.
+pub fn remove_node(doc: &mut GraphMl, id: &str) {
+    let Some(graph) = doc.graphs.first_mut() else {
+        return;
+    };
+    let Some(index) = graph.nodes.iter().position(|node| node.id == id) else {
+        return;
+    };
+    let node = graph.nodes.remove(index);
+    let mut gone = HashSet::from([node.id.clone()]);
+    if let Some(nested) = &node.graph {
+        visit_nodes(nested, &mut |node| {
+            gone.insert(node.id.clone());
+        });
+    }
+    for graph in &mut doc.graphs {
+        remove_edges(graph, &gone);
+    }
+}
+
+/// Removes the edges of `graph` and of the graphs nested in it that join any
+/// of the nodes with ids in `nodes`.
+fn remove_edges(graph: &mut Graph, nodes: &HashSet<String>) {
+    graph
+        .edges
+        .retain(|edge| !nodes.contains(&edge.source) && !nodes.contains(&edge.target));
+    let nested = (graph.nodes.iter_mut().map(|node| &mut node.graph))
+        .chain(graph.edges.iter_mut().map(|edge| &mut edge.graph));
+    for graph in nested.flatten() {
+        remove_edges(graph, nodes);
+    }
+}
+
+/// Moves the `end` of the top-level graph's edge at `index` to the middle of
+/// the node with id `node`.
+pub fn reconnect(doc: &mut GraphMl, index: usize, end: EdgeEnd, node: &str) {
+    let Some(edge) = doc
+        .graphs
+        .first_mut()
+        .and_then(|graph| graph.edges.get_mut(index))
+    else {
+        return;
+    };
+    let joined = match end {
+        EdgeEnd::Source => &mut edge.source,
+        EdgeEnd::Target => &mut edge.target,
+    };
+    if joined == node {
+        return;
+    }
+    *joined = node.to_owned();
+    edit_edge_graphics(doc, index, |graphics| match end {
+        EdgeEnd::Source => graphics.path.source = Point::default(),
+        EdgeEnd::Target => graphics.path.target = Point::default(),
+    });
+}
+
+/// Sets whether the `end` of the top-level graph's edge at `index` has an
+/// arrowhead, keeping the kind it has.
+pub fn set_arrow(doc: &mut GraphMl, index: usize, end: EdgeEnd, arrow: bool) {
+    edit_edge_graphics(doc, index, |graphics| {
+        let current = match end {
+            EdgeEnd::Source => &mut graphics.arrows.source,
+            EdgeEnd::Target => &mut graphics.arrows.target,
+        };
+        if arrow != (*current != Arrow::None) {
+            *current = if arrow { Arrow::Standard } else { Arrow::None };
+        }
+    });
+}
+
+/// Puts the labels of an edge, which ran along `old`, where they were on its
+/// new route `new`.
+pub fn keep_labels(graphics: &mut EdgeGraphics, old: &Route, new: &Route) {
+    for label in &mut graphics.labels {
+        let Rect { width, height, .. } = label.bounds;
+        if let Some(placed) = label.placed_on(old, width, height) {
+            let center = Point {
+                x: placed.x + width / 2.0,
+                y: placed.y + height / 2.0,
+            };
+            label.place_on(new, center, width, height);
+        }
+    }
+}
+
+/// Removes the bend at index `bend` from the top-level graph's edge at
+/// `index`, keeping its labels on their segments.
+pub fn remove_bend(doc: &mut GraphMl, index: usize, bend: usize) {
+    edit_edge_graphics(doc, index, |graphics| {
+        let points = &mut graphics.path.points;
+        if bend < points.len() {
+            let segments = points.len() + 1;
+            points.remove(bend);
+            for label in &mut graphics.labels {
+                label.remove_bend(bend, segments);
+            }
+        }
+    });
+}
+
+/// Moves the bend at index `bend` of the top-level graph's edge at `index`,
+/// or all of its bends if `bend` is `None`, right and down by these
+/// distances.
+pub fn move_bends(doc: &mut GraphMl, index: usize, bend: Option<usize>, dx: f64, dy: f64) {
+    edit_edge_graphics(doc, index, |graphics| {
+        for (i, point) in graphics.path.points.iter_mut().enumerate() {
+            if bend.is_none_or(|bend| bend == i) {
+                point.x += dx;
+                point.y += dy;
+            }
+        }
+    });
+}
+
+/// The first of yEd's ids e0, e1, … that no edge in the document has.
+fn unused_edge_id(doc: &GraphMl) -> String {
+    fn visit<'a>(graph: &'a Graph, ids: &mut HashSet<&'a str>) {
+        ids.extend(graph.edges.iter().filter_map(|edge| edge.id.as_deref()));
+        let nested = (graph.nodes.iter().map(|node| &node.graph))
+            .chain(graph.edges.iter().map(|edge| &edge.graph));
+        for graph in nested.flatten() {
+            visit(graph, ids);
+        }
+    }
+    let mut ids = HashSet::new();
+    for graph in &doc.graphs {
+        visit(graph, &mut ids);
+    }
+    (0..)
+        .map(|n| format!("e{n}"))
+        .find(|id| !ids.contains(id.as_str()))
+        .expect("the ids are endless")
 }
 
 /// The first of yEd's ids n0, n1, … that no node in the document has.

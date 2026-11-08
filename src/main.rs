@@ -10,6 +10,7 @@ mod label_position;
 mod line_type;
 mod menu;
 mod open_dialog;
+mod selection;
 mod shortcuts;
 mod side_panel;
 mod status_bar;
@@ -27,11 +28,11 @@ use std::sync::Arc;
 use action::Action;
 use canvas::Canvas;
 use color_picker::ColorPicker;
-use document::{ColorProperty, LabelRef};
+use document::{ColorProperty, Graphics, Item, LabelRef};
 use fonts::Fonts;
 use graphml::GraphMl;
-use graphml::yed::NodeGraphics;
 use open_dialog::OpenDialog;
+use selection::Selection;
 use side_panel::SidePanel;
 use text_dialog::TextDialog;
 use tool::Tool;
@@ -81,14 +82,13 @@ struct DrwrApp {
     graphml: GraphMl,
     /// Where `graphml` is saved, as an absolute path; `None` if it isn't.
     file: Option<PathBuf>,
-    /// The id of the selected node.
-    selected: Option<String>,
+    selected: Option<Selection>,
     canvas: Canvas,
     /// The fonts labels are drawn in, which egui is given too.
     fonts: Arc<Fonts>,
     side_panel: SidePanel,
     open_dialog: OpenDialog,
-    /// Picks the colors of the selected node.
+    /// Picks the colors of the selected node or edge.
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelRef>,
     error: Option<String>,
@@ -121,10 +121,15 @@ impl DrwrApp {
         Ok(())
     }
 
-    /// Edits the graphics of the selected node, if there is one.
-    fn edit_selected(&mut self, edit: impl FnOnce(&mut NodeGraphics)) {
-        if let Some(id) = &self.selected {
-            document::edit_graphics(&mut self.graphml, id, edit);
+    /// The selected node or edge.
+    fn selected_item(&self) -> Option<&Item> {
+        self.selected.as_ref().map(|selection| &selection.item)
+    }
+
+    /// Edits the graphics of the selected node or edge, if there is one.
+    fn edit_selected(&mut self, edit: impl FnOnce(&mut Graphics)) {
+        if let Some(selection) = &self.selected {
+            document::edit(&mut self.graphml, &selection.item, edit);
         }
     }
 
@@ -151,13 +156,41 @@ impl DrwrApp {
             }
             Action::SetZoom(zoom) => self.canvas.set_zoom(zoom),
             Action::PanBy(dx, dy) => self.canvas.pan_by(egui::vec2(dx, dy)),
-            Action::MoveBy(dx, dy) => self.edit_selected(|graphics| {
-                graphics.geometry.x += dx;
-                graphics.geometry.y += dy;
-            }),
+            Action::MoveBy(dx, dy) => match &self.selected {
+                Some(Selection {
+                    item: Item::Node(id),
+                    ..
+                }) => document::edit_graphics(&mut self.graphml, id, |graphics| {
+                    graphics.geometry.x += dx;
+                    graphics.geometry.y += dy;
+                }),
+                Some(Selection {
+                    item: Item::Edge(index),
+                    bend,
+                }) => document::move_bends(&mut self.graphml, *index, *bend, dx, dy),
+                None => {}
+            },
+            Action::Delete => match self.selected.take() {
+                Some(Selection {
+                    item: Item::Edge(index),
+                    bend: Some(bend),
+                }) => {
+                    document::remove_bend(&mut self.graphml, index, bend);
+                    self.selected = Some(Selection::edge(index));
+                }
+                Some(Selection {
+                    item: Item::Edge(index),
+                    bend: None,
+                }) => document::remove_edge(&mut self.graphml, index),
+                Some(Selection {
+                    item: Item::Node(id),
+                    ..
+                }) => document::remove_node(&mut self.graphml, &id),
+                None => {}
+            },
             Action::EditColor(property) => {
-                if let Some(id) = &self.selected
-                    && let Some(graphics) = document::graphics_of(&self.graphml, id)
+                if let Some(item) = self.selected_item()
+                    && let Some(graphics) = document::graphics(&self.graphml, item)
                 {
                     let title = format!("{} color", property.name());
                     let color = property.get(&graphics);
@@ -168,21 +201,26 @@ impl DrwrApp {
             Action::SetColor(property, color) => {
                 self.edit_selected(|graphics| property.set(graphics, color));
             }
-            Action::SetBorderWidth(width) => {
-                self.edit_selected(|graphics| graphics.border.width = width);
+            Action::SetLineWidth(width) => {
+                self.edit_selected(|graphics| graphics.stroke_mut().width = width);
             }
-            Action::SetBorderType(line_type) => {
-                self.edit_selected(|graphics| graphics.border.line_type = line_type);
+            Action::SetLineType(line_type) => {
+                self.edit_selected(|graphics| graphics.stroke_mut().line_type = line_type);
             }
             Action::SetCornerRadius(radius) => {
-                if let Some(id) = &self.selected {
-                    document::set_corner_radius(&mut self.graphml, id, radius);
+                if let Some(Item::Node(id)) = self.selected_item().cloned() {
+                    document::set_corner_radius(&mut self.graphml, &id, radius);
+                }
+            }
+            Action::SetArrow(end, arrow) => {
+                if let Some(&Item::Edge(index)) = self.selected_item() {
+                    document::set_arrow(&mut self.graphml, index, end, arrow);
                 }
             }
             Action::EditLabel => {
-                if let Some(id) = &self.selected {
+                if let Some(item) = self.selected_item() {
                     let label = LabelRef {
-                        node: id.clone(),
+                        item: item.clone(),
                         index: 0,
                     };
                     if let Some(text) = document::label_text(&self.graphml, &label) {
@@ -231,7 +269,7 @@ impl eframe::App for DrwrApp {
             self.perform(action, ui.ctx(), frame);
         }
         status_bar::show(ui, self.tool, self.file.as_deref());
-        let selected = self.selected.as_deref();
+        let selected = self.selected.as_ref().map(|selection| &selection.item);
         for action in self
             .side_panel
             .show(ui, &self.graphml, selected, &self.fonts)

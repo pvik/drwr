@@ -19,6 +19,8 @@ const MAX_PERIODS: f32 = 10_000.0;
 /// As many as egui gives an ellipse 32,000 pixels across. More would take
 /// too long to paint for one of an absurd size.
 const MAX_QUARTER_POINTS: u32 = 1_000;
+/// How far a curved dash's corners may reach, in half widths.
+const MAX_MITER: f32 = 2.0;
 /// Corners rounded by less, in pixels, look square, and would be drawn from
 /// points too close together to turn accurately.
 const MIN_CORNER_RADIUS: f32 = 0.5;
@@ -75,6 +77,32 @@ pub fn paint_outline(painter: &Painter, points: Vec<Pos2>, stroke: Stroke, line_
     };
     let next = points.iter().cycle().skip(1);
     let strips: Vec<[Pos2; 2]> = points.iter().zip(next).map(|(&a, &b)| [a, b]).collect();
+    paint_dashes(painter, &strips, stroke, pattern);
+}
+
+/// Paints a line through `points` in `stroke` and `line_type`.
+pub fn paint_polyline(painter: &Painter, points: &[Pos2], stroke: Stroke, line_type: &LineType) {
+    let Some(pattern) = pattern(line_type) else {
+        painter.add(PathShape::line(points.to_vec(), stroke));
+        return;
+    };
+    let half = stroke.width.max(1.0 / painter.pixels_per_point()) / 2.0;
+    let mut strips: Vec<[Pos2; 2]> = points
+        .windows(2)
+        .filter(|pair| pair[0] != pair[1])
+        .map(|pair| [pair[0], pair[1]])
+        .collect();
+    // Like a rect's outline, at square corners the strip before takes the
+    // corner, so the strips neither overlap nor leave a notch.
+    for i in 1..strips.len() {
+        let before = (strips[i - 1][1] - strips[i - 1][0]).normalized();
+        let after = (strips[i][1] - strips[i][0]).normalized();
+        let level = |v: Vec2| v.x == 0.0 || v.y == 0.0;
+        if level(before) && level(after) && before.dot(after) == 0.0 {
+            strips[i - 1][1] += before * half;
+            strips[i][0] += after * half;
+        }
+    }
     paint_dashes(painter, &strips, stroke, pattern);
 }
 
@@ -275,6 +303,13 @@ fn add_curved_dash(mesh: &mut Mesh, dash: &[Piece], half: f32, feathering: f32, 
         .chain(corners)
         .chain(iter::once((last.line[1], last.direction.rot90())));
     for (point, across) in points {
+        // Capped, as a sharp bend in a line would spike.
+        let length = across.length();
+        let across = if length > MAX_MITER {
+            across * (MAX_MITER / length)
+        } else {
+            across
+        };
         mesh.colored_vertex(point + across * outer, Color32::TRANSPARENT);
         mesh.colored_vertex(point + across * inner, color);
         mesh.colored_vertex(point - across * inner, color);

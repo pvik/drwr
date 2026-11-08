@@ -1,4 +1,4 @@
-use graphml::yed::{self, NodeKind, ShapeType};
+use graphml::yed::{self, EdgeKind, NodeKind, Path, ShapeType};
 
 use super::*;
 
@@ -79,30 +79,47 @@ fn graphics_of_looks_up_a_top_level_node() {
 
 #[test]
 fn color_properties_are_the_fill_gradient_and_border_colors() {
-    let mut graphics = rectangle();
+    let mut graphics = Graphics::Node(rectangle());
     let [fill, gradient, border] = [1, 2, 3].map(|n| Some(Color::rgb(n, n, n)));
     ColorProperty::Fill.set(&mut graphics, fill);
     ColorProperty::Gradient.set(&mut graphics, gradient);
     ColorProperty::Border.set(&mut graphics, border);
 
-    assert_eq!(graphics.fill.color, fill);
-    assert_eq!(graphics.fill.gradient, gradient);
-    assert_eq!(graphics.border.color, border);
+    let Graphics::Node(node) = &graphics else {
+        unreachable!();
+    };
+    assert_eq!(node.fill.color, fill);
+    assert_eq!(node.fill.gradient, gradient);
+    assert_eq!(node.border.color, border);
     let read = ColorProperty::NODE.map(|property| property.get(&graphics));
     assert_eq!(read, [fill, gradient, border]);
 }
 
 #[test]
+fn edges_have_a_line_color_and_no_fill() {
+    let mut graphics = Graphics::Edge(EdgeGraphics::new(EdgeKind::PolyLine));
+    let red = Some(Color::rgb(0xFF, 0x00, 0x00));
+    ColorProperty::Line.set(&mut graphics, red);
+    ColorProperty::Fill.set(&mut graphics, red);
+    assert_eq!(graphics.stroke().color, red);
+    assert_eq!(ColorProperty::Line.get(&graphics), red);
+    assert_eq!(ColorProperty::Fill.get(&graphics), None);
+    ColorProperty::Line.set(&mut graphics, None);
+    assert_eq!(ColorProperty::Line.get(&graphics), None);
+}
+
+#[test]
 fn text_colors_are_those_of_the_labels_and_never_none() {
-    let mut graphics = rectangle();
-    graphics.labels = vec![Label::new("One"), Label::new("Two")];
+    let mut node = rectangle();
+    node.labels = vec![Label::new("One"), Label::new("Two")];
+    let mut graphics = Graphics::Node(node);
     let red = Color::rgb(0xFF, 0x00, 0x00);
     ColorProperty::Text(1).set(&mut graphics, Some(red));
     ColorProperty::Text(0).set(&mut graphics, None);
     ColorProperty::Text(2).set(&mut graphics, Some(red));
 
     let colors: Vec<_> = graphics
-        .labels
+        .labels()
         .iter()
         .map(|label| label.text_color)
         .collect();
@@ -120,7 +137,7 @@ fn text_colors_are_those_of_the_labels_and_never_none() {
 #[test]
 fn edit_graphics_changes_only_what_was_edited() {
     let mut doc = GraphMl::parse(FIXTURE).unwrap();
-    edit_graphics(&mut doc, "n0", |graphics| {
+    edit(&mut doc, &Item::Node("n0".into()), |graphics| {
         ColorProperty::Fill.set(graphics, Some(Color::rgb(0xFF, 0x00, 0x00)));
     });
 
@@ -153,7 +170,7 @@ fn edit_graphics_skips_nodes_without_graphics() {
 
 fn label(node: &str, index: usize) -> LabelRef {
     LabelRef {
-        node: node.to_owned(),
+        item: Item::Node(node.to_owned()),
         index,
     }
 }
@@ -524,5 +541,176 @@ fn set_corner_radius_skips_other_shapes() {
     for id in [id.as_str(), "plain", "missing"] {
         set_corner_radius(&mut doc, id, 10.0);
     }
+    assert_eq!(doc, before);
+}
+
+fn fixture() -> GraphMl {
+    GraphMl::parse(FIXTURE).unwrap()
+}
+
+fn edge_ids(doc: &GraphMl) -> Vec<&str> {
+    let edges = &doc.graphs[0].edges;
+    edges.iter().filter_map(|edge| edge.id.as_deref()).collect()
+}
+
+fn point(x: f64, y: f64) -> Point {
+    Point { x, y }
+}
+
+#[test]
+fn new_edges_get_an_id_no_edge_has() {
+    let mut doc = GraphMl::default();
+    let graphics = EdgeGraphics::new(EdgeKind::PolyLine);
+    assert_eq!(add_edge(&mut doc, "n0", "n1", &graphics), 0);
+    assert_eq!(doc.graphs[0].id.as_deref(), Some("G"));
+    let read = edge_graphics_of(&doc, 0).unwrap();
+    assert_eq!(read.to_element(), graphics.to_element());
+
+    let mut doc = fixture();
+    doc.graphs[0].edges[0].id = Some("e2".to_owned());
+    assert_eq!(add_edge(&mut doc, "n0", "n2", &graphics), 2);
+    let edge = &doc.graphs[0].edges[2];
+    assert_eq!((edge.source.as_str(), edge.target.as_str()), ("n0", "n2"));
+    assert_eq!(edge_ids(&doc), ["e2", "e1", "e0"]);
+}
+
+#[test]
+fn removing_a_node_removes_the_edges_of_it_and_of_the_nodes_in_it() {
+    let mut doc = fixture();
+    let graphics = EdgeGraphics::new(EdgeKind::PolyLine);
+    // n5 is a group holding n5::n0.
+    add_edge(&mut doc, "n5::n0", "n2", &graphics);
+    add_edge(&mut doc, "n3", "n4", &graphics);
+    remove_node(&mut doc, "n5");
+    assert_eq!(edge_ids(&doc), ["e0", "e1", "e3"]);
+    remove_node(&mut doc, "n0");
+    assert_eq!(edge_ids(&doc), ["e1", "e3"]);
+    assert!(doc.graphs[0].nodes.iter().all(|node| node.id != "n0"));
+    remove_edge(&mut doc, 0);
+    assert_eq!(edge_ids(&doc), ["e3"]);
+    // Missing ones are skipped.
+    let before = doc.clone();
+    remove_node(&mut doc, "missing");
+    remove_edge(&mut doc, 5);
+    assert_eq!(doc, before);
+}
+
+#[test]
+fn reconnecting_moves_an_end_to_the_middle_of_another_node() {
+    let mut doc = fixture();
+    edit_edge_graphics(&mut doc, 0, |graphics| {
+        graphics.path.target = point(5.0, 5.0)
+    });
+    let before = doc.clone();
+    reconnect(&mut doc, 0, EdgeEnd::Target, "n1");
+    assert_eq!(doc, before);
+
+    reconnect(&mut doc, 0, EdgeEnd::Target, "n3");
+    reconnect(&mut doc, 0, EdgeEnd::Source, "n2");
+    let edge = &doc.graphs[0].edges[0];
+    assert_eq!((edge.source.as_str(), edge.target.as_str()), ("n2", "n3"));
+    assert_eq!(
+        edge_graphics_of(&doc, 0).unwrap().path.target,
+        point(0.0, 0.0)
+    );
+}
+
+#[test]
+fn arrows_are_set_on_and_off_keeping_their_kind() {
+    let mut doc = fixture();
+    edit_edge_graphics(&mut doc, 0, |graphics| {
+        graphics.arrows.target = Arrow::Delta
+    });
+    set_arrow(&mut doc, 0, EdgeEnd::Target, true);
+    set_arrow(&mut doc, 0, EdgeEnd::Source, true);
+    let arrows = edge_graphics_of(&doc, 0).unwrap().arrows;
+    assert_eq!(
+        (arrows.source, arrows.target),
+        (Arrow::Standard, Arrow::Delta)
+    );
+    set_arrow(&mut doc, 0, EdgeEnd::Target, false);
+    let arrows = edge_graphics_of(&doc, 0).unwrap().arrows;
+    assert_eq!(arrows.target, Arrow::None);
+}
+
+#[test]
+fn bends_move_one_or_all_and_are_removed_with_labels_kept_on_their_segment() {
+    let mut doc = fixture();
+    move_bends(&mut doc, 0, None, 1.0, 2.0);
+    move_bends(&mut doc, 0, Some(1), 10.0, 0.0);
+    let points = edge_graphics_of(&doc, 0).unwrap().path.points;
+    assert_eq!(points, [point(261.0, 22.0), point(336.0, 22.0)]);
+
+    // The label is on the first segment, which keeps its index.
+    let mut doc = fixture();
+    let segment = |doc: &GraphMl| {
+        let text = doc.to_xml();
+        let start = text.find(r#"segment=""#).unwrap() + 9;
+        text[start..].split('"').next().unwrap().to_owned()
+    };
+    let geometry = |id: &str| graphics_of(&doc, id).unwrap().geometry;
+    let (n0, n1) = (geometry("n0"), geometry("n1"));
+    edit_edge_graphics(&mut doc, 0, |graphics| {
+        let route = Route::new(&graphics.path, n0, n1);
+        graphics.labels[0].place_on(&route, point(292.5, 0.0), 35.0, 18.0);
+    });
+    assert_eq!(segment(&doc), "1");
+    remove_bend(&mut doc, 0, 0);
+    assert_eq!(
+        edge_graphics_of(&doc, 0).unwrap().path.points,
+        [point(325.0, 20.0)]
+    );
+    assert_eq!(segment(&doc), "0");
+    remove_bend(&mut doc, 0, 5);
+    assert_eq!(edge_graphics_of(&doc, 0).unwrap().path.points.len(), 1);
+}
+
+#[test]
+fn labels_are_kept_where_they_were_on_a_new_route() {
+    let (source, target) = (
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        },
+        Rect {
+            x: 200.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+        },
+    );
+    let mut graphics = EdgeGraphics::new(EdgeKind::PolyLine);
+    let old = Route::new(&graphics.path, source, target);
+    let mut label = Label::new_on_edge("Label");
+    label.place_on(&old, point(150.0, 10.0), 30.0, 10.0);
+    graphics.labels.push(label);
+    graphics.path.points.push(point(100.0, 10.0));
+    let new = Route::new(&graphics.path, source, target);
+    keep_labels(&mut graphics, &old, &new);
+    let placed = graphics.labels[0].placed_on(&new, 30.0, 10.0).unwrap();
+    assert_eq!((placed.x, placed.y), (135.0, 5.0));
+}
+
+#[test]
+fn edges_have_labels_like_nodes() {
+    let mut doc = fixture();
+    let label = LabelRef {
+        item: Item::Edge(0),
+        index: 1,
+    };
+    assert_eq!(label_text(&doc, &label), Some(String::new()));
+    set_label(&mut doc, &label, "second");
+    let labels = edge_graphics_of(&doc, 0).unwrap().labels;
+    assert_eq!(labels[1].text, "second");
+    // In yEd's Smart model for edge labels.
+    let route = Route::new(&Path::default(), Rect::default(), Rect::default());
+    assert!(labels[1].placed_on(&route, 10.0, 10.0).is_some());
+    edit_label(&mut doc, &label, |label| label.font.size = 20);
+    assert_eq!(edge_graphics_of(&doc, 0).unwrap().labels[1].font.size, 20);
+    // Positions are for node labels.
+    let before = doc.clone();
+    set_label_position(&mut doc, &label, LabelPosition::North);
     assert_eq!(doc, before);
 }

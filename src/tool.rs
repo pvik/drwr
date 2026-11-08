@@ -1,4 +1,4 @@
-use graphml::yed::ShapeType;
+use graphml::yed::{Arrow, Arrows, ShapeType};
 
 /// A drawing tool. Exactly one is selected at a time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,5 +31,18 @@ impl Tool {
             Tool::Cursor | Tool::Line | Tool::Arrow | Tool::TextBox => return None,
         };
         Some(NodeShape { shape, square })
+    }
+
+    /// The arrowheads of the edges this tool draws, if it draws edges.
+    pub fn arrows(self) -> Option<Arrows> {
+        let target = match self {
+            Tool::Line => Arrow::None,
+            Tool::Arrow => Arrow::Standard,
+            _ => return None,
+        };
+        Some(Arrows {
+            source: Arrow::None,
+            target,
+        })
     }
 }

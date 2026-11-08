@@ -11,7 +11,7 @@ const PAN_STEP: f32 = 40.0;
 
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 23] = [
+const SHORTCUTS: [(Modifiers, Key, Action); 24] = [
     (Modifiers::COMMAND, Key::N,          Action::New),
     (Modifiers::COMMAND, Key::O,          Action::Open),
     (Modifiers::COMMAND, Key::S,          Action::Save),
@@ -29,6 +29,7 @@ const SHORTCUTS: [(Modifiers, Key, Action); 23] = [
     (Modifiers::NONE,    Key::ArrowRight, Action::PanBy(PAN_STEP, 0.0)),
     (Modifiers::NONE,    Key::ArrowUp,    Action::PanBy(0.0, -PAN_STEP)),
     (Modifiers::NONE,    Key::ArrowDown,  Action::PanBy(0.0, PAN_STEP)),
+    (Modifiers::NONE,    Key::Delete,     Action::Delete),
     (Modifiers::NONE,    Key::Escape,     Action::SelectTool(Tool::Cursor)),
     (Modifiers::NONE,    Key::B,          Action::SelectTool(Tool::Box)),
     (Modifiers::NONE,    Key::C,          Action::SelectTool(Tool::Circle)),

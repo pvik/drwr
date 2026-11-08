@@ -6,19 +6,21 @@ use egui::{
     Layout, Painter, Rect, Response, RichText, ScrollArea, Stroke, TextStyle, Ui, vec2,
 };
 use graphml::GraphMl;
-use graphml::yed::{self, Color, Font, FontStyle, LabelPosition, LineType, NodeGraphics, NodeKind};
+use graphml::yed::{
+    self, Arrow, Color, EdgeGraphics, Font, FontStyle, LabelPosition, LineType, NodeKind,
+};
 
 use crate::action::Action;
 use crate::color_picker;
-use crate::document::{self, ColorProperty, LabelRef};
+use crate::document::{self, ColorProperty, EdgeEnd, Graphics, Item, LabelRef};
 use crate::font_picker::FontPicker;
 use crate::fonts::{self, Fonts};
 use crate::label_position;
 use crate::line_type;
 use crate::text_field::{self, End};
 
-/// Capped, so typing "inf" can't make a border infinite.
-const BORDER_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
+/// Of borders and edges. Capped, so typing "inf" can't make one infinite.
+const LINE_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
 /// Capped too, though corners are rounded by no more than half a side.
 const CORNER_RADII: RangeInclusive<f64> = 0.0..=1000.0;
 /// Capped, as egui draws no glyph over 1024 pixels.
@@ -27,7 +29,7 @@ const FONT_SIZES: RangeInclusive<u32> = 1..=500;
 const SAMPLE_LENGTH: f32 = 2.0;
 
 /// A resizable panel right of the canvas with the properties of the selected
-/// node.
+/// node or edge.
 #[derive(Default)]
 pub struct SidePanel {
     edit: Option<FieldEdit>,
@@ -45,13 +47,13 @@ struct FieldEdit {
 }
 
 impl SidePanel {
-    /// Shows the properties of the node whose id is `selected`, with the font
+    /// Shows the properties of the `selected` node or edge, with the font
     /// families `fonts` offers. Returns the actions asked for.
     pub fn show(
         &mut self,
         ui: &mut Ui,
         graphml: &GraphMl,
-        selected: Option<&str>,
+        selected: Option<&Item>,
         fonts: &Fonts,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
@@ -64,13 +66,17 @@ impl SidePanel {
                 // Otherwise the panel shrinks to fit its contents, even after
                 // resizing.
                 ui.take_available_width();
-                let node = selected.and_then(|id| Some((id, document::graphics_of(graphml, id)?)));
-                match node {
-                    Some((id, graphics)) => {
+                let graphics = selected.and_then(|item| document::graphics(graphml, item));
+                match (selected, graphics) {
+                    (Some(Item::Node(id)), Some(graphics @ Graphics::Node(_))) => {
                         let corner_radius = document::corner_radius(graphml, id);
                         actions = self.properties(ui, id, &graphics, corner_radius, fonts);
                     }
-                    None => {
+                    (Some(&Item::Edge(index)), Some(Graphics::Edge(graphics))) => {
+                        let edge = &graphml.graphs[0].edges[index];
+                        actions = self.edge_properties(ui, edge, index, &graphics, fonts);
+                    }
+                    _ => {
                         ui.weak("Nothing selected");
                     }
                 }
@@ -86,15 +92,19 @@ impl SidePanel {
         applied.into_iter().chain(actions).collect()
     }
 
+    /// The properties of the node with id `id`, whose graphics are `node`.
     /// `corner_radius` is the node's if it's a box.
     fn properties(
         &mut self,
         ui: &mut Ui,
         id: &str,
-        graphics: &NodeGraphics,
+        node: &Graphics,
         corner_radius: Option<f64>,
         fonts: &Fonts,
     ) -> Vec<Action> {
+        let Graphics::Node(graphics) = node else {
+            return Vec::new();
+        };
         Grid::new("properties")
             .num_columns(2)
             .striped(true)
@@ -116,18 +126,18 @@ impl SidePanel {
                 let mut actions = Vec::new();
                 for property in ColorProperty::NODE {
                     ui.label(property.name());
-                    if color_button(ui, property.get(graphics)).clicked() {
+                    if color_button(ui, property.get(node)).clicked() {
                         actions.push(Action::EditColor(property));
                     }
                     ui.end_row();
                 }
                 ui.label("Border width");
-                let width = self.number_field(ui, border.width, BORDER_WIDTHS, 0.1);
-                actions.extend(width.map(Action::SetBorderWidth));
+                let width = self.number_field(ui, border.width, LINE_WIDTHS, 0.1);
+                actions.extend(width.map(Action::SetLineWidth));
                 ui.end_row();
                 ui.label("Border style");
-                let line_type = border_style_box(ui, &border.line_type);
-                actions.extend(line_type.map(Action::SetBorderType));
+                let line_type = line_style_box(ui, &border.line_type);
+                actions.extend(line_type.map(Action::SetLineType));
                 ui.end_row();
                 if let Some(radius) = corner_radius {
                     ui.label("Corner radius");
@@ -135,33 +145,101 @@ impl SidePanel {
                     actions.extend(radius.map(Action::SetCornerRadius));
                     ui.end_row();
                 }
-                // A node without labels gets a field that adds one.
-                for index in 0..graphics.labels.len().max(1) {
-                    let label = graphics.labels.get(index);
-                    let at = LabelRef {
-                        node: id.to_owned(),
-                        index,
-                    };
-                    let text = label.map_or("", |label| &label.text);
-                    actions.extend(self.label_row(ui, at.clone(), text));
-                    if let Some(label) = label {
-                        actions.extend(self.font_rows(ui, at.clone(), label, fonts));
-                        ui.label("Position");
-                        let position = position_box(ui, index, label.position());
-                        actions.extend(position.map(|p| Action::SetLabelPosition(at, p)));
-                        ui.end_row();
-                    }
-                }
+                let item = Item::Node(id.to_owned());
+                actions.extend(self.label_rows(ui, &item, &graphics.labels, fonts));
                 actions
             })
             .inner
+    }
+
+    /// The properties of `edge`, the one at `index`, whose graphics are
+    /// `graphics`.
+    fn edge_properties(
+        &mut self,
+        ui: &mut Ui,
+        edge: &graphml::Edge,
+        index: usize,
+        graphics: &EdgeGraphics,
+        fonts: &Fonts,
+    ) -> Vec<Action> {
+        Grid::new("properties")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                let line = &graphics.line;
+                row(ui, "Id", edge.id.as_deref().unwrap_or_default());
+                row(ui, "Source", &edge.source);
+                row(ui, "Target", &edge.target);
+                let mut actions = Vec::new();
+                ui.label(ColorProperty::Line.name());
+                if color_button(ui, line.color).clicked() {
+                    actions.push(Action::EditColor(ColorProperty::Line));
+                }
+                ui.end_row();
+                ui.label("Line width");
+                let width = self.number_field(ui, line.width, LINE_WIDTHS, 0.1);
+                actions.extend(width.map(Action::SetLineWidth));
+                ui.end_row();
+                ui.label("Line style");
+                let line_type = line_style_box(ui, &line.line_type);
+                actions.extend(line_type.map(Action::SetLineType));
+                ui.end_row();
+                let arrows = &graphics.arrows;
+                for (name, end, arrow) in [
+                    ("Start arrow", EdgeEnd::Source, &arrows.source),
+                    ("End arrow", EdgeEnd::Target, &arrows.target),
+                ] {
+                    ui.label(name);
+                    let mut on = *arrow != Arrow::None;
+                    if ui.checkbox(&mut on, "").changed() {
+                        actions.push(Action::SetArrow(end, on));
+                    }
+                    ui.end_row();
+                }
+                let item = Item::Edge(index);
+                actions.extend(self.label_rows(ui, &item, &graphics.labels, fonts));
+                actions
+            })
+            .inner
+    }
+
+    /// Adds the rows of the labels of `item`, which are `labels`, and a row
+    /// that adds one if there are none. Returns the actions asked for.
+    fn label_rows(
+        &mut self,
+        ui: &mut Ui,
+        item: &Item,
+        labels: &[yed::Label],
+        fonts: &Fonts,
+    ) -> Vec<Action> {
+        let mut actions = Vec::new();
+        for index in 0..labels.len().max(1) {
+            let label = labels.get(index);
+            let at = LabelRef {
+                item: item.clone(),
+                index,
+            };
+            let text = label.map_or("", |label| &label.text);
+            actions.extend(self.label_row(ui, at.clone(), text));
+            if let Some(label) = label {
+                actions.extend(self.font_rows(ui, at.clone(), label, fonts));
+                // Edge labels are placed by dragging them.
+                if let Item::Node(_) = item {
+                    ui.label("Position");
+                    let position = position_box(ui, index, label.position());
+                    actions.extend(position.map(|p| Action::SetLabelPosition(at, p)));
+                    ui.end_row();
+                }
+            }
+        }
+        actions
     }
 
     /// Adds a row with a field for a label's text, and a button that opens the
     /// label dialog. Returns the action clicked.
     fn label_row(&mut self, ui: &mut Ui, label: LabelRef, text: &str) -> Option<Action> {
         ui.label("Label");
-        let field = Id::unique(("label_field", &label.node, label.index));
+        let field = Id::unique(("label_field", &label.item, label.index));
         let mut clicked = None;
         // Right to left, so the field takes the width the button leaves.
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -312,8 +390,9 @@ fn dropdown<'a, T: PartialEq + Clone>(
     picked
 }
 
-/// Adds a dropdown to pick a border's line type in. Returns the type picked.
-fn border_style_box(ui: &mut Ui, current: &LineType) -> Option<LineType> {
+/// Adds a dropdown to pick a border's or an edge's line type in. Returns the
+/// type picked.
+fn line_style_box(ui: &mut Ui, current: &LineType) -> Option<LineType> {
     let shown = line_type_atoms(ui, current);
     dropdown(
         ui,
