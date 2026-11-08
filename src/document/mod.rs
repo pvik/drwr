@@ -1,7 +1,14 @@
 use std::collections::HashSet;
 
-use graphml::yed::{Color, Keys, Label, LabelPosition, NodeGraphics, Rect};
-use graphml::{Graph, GraphMl, Node};
+use graphml::xml::XmlNode;
+use graphml::yed::{Color, Keys, Label, LabelPosition, NodeGraphics, NodeKind, Rect, ShapeType};
+use graphml::{AttrType, Data, Graph, GraphMl, Key, KeyDomain, Node};
+
+/// The corner radius yEd draws every round rectangle with.
+const YED_CORNER_RADIUS: f64 = 4.0;
+/// The node attribute other corner radii are kept in. yEd keeps it, but
+/// draws its own radius.
+const CORNER_RADIUS: &str = "drwr.cornerRadius";
 
 /// A label of a top-level node. The index one past its last label stands for
 /// a new label.
@@ -88,40 +95,155 @@ pub fn add_node(doc: &mut GraphMl, graphics: &NodeGraphics) -> String {
     id
 }
 
-/// The readable graphics of the top-level graph's nodes, with their ids.
-pub fn node_graphics(doc: &GraphMl) -> impl Iterator<Item = (&str, NodeGraphics)> {
+/// The readable graphics of the top-level graph's nodes, with their ids and,
+/// for boxes, their [`corner_radius`].
+pub fn node_graphics(doc: &GraphMl) -> impl Iterator<Item = (&str, NodeGraphics, Option<f64>)> {
     let keys = Keys::find(doc);
+    let radius_key = radius_key(doc);
     doc.graphs
         .first()
         .into_iter()
         .flat_map(|graph| &graph.nodes)
         .filter_map(move |node| {
             let graphics = keys.node_graphics(node).ok().flatten()?;
-            Some((node.id.as_str(), graphics))
+            let radius = box_corner_radius(&graphics, node, radius_key);
+            Some((node.id.as_str(), graphics, radius))
         })
 }
 
 /// The readable graphics of the top-level graph's node with id `id`.
 pub fn graphics_of(doc: &GraphMl, id: &str) -> Option<NodeGraphics> {
-    let nodes = &doc.graphs.first()?.nodes;
-    let node = nodes.iter().find(|node| node.id == id)?;
-    Keys::find(doc).node_graphics(node).ok().flatten()
+    Keys::find(doc).node_graphics(node(doc, id)?).ok().flatten()
 }
 
 /// Edits the readable graphics of the top-level graph's node with id `id`.
 pub fn edit_graphics(doc: &mut GraphMl, id: &str, edit: impl FnOnce(&mut NodeGraphics)) {
     let keys = Keys::find(doc);
-    let Some(node) = doc
-        .graphs
-        .first_mut()
-        .and_then(|graph| graph.nodes.iter_mut().find(|node| node.id == id))
-    else {
+    let Some(node) = node_mut(doc, id) else {
         return;
     };
     if let Ok(Some(mut graphics)) = keys.node_graphics(node) {
         edit(&mut graphics);
         keys.set_node_graphics(node, &graphics);
     }
+}
+
+/// The radius the corners of the top-level box with id `id` are rounded to;
+/// `None` if there's no such box. Boxes are yEd's rectangles, which have
+/// square corners, and its round rectangles.
+pub fn corner_radius(doc: &GraphMl, id: &str) -> Option<f64> {
+    let node = node(doc, id)?;
+    let graphics = Keys::find(doc).node_graphics(node).ok().flatten()?;
+    box_corner_radius(&graphics, node, radius_key(doc))
+}
+
+/// Rounds the corners of the top-level box with id `id` to `radius`, making
+/// it yEd's round rectangle, or its rectangle for square corners. A radius
+/// other than yEd's is kept in a node attribute.
+pub fn set_corner_radius(doc: &mut GraphMl, id: &str, radius: f64) {
+    if corner_radius(doc, id).is_none_or(|old| old == radius) {
+        return;
+    }
+    let round = radius > 0.0;
+    let shape = if round {
+        ShapeType::RoundRectangle
+    } else {
+        ShapeType::Rectangle
+    };
+    edit_graphics(doc, id, |graphics| graphics.kind = NodeKind::Shape(shape));
+    if round && radius != YED_CORNER_RADIUS {
+        keep_corner_radius(doc, id, radius);
+    } else {
+        drop_corner_radius(doc, id);
+    }
+}
+
+/// The corner radius of `node`, whose graphics are `graphics`, if it's a box.
+/// `key` is the one corner radii are kept under.
+fn box_corner_radius(graphics: &NodeGraphics, node: &Node, key: Option<&str>) -> Option<f64> {
+    match graphics.kind {
+        NodeKind::Shape(ShapeType::Rectangle) => Some(0.0),
+        NodeKind::Shape(ShapeType::RoundRectangle) => {
+            let kept = (node.data.iter())
+                .find(|data| Some(data.key.as_str()) == key)
+                .and_then(|data| data.text().trim().parse::<f64>().ok())
+                .filter(|radius| radius.is_finite() && *radius >= 0.0);
+            Some(kept.unwrap_or(YED_CORNER_RADIUS))
+        }
+        _ => None,
+    }
+}
+
+/// Keeps `radius` as the corner radius of the top-level node with id `id`.
+fn keep_corner_radius(doc: &mut GraphMl, id: &str, radius: f64) {
+    let key = ensure_radius_key(doc);
+    let Some(node) = node_mut(doc, id) else {
+        return;
+    };
+    // As yEd writes doubles, e.g. 10.0.
+    let text = format!("{radius:?}");
+    match node.data.iter_mut().find(|data| data.key == key) {
+        Some(data) => data.content = vec![XmlNode::Text(text)],
+        None => node.data.push(Data::from_text(key, text)),
+    }
+}
+
+/// Drops the corner radius kept for the top-level node with id `id`, and the
+/// key too once no node keeps one.
+fn drop_corner_radius(doc: &mut GraphMl, id: &str) {
+    let Some(key) = radius_key(doc).map(str::to_owned) else {
+        return;
+    };
+    if let Some(node) = node_mut(doc, id) {
+        node.data.retain(|data| data.key != key);
+    }
+    let mut used = false;
+    for graph in &doc.graphs {
+        visit_nodes(graph, &mut |node| {
+            used |= node.data.iter().any(|data| data.key == key);
+        });
+    }
+    if !used {
+        doc.keys.retain(|declared| declared.id != key);
+    }
+}
+
+/// The id of the key corner radii are kept under, if the document has it.
+fn radius_key(doc: &GraphMl) -> Option<&str> {
+    let key = doc.keys.iter().find(|key| {
+        key.domain == KeyDomain::Node && key.attr_name.as_deref() == Some(CORNER_RADIUS)
+    });
+    key.map(|key| key.id.as_str())
+}
+
+/// Like [`radius_key`], but declares the key first if it's missing.
+fn ensure_radius_key(doc: &mut GraphMl) -> String {
+    if let Some(id) = radius_key(doc) {
+        return id.to_owned();
+    }
+    // yEd numbers its keys d0, d1, …
+    let id = (0..)
+        .map(|n| format!("d{n}"))
+        .find(|id| doc.keys.iter().all(|key| key.id != *id))
+        .expect("the ids are endless");
+    doc.keys.push(Key {
+        id: id.clone(),
+        domain: KeyDomain::Node,
+        attr_name: Some(CORNER_RADIUS.to_owned()),
+        attr_type: Some(AttrType::Double),
+        ..Key::default()
+    });
+    id
+}
+
+/// The top-level graph's node with id `id`.
+fn node<'a>(doc: &'a GraphMl, id: &str) -> Option<&'a Node> {
+    doc.graphs.first()?.nodes.iter().find(|node| node.id == id)
+}
+
+fn node_mut<'a>(doc: &'a mut GraphMl, id: &str) -> Option<&'a mut Node> {
+    let nodes = &mut doc.graphs.first_mut()?.nodes;
+    nodes.iter_mut().find(|node| node.id == id)
 }
 
 /// A label's text: empty for a new label, `None` if there's no such label.
@@ -199,7 +321,9 @@ fn label_shift(center: f64, old: f64, new: f64) -> f64 {
 fn unused_node_id(doc: &GraphMl) -> String {
     let mut ids = HashSet::new();
     for graph in &doc.graphs {
-        collect_node_ids(graph, &mut ids);
+        visit_nodes(graph, &mut |node| {
+            ids.insert(node.id.as_str());
+        });
     }
     (0..)
         .map(|n| format!("n{n}"))
@@ -207,8 +331,11 @@ fn unused_node_id(doc: &GraphMl) -> String {
         .expect("the ids are endless")
 }
 
-fn collect_node_ids<'a>(graph: &'a Graph, ids: &mut HashSet<&'a str>) {
-    ids.extend(graph.nodes.iter().map(|node| node.id.as_str()));
+/// Calls `visit` with each node of `graph` and of the graphs nested in it.
+fn visit_nodes<'a>(graph: &'a Graph, visit: &mut impl FnMut(&'a Node)) {
+    for node in &graph.nodes {
+        visit(node);
+    }
     let nested = graph
         .nodes
         .iter()
@@ -216,7 +343,7 @@ fn collect_node_ids<'a>(graph: &'a Graph, ids: &mut HashSet<&'a str>) {
         .chain(graph.edges.iter().map(|edge| &edge.graph))
         .chain(graph.hyperedges.iter().map(|hyperedge| &hyperedge.graph));
     for graph in nested.flatten() {
-        collect_node_ids(graph, ids);
+        visit_nodes(graph, visit);
     }
 }
 

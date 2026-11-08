@@ -28,6 +28,8 @@ pub enum Action {
     SetBorderWidth(f64),
     /// Sets the line type of the selected node's border.
     SetBorderType(LineType),
+    /// Rounds the corners of the selected box to this radius.
+    SetCornerRadius(f64),
     /// Edits the selected node's first label on the canvas.
     EditLabel,
     EditLabelInDialog(LabelRef),

@@ -389,29 +389,30 @@ fn the_side_panel_shows_the_clicked_node() {
     // catches up a frame later.
     #[rustfmt::skip]
     assert_eq!(harness.side_panel(), [
-        "Id",           "n0",
-        "Shape",        "rectangle",
-        "X",            "100",
-        "Y",            "50.5",
-        "Width",        "150",
-        "Height",       "26.67",
-        "Fill",         "#FFCC00",
-        "Gradient",     "#FFFFFF",
-        "Border",       "None",
-        "Border width", "1",
-        "Border style", "Solid",
-        "Label",        "...", "Start",
-        "Font",         "Dialog",
-        "Font style",   "Plain",
-        "Font size",    "12",
-        "Text color",   "#000000",
-        "Position",     "Center",
-        "Label",        "...", "Two\nlines",
-        "Font",         "Dialog",
-        "Font style",   "Plain",
-        "Font size",    "12",
-        "Text color",   "#000000",
-        "Position",     "Center",
+        "Id",            "n0",
+        "Shape",         "rectangle",
+        "X",             "100",
+        "Y",             "50.5",
+        "Width",         "150",
+        "Height",        "26.67",
+        "Fill",          "#FFCC00",
+        "Gradient",      "#FFFFFF",
+        "Border",        "None",
+        "Border width",  "1",
+        "Border style",  "Solid",
+        "Corner radius", "0",
+        "Label",         "...", "Start",
+        "Font",          "Dialog",
+        "Font style",    "Plain",
+        "Font size",     "12",
+        "Text color",    "#000000",
+        "Position",      "Center",
+        "Label",         "...", "Two\nlines",
+        "Font",          "Dialog",
+        "Font style",    "Plain",
+        "Font size",     "12",
+        "Text color",    "#000000",
+        "Position",      "Center",
     ]);
 
     harness.click(vec2(400.0, 300.0));
@@ -527,12 +528,13 @@ fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
         "Y",            "50",
         "Width",        "150",
         "Height",       "80",
-        "Fill",         "#FF0000",
-        "Gradient",     "None",
-        "Border",       "#000000",
-        "Border width", "1",
-        "Border style", "Solid",
-        "Label",        "...", "",
+        "Fill",          "#FF0000",
+        "Gradient",      "None",
+        "Border",        "#000000",
+        "Border width",  "1",
+        "Border style",  "Solid",
+        "Corner radius", "0",
+        "Label",         "...", "",
     ]);
 }
 
@@ -705,6 +707,75 @@ fn showing_a_border_width_out_of_range_keeps_it() {
         "{side_panel:?}"
     );
     assert_eq!(harness.app.graphml, before);
+}
+
+/// The side panel's rows of `name` and the value right of it.
+fn rows<'a>(side_panel: &'a [String], name: &str) -> Vec<&'a str> {
+    let rows = side_panel.windows(2).filter(|row| row[0] == name);
+    rows.map(|row| row[1].as_str()).collect()
+}
+
+#[test]
+fn typing_a_corner_radius_in_the_side_panel_rounds_the_box() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.click(vec2(150.0, 60.0));
+    assert_eq!(rows(&harness.side_panel(), "Corner radius"), ["0"]);
+    harness.click_text("0");
+    harness.type_text("10");
+    harness.press(Modifiers::NONE, Key::Enter);
+
+    let graphml = &harness.app.graphml;
+    assert_eq!(document::corner_radius(graphml, &id), Some(10.0));
+    let side_panel = harness.side_panel();
+    assert_eq!(rows(&side_panel, "Corner radius"), ["10"]);
+    assert_eq!(rows(&side_panel, "Shape"), ["roundrectangle"]);
+    // A polygon now, not a rect.
+    let shapes = harness.run(vec![]);
+    let canvas = canvas(&shapes);
+    let on_canvas = |shape: &&Shape| match shape {
+        Shape::Rect(rect) => rect.fill == BOX_FILL && canvas.contains_rect(rect.rect),
+        Shape::Path(path) => path.fill == BOX_FILL && canvas.contains(path.points[0]),
+        _ => false,
+    };
+    let filled: Vec<_> = shapes.iter().filter(on_canvas).collect();
+    assert!(matches!(filled[..], [Shape::Path(_)]), "{filled:?}");
+}
+
+#[test]
+fn round_rectangles_read_with_yeds_corner_radius() {
+    let mut harness = Harness::new();
+    let mut graphics = new_box();
+    graphics.kind = NodeKind::Shape(ShapeType::RoundRectangle);
+    document::add_node(&mut harness.app.graphml, &graphics);
+    harness.click(vec2(150.0, 60.0));
+    assert_eq!(rows(&harness.side_panel(), "Corner radius"), ["4"]);
+}
+
+#[test]
+fn only_boxes_have_a_corner_radius() {
+    let mut harness = Harness::new();
+    let mut graphics = new_box();
+    graphics.kind = NodeKind::Shape(ShapeType::Ellipse);
+    document::add_node(&mut harness.app.graphml, &graphics);
+    harness.click(vec2(175.0, 90.0));
+    let side_panel = harness.side_panel();
+    assert_eq!(side_panel[..4], ["Id", "n0", "Shape", "ellipse"]);
+    assert_eq!(rows(&side_panel, "Corner radius"), [""; 0]);
+}
+
+#[test]
+fn typed_corner_radii_are_kept_in_range() {
+    for (typed, radius) in [("-2", 0.0), ("5000", 1000.0), ("inf", 1000.0)] {
+        let mut harness = Harness::new();
+        let id = document::add_node(&mut harness.app.graphml, &new_box());
+        harness.click(vec2(150.0, 60.0));
+        harness.click_text("0");
+        harness.type_text(typed);
+        harness.press(Modifiers::NONE, Key::Enter);
+        let read = document::corner_radius(&harness.app.graphml, &id);
+        assert_eq!(read, Some(radius), "{typed}");
+    }
 }
 
 #[test]

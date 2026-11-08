@@ -369,3 +369,160 @@ fn resize_to_the_same_size_changes_only_the_position() {
     let expected = FIXTURE.replacen(r#"x="100.0" y="40.5""#, r#"x="130.0" y="80.5""#, 1);
     assert_eq!(doc.to_xml(), expected);
 }
+
+fn shape(shape: ShapeType) -> NodeGraphics {
+    NodeGraphics::new(NodeKind::Shape(shape))
+}
+
+fn kind(doc: &GraphMl, id: &str) -> NodeKind {
+    graphics_of(doc, id).unwrap().kind
+}
+
+#[test]
+fn boxes_have_corner_radii() {
+    let mut doc = yed::new_document();
+    let square = add_node(&mut doc, &rectangle());
+    let round = add_node(&mut doc, &shape(ShapeType::RoundRectangle));
+    let ellipse = add_node(&mut doc, &shape(ShapeType::Ellipse));
+
+    assert_eq!(corner_radius(&doc, &square), Some(0.0));
+    // yEd's, which it draws every round rectangle with.
+    assert_eq!(corner_radius(&doc, &round), Some(4.0));
+    assert_eq!(corner_radius(&doc, &ellipse), None);
+    assert_eq!(corner_radius(&doc, "missing"), None);
+    let radii: Vec<_> = node_graphics(&doc).map(|(_, _, radius)| radius).collect();
+    assert_eq!(radii, [Some(0.0), Some(4.0), None]);
+}
+
+#[test]
+fn rounding_boxes_like_yed_makes_them_its_round_rectangles() {
+    let mut doc = yed::new_document();
+    let id = add_node(&mut doc, &rectangle());
+    let keys = doc.keys.clone();
+    set_corner_radius(&mut doc, &id, 4.0);
+
+    assert_eq!(kind(&doc, &id), NodeKind::Shape(ShapeType::RoundRectangle));
+    assert_eq!(corner_radius(&doc, &id), Some(4.0));
+    // Which yEd draws as they are, so there's nothing else to keep.
+    assert_eq!(doc.keys, keys);
+    assert_eq!(doc.graphs[0].nodes[0].data.len(), 1);
+
+    set_corner_radius(&mut doc, &id, 0.0);
+    assert_eq!(kind(&doc, &id), NodeKind::Shape(ShapeType::Rectangle));
+    assert_eq!(corner_radius(&doc, &id), Some(0.0));
+}
+
+#[test]
+fn other_corner_radii_are_kept_in_a_node_attribute() {
+    let mut doc = yed::new_document();
+    let id = add_node(&mut doc, &rectangle());
+    set_corner_radius(&mut doc, &id, 10.0);
+
+    assert_eq!(kind(&doc, &id), NodeKind::Shape(ShapeType::RoundRectangle));
+    assert_eq!(corner_radius(&doc, &id), Some(10.0));
+    let text = doc.to_xml();
+    let key = r#"<key attr.name="drwr.cornerRadius" attr.type="double" for="node" id="d11"/>"#;
+    assert!(text.contains(key), "{text}");
+    // As yEd writes doubles.
+    assert!(text.contains(r#"<data key="d11">10.0</data>"#), "{text}");
+    let read = GraphMl::parse(&text).unwrap();
+    assert_eq!(corner_radius(&read, &id), Some(10.0));
+
+    let before = text;
+    set_corner_radius(&mut doc, &id, 7.5);
+    assert_eq!(doc.to_xml(), before.replace(">10.0<", ">7.5<"));
+}
+
+#[test]
+fn resetting_the_corner_radius_leaves_the_file_as_it_was() {
+    let mut doc = GraphMl::parse(FIXTURE).unwrap();
+    assert_eq!(kind(&doc, "n0"), NodeKind::Shape(ShapeType::RoundRectangle));
+    set_corner_radius(&mut doc, "n0", 10.0);
+    assert_ne!(doc.to_xml(), FIXTURE);
+    set_corner_radius(&mut doc, "n0", 4.0);
+    assert_eq!(doc.to_xml(), FIXTURE);
+
+    set_corner_radius(&mut doc, "n0", 0.0);
+    set_corner_radius(&mut doc, "n0", 12.5);
+    set_corner_radius(&mut doc, "n0", 4.0);
+    assert_eq!(doc.to_xml(), FIXTURE);
+}
+
+#[test]
+fn the_key_stays_while_any_node_keeps_a_corner_radius() {
+    let mut doc = yed::new_document();
+    let first = add_node(&mut doc, &rectangle());
+    let second = add_node(&mut doc, &rectangle());
+    set_corner_radius(&mut doc, &first, 10.0);
+    set_corner_radius(&mut doc, &second, 20.0);
+    let key = radius_key(&doc).unwrap().to_owned();
+    let declared = doc.keys.iter().filter(|declared| declared.id == key);
+    assert_eq!(declared.count(), 1);
+
+    set_corner_radius(&mut doc, &first, 0.0);
+    assert_eq!(radius_key(&doc), Some(key.as_str()));
+    assert_eq!(corner_radius(&doc, &second), Some(20.0));
+    // Even one in a group, which yEd could have moved there.
+    let mut nested = Node::new("group::n0");
+    nested.data.push(Data::from_text(&key, "3.0"));
+    let mut group = Node::new("group");
+    group.graph = Some(Graph {
+        nodes: vec![nested],
+        ..Graph::default()
+    });
+    doc.graphs[0].nodes.push(group);
+    set_corner_radius(&mut doc, &second, 0.0);
+    assert_eq!(radius_key(&doc), Some(key.as_str()));
+
+    doc.graphs[0].nodes.pop();
+    set_corner_radius(&mut doc, &first, 10.0);
+    set_corner_radius(&mut doc, &first, 4.0);
+    assert_eq!(radius_key(&doc), None);
+}
+
+#[test]
+fn kept_corner_radii_round_only_round_rectangles() {
+    let mut doc = yed::new_document();
+    let id = add_node(&mut doc, &rectangle());
+    set_corner_radius(&mut doc, &id, 10.0);
+    // As yEd leaves the attribute when it makes the node a rectangle.
+    let make = |doc: &mut GraphMl, shape| {
+        edit_graphics(doc, &id, |graphics| graphics.kind = NodeKind::Shape(shape));
+    };
+    make(&mut doc, ShapeType::Rectangle);
+    assert_eq!(corner_radius(&doc, &id), Some(0.0));
+    make(&mut doc, ShapeType::RoundRectangle);
+    assert_eq!(corner_radius(&doc, &id), Some(10.0));
+}
+
+#[test]
+fn kept_corner_radii_are_read_however_written_else_yeds_is() {
+    for (text, radius) in [
+        ("10", 10.0),
+        (" 2.5\n", 2.5),
+        ("1.0E-4", 1e-4),
+        ("abc", 4.0),
+        ("", 4.0),
+        ("-1.0", 4.0),
+        ("NaN", 4.0),
+        ("Infinity", 4.0),
+    ] {
+        let mut doc = yed::new_document();
+        let id = add_node(&mut doc, &shape(ShapeType::RoundRectangle));
+        let key = ensure_radius_key(&mut doc);
+        doc.graphs[0].nodes[0].data.push(Data::from_text(key, text));
+        assert_eq!(corner_radius(&doc, &id), Some(radius), "{text:?}");
+    }
+}
+
+#[test]
+fn set_corner_radius_skips_other_shapes() {
+    let mut doc = yed::new_document();
+    let id = add_node(&mut doc, &shape(ShapeType::Ellipse));
+    doc.graphs[0].nodes.push(Node::new("plain"));
+    let before = doc.clone();
+    for id in [id.as_str(), "plain", "missing"] {
+        set_corner_radius(&mut doc, id, 10.0);
+    }
+    assert_eq!(doc, before);
+}

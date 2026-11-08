@@ -174,6 +174,11 @@ impl DrwrApp {
             Action::SetBorderType(line_type) => {
                 self.edit_selected(|graphics| graphics.border.line_type = line_type);
             }
+            Action::SetCornerRadius(radius) => {
+                if let Some(id) = &self.selected {
+                    document::set_corner_radius(&mut self.graphml, id, radius);
+                }
+            }
             Action::EditLabel => {
                 if let Some(id) = &self.selected {
                     let label = LabelRef {

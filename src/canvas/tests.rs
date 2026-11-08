@@ -157,6 +157,14 @@ impl Harness {
         document::add_node(&mut self.graphml, &graphics)
     }
 
+    /// Adds the box in [`NODE`] with its corners rounded to `radius`,
+    /// returning its id.
+    fn add_rounded_box(&mut self, radius: f64) -> String {
+        let id = self.add_box(NODE.min, NODE.max);
+        document::set_corner_radius(&mut self.graphml, &id, radius);
+        id
+    }
+
     /// Adds the box in [`NODE`] with `labels`, returning its id.
     fn add_labelled_box(&mut self, labels: Vec<Label>) -> String {
         let mut graphics = new_box(NODE.min, NODE.max);
@@ -207,8 +215,8 @@ impl Harness {
     /// The geometry of each node of `shape` in the document.
     fn shapes(&self, shape: ShapeType) -> Vec<yed::Rect> {
         document::node_graphics(&self.graphml)
-            .filter(|(_, graphics)| graphics.kind == NodeKind::Shape(shape.clone()))
-            .map(|(_, graphics)| graphics.geometry)
+            .filter(|(_, graphics, _)| graphics.kind == NodeKind::Shape(shape.clone()))
+            .map(|(_, graphics, _)| graphics.geometry)
             .collect()
     }
 }
@@ -223,6 +231,16 @@ fn filled_rects(shapes: &[Shape], fill: Color32) -> Vec<Rect> {
         .iter()
         .filter_map(|shape| match shape {
             Shape::Rect(rect) if rect.fill == fill => Some(rect.rect),
+            _ => None,
+        })
+        .collect()
+}
+
+fn paths(shapes: &[Shape]) -> Vec<&PathShape> {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Path(path) => Some(path),
             _ => None,
         })
         .collect()
@@ -1089,18 +1107,107 @@ fn ellipse_borders_are_painted_across_the_outline() {
 
     assert_eq!(filled_ellipses(&shapes, BOX_FILL), [node]);
     assert_eq!(filled_rects(&shapes, BOX_FILL), []);
-    let paths: Vec<_> = shapes
-        .iter()
-        .filter_map(|shape| match shape {
-            Shape::Path(path) => Some(path),
-            _ => None,
-        })
-        .collect();
     // The fill and the border on the polygon its dashes would follow.
     let points = line_type::ellipse_points(node, 1.0);
     let fill = PathShape::convex_polygon(points.clone(), BOX_FILL, Stroke::NONE);
     let border = PathShape::closed_line(points, Stroke::new(6.0, RED));
-    assert_eq!(paths, [&fill, &border]);
+    assert_eq!(paths(&shapes), [&fill, &border]);
+}
+
+#[test]
+fn round_rectangles_are_painted_with_yeds_corners() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let graphics = new_shape(ShapeType::RoundRectangle, NODE.min, NODE.max);
+    document::add_node(&mut harness.graphml, &graphics);
+    let shapes = harness.frame(vec![]);
+
+    assert_eq!(filled_rects(&shapes, BOX_FILL), []);
+    // The fill and the border on one polygon, as for ellipses.
+    let stroke = Stroke::new(1.0, Color32::BLACK);
+    let points = line_type::rounded_rect_points(harness.node(), 4.0, stroke, 1.0);
+    let fill = PathShape::convex_polygon(points.clone(), BOX_FILL, Stroke::NONE);
+    let border = PathShape::closed_line(points, stroke);
+    assert_eq!(paths(&shapes), [&fill, &border]);
+}
+
+#[test]
+fn corner_radii_scale_with_the_zoom() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_rounded_box(10.0);
+    harness.zoom(2.0);
+    let shapes = harness.frame(vec![]);
+
+    let stroke = Stroke::new(2.0, Color32::BLACK);
+    let node = harness.zoomed_node(2.0);
+    let points = line_type::rounded_rect_points(node, 20.0, stroke, 1.0);
+    assert_eq!(paths(&shapes)[0].points, points);
+}
+
+#[test]
+fn clicks_on_a_rounded_corner_miss_the_box() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_rounded_box(20.0);
+    let corner = NODE.min.to_vec2();
+    // Outside the rounding, though inside the bounds.
+    harness.click(corner + vec2(3.0, 3.0));
+    assert_eq!(harness.selected, None);
+    for at in [vec2(7.0, 7.0), vec2(0.5, 20.0), vec2(20.0, 0.5)] {
+        harness.selected = None;
+        harness.click(corner + at);
+        assert_eq!(harness.selected.as_deref(), Some(id.as_str()), "{at:?}");
+    }
+}
+
+#[test]
+fn the_selected_box_moves_only_from_inside_its_rounded_corners() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.selected = Some(harness.add_rounded_box(30.0));
+    harness.frame(vec![]);
+    // Outside the rounding, clear of the handles.
+    let corner = vec2(108.0, 58.0);
+    harness.frame(vec![Event::PointerMoved(harness.origin + corner)]);
+    assert_eq!(harness.cursor, CursorIcon::Default);
+    harness.drag(corner, corner + vec2(30.0, 40.0));
+    let boxes = harness.shapes(ShapeType::RoundRectangle);
+    assert_eq!(boxes, [geometry(100.0, 50.0, 150.0, 80.0)]);
+
+    let inside = vec2(112.0, 62.0);
+    harness.frame(vec![Event::PointerMoved(harness.origin + inside)]);
+    assert_eq!(harness.cursor, CursorIcon::Move);
+    harness.drag(inside, inside + vec2(30.0, 40.0));
+    let boxes = harness.shapes(ShapeType::RoundRectangle);
+    assert_eq!(boxes, [geometry(130.0, 90.0, 150.0, 80.0)]);
+}
+
+#[test]
+fn dashed_rounded_borders_run_round_the_corners_from_the_top_of_the_left_side() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut graphics = new_box(NODE.min, NODE.max);
+    graphics.border.line_type = yed::LineType::Dashed;
+    graphics.border.width = 2.0;
+    graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    let id = document::add_node(&mut harness.graphml, &graphics);
+    document::set_corner_radius(&mut harness.graphml, &id, 20.0);
+    let shapes = harness.frame(vec![]);
+
+    let outline = line_type::rounded_rect_points(harness.node(), 20.0, Stroke::new(2.0, RED), 1.0);
+    let (straight, curved) = (quads(&shapes, RED), curved_dashes(&shapes, RED));
+    // Four widths long and two apart, like Java's from the top of the left
+    // side down.
+    let start = outline[0];
+    let first = Rect::from_min_max(start - vec2(1.0, 0.0), start + vec2(1.0, 8.0));
+    assert_eq!(straight[0], first);
+    let bounds = Rect::from_points(&outline).expand(1.0);
+    for dash in &straight {
+        assert!(bounds.contains_rect(*dash), "{dash:?}");
+    }
+    // Those reaching a corner bend round it, along the outline.
+    assert!(!curved.is_empty());
+    for &point in curved.iter().flatten() {
+        along(&outline, point);
+    }
+    let count = (perimeter(&outline) / 12.0).ceil() as usize;
+    assert_eq!(straight.len() + curved.len(), count);
 }
 
 #[test]

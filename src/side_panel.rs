@@ -19,6 +19,8 @@ use crate::text_field::{self, End};
 
 /// Capped, so typing "inf" can't make a border infinite.
 const BORDER_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
+/// Capped too, though corners are rounded by no more than half a side.
+const CORNER_RADII: RangeInclusive<f64> = 0.0..=1000.0;
 /// Capped, as egui draws no glyph over 1024 pixels.
 const FONT_SIZES: RangeInclusive<u32> = 1..=500;
 /// How long the line and label position samples are, in text heights.
@@ -64,7 +66,10 @@ impl SidePanel {
                 ui.take_available_width();
                 let node = selected.and_then(|id| Some((id, document::graphics_of(graphml, id)?)));
                 match node {
-                    Some((id, graphics)) => actions = self.properties(ui, id, &graphics, fonts),
+                    Some((id, graphics)) => {
+                        let corner_radius = document::corner_radius(graphml, id);
+                        actions = self.properties(ui, id, &graphics, corner_radius, fonts);
+                    }
                     None => {
                         ui.weak("Nothing selected");
                     }
@@ -81,11 +86,13 @@ impl SidePanel {
         applied.into_iter().chain(actions).collect()
     }
 
+    /// `corner_radius` is the node's if it's a box.
     fn properties(
         &mut self,
         ui: &mut Ui,
         id: &str,
         graphics: &NodeGraphics,
+        corner_radius: Option<f64>,
         fonts: &Fonts,
     ) -> Vec<Action> {
         Grid::new("properties")
@@ -122,6 +129,12 @@ impl SidePanel {
                 let line_type = border_style_box(ui, &border.line_type);
                 actions.extend(line_type.map(Action::SetBorderType));
                 ui.end_row();
+                if let Some(radius) = corner_radius {
+                    ui.label("Corner radius");
+                    let radius = self.number_field(ui, radius, CORNER_RADII, 0.2);
+                    actions.extend(radius.map(Action::SetCornerRadius));
+                    ui.end_row();
+                }
                 // A node without labels gets a field that adds one.
                 for index in 0..graphics.labels.len().max(1) {
                     let label = graphics.labels.get(index);

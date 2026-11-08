@@ -19,6 +19,9 @@ const MAX_PERIODS: f32 = 10_000.0;
 /// As many as egui gives an ellipse 32,000 pixels across. More would take
 /// too long to paint for one of an absurd size.
 const MAX_QUARTER_POINTS: u32 = 1_000;
+/// Corners rounded by less, in pixels, look square, and would be drawn from
+/// points too close together to turn accurately.
+const MIN_CORNER_RADIUS: f32 = 0.5;
 
 /// How a line type reads in the side panel. Unknown ones read as written.
 pub fn name(line_type: &LineType) -> &str {
@@ -37,12 +40,8 @@ pub fn paint_rect_outline(painter: &Painter, rect: Rect, stroke: Stroke, line_ty
         painter.rect_stroke(rect, 0.0, stroke, StrokeKind::Middle);
         return;
     };
-    // Where egui puts a solid outline.
-    let mut sides = [rect.min.x, rect.min.y, rect.max.x, rect.max.y];
-    for side in &mut sides {
-        stroke.round_center_to_pixel(painter.pixels_per_point(), side);
-    }
-    let [left, top, right, bottom] = sides;
+    let Rect { min, max } = snap_outline(rect, stroke, painter.pixels_per_point());
+    let [left, top, right, bottom] = [min.x, min.y, max.x, max.y];
     let half = stroke.width / 2.0;
     // The top and bottom take the corners.
     let (upper, lower) = (top + half, (bottom - half).max(top + half));
@@ -64,6 +63,12 @@ pub fn paint_ellipse_outline(painter: &Painter, rect: Rect, stroke: Stroke, line
         return;
     }
     let points = ellipse_points(rect, painter.pixels_per_point());
+    paint_outline(painter, points, stroke, line_type);
+}
+
+/// Paints the outline of the polygon with corners `points` in `stroke` and
+/// `line_type`, centered on it.
+pub fn paint_outline(painter: &Painter, points: Vec<Pos2>, stroke: Stroke, line_type: &LineType) {
     let Some(pattern) = pattern(line_type) else {
         painter.add(PathShape::closed_line(points, stroke));
         return;
@@ -71,6 +76,63 @@ pub fn paint_ellipse_outline(painter: &Painter, rect: Rect, stroke: Stroke, line
     let next = points.iter().cycle().skip(1);
     let strips: Vec<[Pos2; 2]> = points.iter().zip(next).map(|(&a, &b)| [a, b]).collect();
     paint_dashes(painter, &strips, stroke, pattern);
+}
+
+/// The corners of the polygon `rect` is drawn as with its corners rounded to
+/// `radius`, but by no more than half of each side, like Java, which yEd is
+/// written in. Its sides are where egui puts `rect`'s solid outline in
+/// `stroke`. It runs counterclockwise from the top of the left side, where
+/// Java starts it. Empty if the corners would look square.
+pub fn rounded_rect_points(
+    rect: Rect,
+    radius: f32,
+    stroke: Stroke,
+    pixels_per_point: f32,
+) -> Vec<Pos2> {
+    let rect = snap_outline(rect, stroke, pixels_per_point);
+    let radius = Vec2::splat(radius).min(rect.size() / 2.0);
+    // Also catches inverted rects.
+    if !(rect.is_finite() && radius.min_elem() * pixels_per_point >= MIN_CORNER_RADIUS) {
+        return Vec::new();
+    }
+    let quarter = quarter_points(radius, pixels_per_point);
+    // The corners' centers, kept from crossing by rounding errors.
+    let (min, max) = (rect.min + radius, rect.max - radius);
+    let max = max.max(min);
+    let [left, top, right, bottom] = [rect.min.x, rect.min.y, rect.max.x, rect.max.y];
+    let mut points = Vec::with_capacity(4 * (quarter.len() + 2));
+    add_side(&mut points, pos2(left, min.y), pos2(left, max.y));
+    let corner = pos2(min.x, max.y);
+    points.extend(quarter.iter().map(|p| corner + vec2(-p.x, p.y)));
+    add_side(&mut points, pos2(min.x, bottom), pos2(max.x, bottom));
+    points.extend(quarter.iter().rev().map(|p| max + *p));
+    add_side(&mut points, pos2(right, max.y), pos2(right, min.y));
+    let corner = pos2(max.x, min.y);
+    points.extend(quarter.iter().map(|p| corner + vec2(p.x, -p.y)));
+    add_side(&mut points, pos2(max.x, top), pos2(min.x, top));
+    points.extend(quarter.iter().rev().map(|p| min - *p));
+    points
+}
+
+/// Adds the ends of a side, which are the same if it's rounded all the way.
+fn add_side(points: &mut Vec<Pos2>, from: Pos2, to: Pos2) {
+    points.push(from);
+    if to != from {
+        points.push(to);
+    }
+}
+
+/// Where egui puts `rect`'s solid outline in `stroke`, or its fill if
+/// `stroke` has no width.
+fn snap_outline(rect: Rect, stroke: Stroke, pixels_per_point: f32) -> Rect {
+    if stroke.width <= 0.0 {
+        return rect.round_to_pixels(pixels_per_point);
+    }
+    let Rect { mut min, mut max } = rect;
+    for side in [&mut min.x, &mut min.y, &mut max.x, &mut max.y] {
+        stroke.round_center_to_pixel(pixels_per_point, side);
+    }
+    Rect::from_min_max(min, max)
 }
 
 /// The corners of the polygon the ellipse filling `rect` is drawn as,
@@ -81,20 +143,8 @@ pub fn ellipse_points(rect: Rect, pixels_per_point: f32) -> Vec<Pos2> {
     if !(rect.is_finite() && radius.min_elem() > 0.0) {
         return Vec::new();
     }
-    // Like egui, at least 8 points a quarter, more for big ellipses, eased
-    // towards the tight bends.
-    let max_radius = (radius.max_elem() * pixels_per_point) as u32;
-    let num_points = (max_radius / 16).clamp(8, MAX_QUARTER_POINTS);
-    let ratio = ((radius.y / radius.x) * 0.5).clamp(0.0, 1.0);
-    let quarter: Vec<Vec2> = (1..num_points)
-        .map(|i| {
-            let percent = i as f32 / num_points as f32;
-            let eased = 2.0 * (percent - percent.powf(2.0)) * ratio + percent.powf(2.0);
-            let t = eased * FRAC_PI_2;
-            vec2(radius.x * t.cos(), radius.y * t.sin())
-        })
-        .collect();
-    let mut points = Vec::with_capacity(4 * num_points as usize);
+    let quarter = quarter_points(radius, pixels_per_point);
+    let mut points = Vec::with_capacity(4 * (quarter.len() + 1));
     points.push(center + vec2(radius.x, 0.0));
     points.extend(quarter.iter().map(|p| center + *p));
     points.push(center + vec2(0.0, radius.y));
@@ -104,6 +154,23 @@ pub fn ellipse_points(rect: Rect, pixels_per_point: f32) -> Vec<Pos2> {
     points.push(center + vec2(0.0, -radius.y));
     points.extend(quarter.iter().rev().map(|p| center + vec2(p.x, -p.y)));
     points
+}
+
+/// The points between the ends of a quarter of the ellipse of `radius`
+/// around zero, from its right end down. Like egui, at least 8 make up a
+/// quarter, more for big ellipses, eased towards the tight bends.
+fn quarter_points(radius: Vec2, pixels_per_point: f32) -> Vec<Vec2> {
+    let max_radius = (radius.max_elem() * pixels_per_point) as u32;
+    let num_points = (max_radius / 16).clamp(8, MAX_QUARTER_POINTS);
+    let ratio = ((radius.y / radius.x) * 0.5).clamp(0.0, 1.0);
+    (1..num_points)
+        .map(|i| {
+            let percent = i as f32 / num_points as f32;
+            let eased = 2.0 * (percent - percent.powf(2.0)) * ratio + percent.powf(2.0);
+            let t = eased * FRAC_PI_2;
+            vec2(radius.x * t.cos(), radius.y * t.sin())
+        })
+        .collect()
 }
 
 /// Paints a line across `x` at `y` in `stroke` and `line_type`.

@@ -232,3 +232,107 @@ fn unknown_types_are_drawn_solid() {
 fn dots_are_square_and_a_width_apart() {
     assert_eq!(pattern(&LineType::Dotted), Some(&[[1.0, 1.0]][..]));
 }
+
+/// The cross products of the edges meeting at each corner of `points`,
+/// which a convex polygon running counterclockwise on screen has negative.
+fn turns(points: &[Pos2]) -> Vec<f32> {
+    let n = points.len();
+    (0..n)
+        .map(|i| {
+            let (a, b, c) = (points[i], points[(i + 1) % n], points[(i + 2) % n]);
+            (b - a).x * (c - b).y - (b - a).y * (c - b).x
+        })
+        .collect()
+}
+
+#[test]
+fn rounded_rects_run_counterclockwise_from_the_top_of_the_left_side() {
+    // On pixel centers, where egui puts a solid outline a pixel wide.
+    let rect = Rect::from_min_max(pos2(0.5, 0.5), pos2(100.5, 50.5));
+    let points = rounded_rect_points(rect, 10.0, Stroke::new(1.0, Color32::RED), 1.0);
+    // The ends of each side, then 7 points round the corner after it.
+    assert_eq!(points.len(), 4 * (2 + 7));
+    assert_eq!(points[0..2], [pos2(0.5, 10.5), pos2(0.5, 40.5)]);
+    assert_eq!(points[9..11], [pos2(10.5, 50.5), pos2(90.5, 50.5)]);
+    assert_eq!(points[18..20], [pos2(100.5, 40.5), pos2(100.5, 10.5)]);
+    assert_eq!(points[27..29], [pos2(90.5, 0.5), pos2(10.5, 0.5)]);
+    let centers = [(10.5, 40.5), (90.5, 40.5), (90.5, 10.5), (10.5, 10.5)];
+    for (corner, (x, y)) in centers.into_iter().enumerate() {
+        for point in &points[9 * corner + 2..9 * corner + 9] {
+            let radius = point.distance(pos2(x, y));
+            assert!((radius - 10.0).abs() < 1e-4, "{corner}: {point:?}");
+        }
+    }
+    for turn in turns(&points) {
+        assert!(turn < 0.0, "{turn}");
+    }
+}
+
+#[test]
+fn corners_are_rounded_by_no_more_than_half_of_each_side() {
+    // Like Java's, so 20 across but only 5 down.
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(100.0, 10.0));
+    let points = rounded_rect_points(rect, 20.0, Stroke::NONE, 1.0);
+    // The left and right sides are rounded all the way, so their ends are
+    // the same.
+    assert_eq!(points.len(), 2 * (1 + 7) + 2 * (2 + 7));
+    assert_eq!(points[0], pos2(0.0, 5.0));
+    assert_eq!(points[8..10], [pos2(20.0, 10.0), pos2(80.0, 10.0)]);
+    assert_eq!(points[17], pos2(100.0, 5.0));
+    assert_eq!(Rect::from_points(&points), rect);
+    for turn in turns(&points) {
+        assert!(turn < 0.0, "{turn}");
+    }
+    // Rounded all the way round, like an ellipse.
+    let points = rounded_rect_points(rect, 1000.0, Stroke::NONE, 1.0);
+    assert_eq!(points.len(), 4 * (1 + 7));
+    assert!(turns(&points).iter().all(|turn| *turn < 0.0));
+}
+
+#[test]
+fn rounded_rects_are_where_egui_puts_a_solid_outline() {
+    let rect = Rect::from_min_max(pos2(10.3, 20.6), pos2(110.2, 70.7));
+    let outline = |width: f32, pixels_per_point: f32| {
+        let stroke = Stroke::new(width, Color32::RED);
+        Rect::from_points(&rounded_rect_points(rect, 10.0, stroke, pixels_per_point))
+    };
+    // On pixel centers for odd widths, else between pixels, as for the fill.
+    let centers = Rect::from_min_max(pos2(10.5, 20.5), pos2(110.5, 70.5));
+    let between = Rect::from_min_max(pos2(10.0, 21.0), pos2(110.0, 71.0));
+    assert_eq!(outline(1.0, 1.0), centers);
+    assert_eq!(outline(3.0, 1.0), centers);
+    assert_eq!(outline(2.0, 1.0), between);
+    assert_eq!(outline(0.0, 1.0), between);
+    // At 2 pixels a point, half a point is a pixel.
+    let half = Rect::from_min_max(pos2(10.25, 20.75), pos2(110.25, 70.75));
+    assert_eq!(outline(0.5, 2.0), half);
+}
+
+#[test]
+fn corners_rounded_less_than_half_a_pixel_are_square() {
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(100.0, 50.0));
+    assert!(rounded_rect_points(rect, 0.0, Stroke::NONE, 1.0).is_empty());
+    assert!(rounded_rect_points(rect, 0.4, Stroke::NONE, 1.0).is_empty());
+    assert!(!rounded_rect_points(rect, 0.4, Stroke::NONE, 2.0).is_empty());
+}
+
+#[test]
+fn flat_inverted_or_endless_rects_have_no_rounded_corners() {
+    for size in [
+        vec2(0.0, 50.0),
+        vec2(100.0, 0.0),
+        vec2(-100.0, 50.0),
+        vec2(f32::INFINITY, 50.0),
+    ] {
+        let rect = Rect::from_min_size(Pos2::ZERO, size);
+        let points = rounded_rect_points(rect, 10.0, Stroke::NONE, 1.0);
+        assert!(points.is_empty(), "{size:?}");
+    }
+}
+
+#[test]
+fn rounded_rects_of_absurd_sizes_get_a_bounded_number_of_corners() {
+    let huge = Rect::from_min_size(Pos2::ZERO, Vec2::splat(1e10));
+    let points = rounded_rect_points(huge, 1e10, Stroke::NONE, 2.0);
+    assert_eq!(points.len(), 4 * MAX_QUARTER_POINTS as usize);
+}

@@ -188,7 +188,7 @@ impl Canvas {
             painter.rect_filled(rect, 0.0, BACKGROUND);
             let editing = self.editor.as_ref().map(|editor| &editor.label);
             let mut outline = None;
-            for (id, mut graphics) in document::node_graphics(graphml) {
+            for (id, mut graphics, radius) in document::node_graphics(graphml) {
                 if selected.as_deref() == Some(id) {
                     if let Some(geometry) = dragged {
                         document::resize(&mut graphics, geometry);
@@ -198,10 +198,11 @@ impl Canvas {
                 // The label being edited shows in its editor instead.
                 let hidden = editing.filter(|label| label.node == id);
                 let hidden = hidden.map(|label| label.index);
-                paint(&painter, to_screen, text_zoom, &graphics, hidden);
+                paint(&painter, to_screen, text_zoom, &graphics, radius, hidden);
             }
             if let Some(graphics) = drawing {
-                paint(&painter, to_screen, text_zoom, &graphics, None);
+                // New boxes have square corners.
+                paint(&painter, to_screen, text_zoom, &graphics, None, None);
             }
             // Over the nodes, so one on top can't hide it.
             if let Some(outline) = outline {
@@ -432,10 +433,11 @@ impl Canvas {
         id: &str,
     ) -> Option<yed::Rect> {
         let graphics = document::graphics_of(graphml, id)?;
+        let corner_radius = document::corner_radius(graphml, id);
         let node = screen_rect(to_screen, &graphics);
         let geometry = graphics.geometry;
         let to_graph = |pos: Pos2| graph_point(to_screen, pos);
-        let inside = |pos: Pos2| hit(to_screen, &graphics, pos);
+        let inside = |pos: Pos2| hit(to_screen, &graphics, corner_radius, pos);
         let moving = self.node_drag.is_some_and(|drag| drag.handle.is_none());
         if moving || canvas.hover_pos().is_some_and(inside) {
             ui.ctx().set_cursor_icon(CursorIcon::Move);
@@ -561,9 +563,9 @@ fn select_clicked(
     };
     // Nodes are painted in order, so the last one hit is on top.
     *selected = document::node_graphics(graphml)
-        .filter(|(_, graphics)| hit(to_screen, graphics, pos))
+        .filter(|(_, graphics, corner_radius)| hit(to_screen, graphics, *corner_radius, pos))
         .last()
-        .map(|(id, _)| id.to_owned());
+        .map(|(id, ..)| id.to_owned());
 }
 
 /// Where the primary button was released this frame.
@@ -614,27 +616,49 @@ fn new_shape(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
 /// The shapes the canvas can draw nodes as.
 #[derive(Clone, Copy)]
 enum Outline {
-    Rect,
+    /// A box, with its corners rounded to this radius in graph points.
+    Rect(f32),
     Ellipse,
 }
 
 /// The shape the canvas draws a node as, if it's a kind it can draw yet.
-fn shape(graphics: &NodeGraphics) -> Option<Outline> {
+/// `corner_radius` rounds the corners of a box; see
+/// [`document::corner_radius`].
+fn shape(graphics: &NodeGraphics, corner_radius: Option<f64>) -> Option<Outline> {
     match &graphics.kind {
-        NodeKind::Shape(ShapeType::Rectangle) => Some(Outline::Rect),
+        NodeKind::Shape(ShapeType::Rectangle | ShapeType::RoundRectangle) => {
+            Some(Outline::Rect(corner_radius.unwrap_or_default() as f32))
+        }
         NodeKind::Shape(ShapeType::Ellipse) => Some(Outline::Ellipse),
         _ => None,
     }
 }
 
 /// Whether a point on screen is on a node the canvas draws.
-fn hit(to_screen: TSTransform, graphics: &NodeGraphics, pos: Pos2) -> bool {
+fn hit(
+    to_screen: TSTransform,
+    graphics: &NodeGraphics,
+    corner_radius: Option<f64>,
+    pos: Pos2,
+) -> bool {
     let rect = screen_rect(to_screen, graphics);
-    match shape(graphics) {
-        Some(Outline::Rect) => rect.contains(pos),
+    match shape(graphics, corner_radius) {
+        Some(Outline::Rect(radius)) => in_rounded_rect(rect, radius * to_screen.scaling, pos),
         Some(Outline::Ellipse) => in_ellipse(rect, pos),
         None => false,
     }
+}
+
+/// Whether a point is in `rect` with its corners rounded to `radius`, but by
+/// no more than half of each side, as painted.
+fn in_rounded_rect(rect: Rect, radius: f32, pos: Pos2) -> bool {
+    let radius = Vec2::splat(radius).min(rect.size() / 2.0);
+    if radius.min_elem() <= 0.0 {
+        return rect.contains(pos);
+    }
+    // From the center of the corner it's in, in radii.
+    let offset = (pos - rect.shrink2(radius).clamp(pos)) / radius;
+    rect.contains(pos) && offset.length_sq() <= 1.0
 }
 
 /// Whether a point is in the ellipse filling `rect`. An inverted `rect` has
@@ -667,15 +691,17 @@ fn yed_rect(rect: Rect) -> yed::Rect {
 }
 
 /// Paints a node with its labels, except the one at index `hidden`, unless
-/// it's a kind the canvas can't draw yet.
+/// it's a kind the canvas can't draw yet. `corner_radius` rounds the corners
+/// of a box.
 fn paint(
     painter: &Painter,
     to_screen: TSTransform,
     text_zoom: f32,
     graphics: &NodeGraphics,
+    corner_radius: Option<f64>,
     hidden: Option<usize>,
 ) {
-    let Some(outline) = shape(graphics) else {
+    let Some(outline) = shape(graphics, corner_radius) else {
         return;
     };
     let rect = screen_rect(to_screen, graphics);
@@ -686,9 +712,19 @@ fn paint(
     });
     // Like yEd, which centers borders on the outline, over the fill.
     match outline {
-        Outline::Rect => {
-            painter.rect_filled(rect, 0.0, fill);
-            line_type::paint_rect_outline(painter, rect, stroke, &border.line_type);
+        Outline::Rect(radius) => {
+            let radius = radius * to_screen.scaling;
+            let ppp = painter.pixels_per_point();
+            let points = line_type::rounded_rect_points(rect, radius, stroke, ppp);
+            if points.is_empty() {
+                painter.rect_filled(rect, 0.0, fill);
+                line_type::paint_rect_outline(painter, rect, stroke, &border.line_type);
+            } else {
+                // On the border's polygon, so their corners line up.
+                let filled = PathShape::convex_polygon(points.clone(), fill, Stroke::NONE);
+                painter.add(filled);
+                line_type::paint_outline(painter, points, stroke, &border.line_type);
+            }
         }
         Outline::Ellipse => {
             let points = line_type::ellipse_points(rect, painter.pixels_per_point());
