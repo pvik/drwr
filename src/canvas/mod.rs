@@ -521,6 +521,11 @@ impl Canvas {
         });
     }
 
+    /// Stops editing a label on the canvas, dropping what was typed.
+    pub fn cancel_label_edit(&mut self) {
+        self.editor = None;
+    }
+
     /// Shows the label being edited, if there is one. Returns the edit once
     /// Enter or a click elsewhere applies it.
     fn show_editor(&mut self, ui: &mut egui::Ui, shown: Shown) -> Option<Action> {

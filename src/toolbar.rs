@@ -11,6 +11,7 @@ const OPEN_ICON: ImageSource<'static> = include_image!("../assets/icons/open.svg
 const SAVE_ICON: ImageSource<'static> = include_image!("../assets/icons/save.svg");
 const ZOOM_IN_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_in.svg");
 const ZOOM_OUT_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_out.svg");
+const DELETE_ICON: ImageSource<'static> = include_image!("../assets/icons/delete.svg");
 
 #[rustfmt::skip]
 const TOOLS: [(Tool, &str, ImageSource<'static>); 7] = [
@@ -24,6 +25,8 @@ const TOOLS: [(Tool, &str, ImageSource<'static>); 7] = [
 ];
 
 const ICON_SIZE: Vec2 = Vec2::splat(20.0);
+/// egui pads buttons wider than tall; even padding keeps them square.
+const BUTTON_PADDING: Vec2 = Vec2::splat(4.0);
 /// Wide enough for "400%", so the zoom dropdown keeps its width.
 const ZOOM_BOX_WIDTH: f32 = 64.0;
 
@@ -38,12 +41,9 @@ pub fn show(
 ) -> Option<Action> {
     let mut clicked = None;
     egui::Panel::top("toolbar").show(ui, |ui| {
-        ui.horizontal(|ui| {
-            // egui pads buttons wider than tall; even padding keeps them square.
-            let padding = Vec2::splat(4.0);
-            ui.spacing_mut().button_padding = padding;
+        button_row(ui, |ui| {
             // So the zoom dropdown is as tall as the icon buttons.
-            ui.spacing_mut().interact_size.y = ICON_SIZE.y + 2.0 * padding.y;
+            ui.spacing_mut().interact_size.y = ICON_SIZE.y + 2.0 * BUTTON_PADDING.y;
 
             for (action, name, icon, enabled) in [
                 (Action::New, "New", NEW_ICON, true),
@@ -83,6 +83,25 @@ pub fn show(
         });
     });
     clicked
+}
+
+/// Adds the side panel's toolbar, whose Delete button is enabled if a node or
+/// edge is `selected`. Returns the action clicked.
+pub fn show_for_selection(ui: &mut egui::Ui, selected: bool) -> Option<Action> {
+    button_row(ui, |ui| {
+        let action = Action::Delete;
+        let button = icon_button(DELETE_ICON, "Delete");
+        add(ui, button, selected, "Delete", &action).then_some(action)
+    })
+}
+
+/// Lays out icon buttons, added by `add_buttons`, side by side.
+fn button_row<R>(ui: &mut egui::Ui, add_buttons: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().button_padding = BUTTON_PADDING;
+        add_buttons(ui)
+    })
+    .inner
 }
 
 /// Adds a dropdown that shows `zoom` and offers the presets. Returns the

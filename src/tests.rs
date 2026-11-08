@@ -1716,6 +1716,43 @@ fn delete_removes_the_selected_node_with_its_edges() {
 }
 
 #[test]
+fn the_side_panels_delete_button_deletes_the_selected_node() {
+    let mut harness = fixture_harness();
+    assert!(harness.widget("Delete").is_disabled());
+    harness.app.selected = Some(Selection::node("n1"));
+    harness.click_widget("Delete");
+    assert_eq!(document::graphics_of(&harness.app.graphml, "n1"), None);
+    assert_eq!(harness.edge_ids(), ["e1"]);
+    assert_eq!(harness.app.selected, None);
+    assert!(harness.widget("Delete").is_disabled());
+}
+
+#[test]
+fn the_delete_button_keeps_the_label_typed_off_the_next_edge() {
+    let mut harness = fixture_harness();
+    harness.app.selected = Some(Selection::edge(0));
+    // The side panel is painted first, so this is its field, not the canvas.
+    harness.click_text("reads");
+    harness.press(CTRL, Key::A);
+    harness.type_text("writes");
+    harness.click_widget("Delete");
+    assert_eq!(harness.edge_ids(), ["e1"]);
+    assert_eq!(harness.edge(0).labels, []);
+}
+
+#[test]
+fn the_delete_button_keeps_the_label_edited_on_the_canvas_off_the_next_edge() {
+    let mut harness = fixture_harness();
+    harness.app.selected = Some(Selection::edge(0));
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    harness.type_text("writes");
+    harness.click_widget("Delete");
+    assert_eq!(harness.edge_ids(), ["e1"]);
+    assert_eq!(harness.edge(0).labels, []);
+}
+
+#[test]
 fn the_side_panel_shows_the_selected_edge() {
     let mut harness = fixture_harness();
     harness.app.selected = Some(Selection::edge(0));

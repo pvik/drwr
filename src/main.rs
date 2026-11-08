@@ -181,7 +181,12 @@ impl DrwrApp {
                 Some(Selection {
                     item: Item::Edge(index),
                     bend: None,
-                }) => document::remove_edge(&mut self.graphml, index),
+                }) => {
+                    document::remove_edge(&mut self.graphml, index);
+                    // The Delete button's click would otherwise apply a label
+                    // edited on the canvas to the edge now at `index`.
+                    self.canvas.cancel_label_edit();
+                }
                 Some(Selection {
                     item: Item::Node(id),
                     ..

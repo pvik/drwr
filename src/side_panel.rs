@@ -18,6 +18,7 @@ use crate::fonts::{self, Fonts};
 use crate::label_position;
 use crate::line_type;
 use crate::text_field::{self, End};
+use crate::toolbar;
 
 /// Of borders and edges. Capped, so typing "inf" can't make one infinite.
 const LINE_WIDTHS: RangeInclusive<f64> = 0.0..=100.0;
@@ -28,8 +29,8 @@ const FONT_SIZES: RangeInclusive<u32> = 1..=500;
 /// How long the line and label position samples are, in text heights.
 const SAMPLE_LENGTH: f32 = 2.0;
 
-/// A resizable panel right of the canvas with the properties of the selected
-/// node or edge.
+/// A resizable panel right of the canvas with a toolbar and the properties of
+/// the selected node or edge.
 #[derive(Default)]
 pub struct SidePanel {
     edit: Option<FieldEdit>,
@@ -47,8 +48,8 @@ struct FieldEdit {
 }
 
 impl SidePanel {
-    /// Shows the properties of the `selected` node or edge, with the font
-    /// families `fonts` offers. Returns the actions asked for.
+    /// Shows the toolbar and the properties of the `selected` node or edge,
+    /// with the font families `fonts` offers. Returns the actions asked for.
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -57,10 +58,13 @@ impl SidePanel {
         fonts: &Fonts,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
+        let mut clicked = None;
         let panel = egui::Panel::right("side_panel");
         // Wide enough for the border style dropdown, which would otherwise
         // widen the panel the first time a node is selected.
         panel.default_size(245.0).show(ui, |ui| {
+            clicked = toolbar::show_for_selection(ui, selected.is_some());
+            ui.separator();
             // A node's rows can outgrow a small window, more so with labels.
             ScrollArea::vertical().show(ui, |ui| {
                 // Otherwise the panel shrinks to fit its contents, even after
@@ -89,7 +93,8 @@ impl SidePanel {
             .take_if(|edit| !ui.memory(|memory| memory.has_focus(edit.field)));
         let applied = left.map(|edit| Action::SetLabel(edit.label, edit.text));
         // First, so a dialog the same click opens shows the text applied.
-        applied.into_iter().chain(actions).collect()
+        // Delete last, as it hands a deleted edge's index to the next edge.
+        applied.into_iter().chain(actions).chain(clicked).collect()
     }
 
     /// The properties of the node with id `id`, whose graphics are `node`.
