@@ -2261,6 +2261,53 @@ fn the_arrow_tool_draws_edges_with_an_arrowhead_at_the_end() {
 }
 
 #[test]
+fn arrowheads_scale_with_the_line_width() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    let edge = harness.add_edge(&node, &other, &[]);
+    document::edit_edge_graphics(&mut harness.graphml, edge, |graphics| {
+        graphics.line.width = 3.0;
+        graphics.arrows.target = yed::Arrow::Standard;
+    });
+    let shapes = harness.frame(vec![]);
+
+    // Three times as big as on a line 1 point wide.
+    let origin = harness.origin.to_vec2();
+    let heads = arrowheads(&shapes, Color32::BLACK);
+    let bounds = Rect::from_points(&heads[0]);
+    assert_near(bounds.min, pos2(370.0, 78.5) + origin);
+    assert_near(bounds.max, pos2(400.0, 102.5) + origin);
+    assert_path_near(
+        &lines(&shapes, Color32::BLACK)[0],
+        &[pos2(250.0, 90.5) + origin, pos2(379.0, 90.5) + origin],
+    );
+}
+
+#[test]
+fn edges_shorter_than_an_arrowhead_keep_both_arrowheads() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let node = harness.add_box(NODE.min, NODE.max);
+    let other = harness.add_box(pos2(260.0, 50.0), pos2(410.0, 130.0));
+    let edge = harness.add_edge(&node, &other, &[]);
+    document::edit_edge_graphics(&mut harness.graphml, edge, |graphics| {
+        graphics.line.width = 2.0;
+        graphics.arrows.source = yed::Arrow::Standard;
+        graphics.arrows.target = yed::Arrow::Standard;
+    });
+    let shapes = harness.frame(vec![]);
+
+    let origin = harness.origin.to_vec2();
+    let tips: Vec<Pos2> = (arrowheads(&shapes, Color32::BLACK).iter())
+        .map(|head| head[0])
+        .collect();
+    assert_path_near(
+        &tips,
+        &[pos2(260.0, 90.0) + origin, pos2(250.0, 90.0) + origin],
+    );
+    assert_eq!(lines(&shapes, Color32::BLACK), Vec::<Vec<Pos2>>::new());
+}
+
+#[test]
 fn clicks_draw_edges_with_bends_where_they_miss_the_nodes() {
     let mut harness = Harness::new(Tool::Line);
     let (node, other) = harness.add_two_boxes();

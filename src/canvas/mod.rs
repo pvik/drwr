@@ -1256,9 +1256,8 @@ fn paint_edge(
     hidden: Option<usize>,
 ) {
     let path = shown.path(look);
-    let zoom = shown.to_screen.scaling;
     let line = &look.graphics.line;
-    let width = line.width as f32 * zoom;
+    let width = line.width as f32 * shown.to_screen.scaling;
     if chosen {
         let halo = Stroke::new(width + 2.0 * HALO.width, HALO.color);
         painter.add(PathShape::line(path.clone(), halo));
@@ -1266,14 +1265,8 @@ fn paint_edge(
     let stroke = line
         .color
         .map_or(Stroke::NONE, |color| Stroke::new(width, color32(color)));
-    edge::paint(
-        painter,
-        path,
-        stroke,
-        &line.line_type,
-        &look.graphics.arrows,
-        zoom,
-    );
+    let arrows = &look.graphics.arrows;
+    edge::paint(painter, path, stroke, &line.line_type, arrows);
     let owner = Owner::Edge(shown.route(look));
     for (index, label) in look.graphics.labels.iter().enumerate() {
         if label.visible && hidden != Some(index) {

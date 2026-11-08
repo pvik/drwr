@@ -6,9 +6,9 @@ use graphml::yed::{Arrow, Arrows, LineType};
 
 use crate::line_type;
 
-/// yEd's standard arrowhead, a triangle with its back pushed in, in graph
-/// points: how long it is, half how wide, and how far its notch, where the
-/// line ends, is from its tip.
+/// yEd's standard arrowhead, a triangle with its back pushed in, in line
+/// widths: how long it is, half how wide, and how far its notch, where the
+/// line ends, is from its tip. Lines 1 point wide get yEd's size.
 const ARROW_LENGTH: f32 = 10.0;
 const ARROW_HALF_WIDTH: f32 = 4.0;
 const ARROW_NOTCH: f32 = 7.0;
@@ -70,55 +70,57 @@ pub fn nearest_segment(path: &[Pos2], pos: Pos2) -> Option<(usize, f32)> {
 }
 
 /// Paints a line along `path` in `stroke` and `line_type`, with `arrows` at
-/// its ends, at `zoom` screen points a graph point.
+/// its ends sized to its width.
 pub fn paint(
     painter: &Painter,
     mut path: Vec<Pos2>,
     stroke: Stroke,
     line_type: &LineType,
     arrows: &Arrows,
-    zoom: f32,
 ) {
     path.dedup();
-    if path.len() < 2 || stroke.color.a() == 0 {
+    if path.len() < 2 || stroke.width <= 0.0 || stroke.color.a() == 0 {
         return;
     }
-    if stroke.width > 0.0 {
-        snap(&mut path, stroke, painter.pixels_per_point());
+    snap(&mut path, stroke, painter.pixels_per_point());
+    // Both are placed before the line is cut back to their notches, which can
+    // leave nothing of a short line.
+    let target = arrowhead(&path, &arrows.target, stroke.width);
+    path.reverse();
+    let source = arrowhead(&path, &arrows.source, stroke.width);
+    if source.is_some() {
+        cut_end(&mut path, ARROW_NOTCH * stroke.width);
     }
-    let mut heads = Vec::new();
-    if arrows.target != Arrow::None {
-        heads.extend(arrowhead(&mut path, zoom));
+    path.reverse();
+    if target.is_some() {
+        cut_end(&mut path, ARROW_NOTCH * stroke.width);
     }
-    if arrows.source != Arrow::None {
-        path.reverse();
-        heads.extend(arrowhead(&mut path, zoom));
-        path.reverse();
-    }
-    if path.len() >= 2 && stroke.width > 0.0 {
+    if path.len() >= 2 {
         line_type::paint_polyline(painter, &path, stroke, line_type);
     }
-    for head in heads {
+    for head in [target, source].into_iter().flatten() {
         painter.add(PathShape::convex_polygon(head, stroke.color, Stroke::NONE));
     }
 }
 
-/// The outline of an arrowhead at the end of `path`, from its tip, which
-/// cuts the line back to its notch.
-fn arrowhead(path: &mut Vec<Pos2>, zoom: f32) -> Option<Vec<Pos2>> {
+/// The outline of `arrow` at the end of `path`, a line `width` wide, from
+/// its tip.
+fn arrowhead(path: &[Pos2], arrow: &Arrow, width: f32) -> Option<Vec<Pos2>> {
+    if *arrow == Arrow::None {
+        return None;
+    }
     let tip = *path.last()?;
     let from = *path.iter().rev().find(|&&point| point != tip)?;
     let back = (from - tip).normalized();
-    let across = back.rot90() * ARROW_HALF_WIDTH * zoom;
-    let corner = tip + back * ARROW_LENGTH * zoom;
-    let notch = tip + back * ARROW_NOTCH * zoom;
+    let across = back.rot90() * ARROW_HALF_WIDTH * width;
+    let corner = tip + back * ARROW_LENGTH * width;
+    let notch = tip + back * ARROW_NOTCH * width;
     let mut outline = vec![tip, corner + across, notch, corner - across];
     // egui fans the fill out from the first point, which only the tip sees all
     // of, and reverses a path wound the other way.
     if signed_area(&outline) < 0.0 {
         outline.swap(1, 3);
     }
-    cut_end(path, ARROW_NOTCH * zoom);
     Some(outline)
 }
 
