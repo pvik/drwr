@@ -26,6 +26,19 @@ fn alt_f_opens_the_file_menu() {
 }
 
 #[test]
+fn enter_on_a_menu_item_closes_the_menu() {
+    let mut harness = fixture_harness();
+    harness.press(Modifiers::ALT, Key::F);
+    for key in [Key::ArrowDown, Key::Enter] {
+        harness.run(vec![]);
+        harness.press(Modifiers::NONE, key);
+    }
+    assert_eq!(harness.app.file, None, "it was New");
+    harness.run(vec![]);
+    assert!(!Popup::is_any_open(&harness.ctx));
+}
+
+#[test]
 fn escape_closes_the_menu_before_it_selects_the_cursor() {
     let mut harness = Harness::new();
     harness.press(Modifiers::NONE, Key::B);

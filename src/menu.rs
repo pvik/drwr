@@ -82,7 +82,8 @@ fn items<const N: usize>(ui: &mut egui::Ui, items: [(&str, Action, bool); N]) ->
         if let Some(shortcut) = shortcuts::text(ui.ctx(), &action) {
             button = button.shortcut_text(shortcut);
         }
-        if ui.add_enabled(enabled, button).clicked() {
+        let response = ui.add_enabled(enabled, button);
+        if picked(ui, &response) {
             clicked = Some(action);
         }
     }
@@ -103,9 +104,20 @@ fn check_items<const N: usize>(
             text.push_right(Atom::grow());
             text.push_right(RichText::new(shortcut).weak());
         }
-        if ui.add(Checkbox::new(&mut ticked, text)).clicked() {
+        let response = ui.add(Checkbox::new(&mut ticked, text));
+        if picked(ui, &response) {
             clicked = Some(action);
         }
+    }
+    clicked
+}
+
+/// Whether the menu item of `response` was clicked, closing the menu if so,
+/// as egui does only for clicks of the pointer, not Enter.
+fn picked(ui: &egui::Ui, response: &egui::Response) -> bool {
+    let clicked = response.clicked();
+    if clicked {
+        ui.close();
     }
     clicked
 }
