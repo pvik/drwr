@@ -2917,6 +2917,23 @@ fn escape_cancels_the_selection_box() {
 }
 
 #[test]
+fn the_box_hides_the_handles_and_moves_nothing_while_it_is_dragged_out() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
+    harness.selected = Selection::bend_of(0, 0);
+    // Over a node, the pointer still draws the box rather than moving it.
+    let (from, to) = (vec2(50.0, 400.0), vec2(175.0, 90.0));
+    let shapes = harness.drag_and_hold(from, to);
+
+    let drawn = Rect::from_two_pos(harness.origin + from, harness.origin + to);
+    assert_eq!(stroked_rects(&shapes, SELECTION.color), [drawn]);
+    assert_eq!(port_handles(&shapes), []);
+    assert_eq!(lines(&shapes, HALO.color), [] as [Vec<Pos2>; 0]);
+    assert_eq!(harness.cursor, CursorIcon::Default);
+}
+
+#[test]
 fn a_box_round_only_one_node_selects_it_alone_with_its_handles() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();

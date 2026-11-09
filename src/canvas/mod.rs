@@ -322,9 +322,10 @@ impl Canvas {
                     double_clicked = response.double_clicked_by(PointerButton::Primary)
                         && !ctrl
                         && !selected.is_empty();
-                    // Over anything a drag moves.
-                    let hovered = response
-                        .hover_pos()
+                    // Over anything a drag moves. The canvas counts as hovered
+                    // while it's dragged, so not while it draws a box.
+                    let hovered = (response.hover_pos())
+                        .filter(|_| self.box_drag.is_none())
                         .and_then(|pos| shown.item_at(&painter, text_zoom, pos, None));
                     let dragging = self.move_drag.is_some() || self.edge_drag.is_some();
                     if dragging || hovered.is_some() {
@@ -453,7 +454,8 @@ impl Canvas {
             for outline in outlines {
                 painter.rect_stroke(outline, 0.0, SELECTION, StrokeKind::Outside);
             }
-            if let Some(index) = selected_edge
+            if kept
+                && let Some(index) = selected_edge
                 && let Some(edge) = scene.edge(index)
             {
                 let look = dragged_edge.clone().unwrap_or_else(|| EdgeLook::of(edge));
