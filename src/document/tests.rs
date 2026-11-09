@@ -94,7 +94,7 @@ fn color_properties_are_the_fill_gradient_and_border_colors() {
     assert_eq!(node.fill.color, fill);
     assert_eq!(node.fill.gradient, gradient);
     assert_eq!(node.border.color, border);
-    let read = ColorProperty::NODE.map(|property| property.get(&graphics));
+    let read = ColorProperty::NODE.map(|property| property.get(graphics.as_ref()));
     assert_eq!(read, [fill, gradient, border]);
 }
 
@@ -104,11 +104,11 @@ fn edges_have_a_line_color_and_no_fill() {
     let red = Some(Color::rgb(0xFF, 0x00, 0x00));
     ColorProperty::Line.set(&mut graphics, red);
     ColorProperty::Fill.set(&mut graphics, red);
-    assert_eq!(graphics.stroke().color, red);
-    assert_eq!(ColorProperty::Line.get(&graphics), red);
-    assert_eq!(ColorProperty::Fill.get(&graphics), None);
+    assert_eq!(graphics.as_ref().stroke().color, red);
+    assert_eq!(ColorProperty::Line.get(graphics.as_ref()), red);
+    assert_eq!(ColorProperty::Fill.get(graphics.as_ref()), None);
     ColorProperty::Line.set(&mut graphics, None);
-    assert_eq!(ColorProperty::Line.get(&graphics), None);
+    assert_eq!(ColorProperty::Line.get(graphics.as_ref()), None);
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn text_colors_are_those_of_the_labels_and_never_none() {
         .map(|label| label.text_color)
         .collect();
     assert_eq!(colors, [Color::BLACK, red]);
-    let read = [0, 1, 2].map(|index| ColorProperty::Text(index).get(&graphics));
+    let read = [0, 1, 2].map(|index| ColorProperty::Text(index).get(graphics.as_ref()));
     assert_eq!(read, [Some(Color::BLACK), Some(red), None]);
     assert!(!ColorProperty::Text(0).optional());
     assert!(

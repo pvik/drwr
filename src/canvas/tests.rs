@@ -19,7 +19,7 @@ struct Harness {
     ctx: egui::Context,
     canvas: Canvas,
     tool: Tool,
-    graphml: GraphMl,
+    doc: Document,
     selected: Selection,
     style: Style,
     /// What the canvas asked for, in order.
@@ -41,7 +41,7 @@ impl Harness {
             ctx,
             canvas: Canvas::default(),
             tool,
-            graphml: GraphMl::default(),
+            doc: Document::default(),
             selected: Selection::default(),
             style: Style::default(),
             actions: Vec::new(),
@@ -68,7 +68,7 @@ impl Harness {
             let actions = self.canvas.show(
                 ui,
                 self.tool,
-                &mut self.graphml,
+                &mut self.doc,
                 &mut self.selected,
                 &self.style,
             );
@@ -172,12 +172,12 @@ impl Harness {
     /// its index.
     fn add_edge(&mut self, source: &str, target: &str, bends: &[Pos2]) -> usize {
         let graphics = new_edge(Tool::Line.arrows().unwrap(), bends, &Style::default());
-        document::add_edge(&mut self.graphml, source, target, &graphics)
+        document::add_edge(self.doc.graphml_mut(), source, target, &graphics)
     }
 
     /// The ids of the nodes each edge joins, and its graphics.
     fn edges(&self) -> Vec<(String, String, EdgeGraphics)> {
-        let edges = document::edge_graphics(&self.graphml);
+        let edges = document::edge_graphics(self.doc.graphml());
         let edges =
             edges.map(|(_, edge, graphics)| (edge.source.clone(), edge.target.clone(), graphics));
         edges.collect()
@@ -185,7 +185,7 @@ impl Harness {
 
     /// The bends of the edge at `index`.
     fn bends(&self, index: usize) -> Vec<yed::Point> {
-        document::edge_graphics_of(&self.graphml, index)
+        document::edge_graphics_of(self.doc.graphml(), index)
             .unwrap()
             .path
             .points
@@ -201,21 +201,21 @@ impl Harness {
 
     /// Adds a box between two corners in graph coordinates, returning its id.
     fn add_box(&mut self, corner: Pos2, opposite: Pos2) -> String {
-        document::add_node(&mut self.graphml, &new_box(corner, opposite))
+        document::add_node(self.doc.graphml_mut(), &new_box(corner, opposite))
     }
 
     /// Adds an ellipse between two corners in graph coordinates, returning
     /// its id.
     fn add_ellipse(&mut self, corner: Pos2, opposite: Pos2) -> String {
         let graphics = new_shape(ShapeType::Ellipse, corner, opposite);
-        document::add_node(&mut self.graphml, &graphics)
+        document::add_node(self.doc.graphml_mut(), &graphics)
     }
 
     /// Adds the box in [`NODE`] with its corners rounded to `radius`,
     /// returning its id.
     fn add_rounded_box(&mut self, radius: f64) -> String {
         let id = self.add_box(NODE.min, NODE.max);
-        document::set_corner_radius(&mut self.graphml, &id, radius);
+        document::set_corner_radius(self.doc.graphml_mut(), &id, radius);
         id
     }
 
@@ -223,7 +223,7 @@ impl Harness {
     fn add_labelled_box(&mut self, labels: Vec<Label>) -> String {
         let mut graphics = new_box(NODE.min, NODE.max);
         graphics.labels = labels;
-        document::add_node(&mut self.graphml, &graphics)
+        document::add_node(self.doc.graphml_mut(), &graphics)
     }
 
     /// Adds the box in [`NODE`] and selects it, returning its id.
@@ -236,7 +236,7 @@ impl Harness {
     /// Edits the first label of the node with id `id`.
     fn edit(&mut self, id: &str) {
         let label = first_label(id);
-        let text = document::label_text(&self.graphml, &label).unwrap();
+        let text = document::label_text(self.doc.graphml(), &label).unwrap();
         self.canvas.edit_label(label, text);
         // The editor takes the focus in its first frame, and Escape from the
         // next.
@@ -268,7 +268,7 @@ impl Harness {
 
     /// The geometry of each node of `shape` in the document.
     fn shapes(&self, shape: ShapeType) -> Vec<yed::Rect> {
-        document::node_graphics(&self.graphml)
+        document::node_graphics(self.doc.graphml())
             .filter(|(_, graphics, _)| graphics.kind == NodeKind::Shape(shape.clone()))
             .map(|(_, graphics, _)| graphics.geometry)
             .collect()
@@ -461,7 +461,10 @@ fn the_box_shows_in_the_style_it_gets_while_it_is_dragged_out() {
     let border = PathShape::closed_line(points, stroke);
     assert_eq!(paths(&painted), [&fill, &border]);
     harness.frame(vec![button(harness.origin + NODE.max.to_vec2(), false)]);
-    assert_eq!(document::corner_radius(&harness.graphml, "n0"), Some(10.0));
+    assert_eq!(
+        document::corner_radius(harness.doc.graphml(), "n0"),
+        Some(10.0)
+    );
 }
 
 #[test]
@@ -675,7 +678,7 @@ fn ellipses_of_negative_size_cannot_be_clicked() {
     let mut harness = Harness::new(Tool::Cursor);
     let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.max);
     graphics.geometry = geometry(300.0, 200.0, -150.0, -80.0);
-    document::add_node(&mut harness.graphml, &graphics);
+    document::add_node(harness.doc.graphml_mut(), &graphics);
     harness.click(vec2(225.0, 160.0));
     assert!(harness.selected.is_empty());
 }
@@ -720,7 +723,7 @@ fn nodes_the_canvas_cannot_draw_cannot_be_clicked() {
     let mut harness = Harness::new(Tool::Cursor);
     let mut svg = NodeGraphics::new(NodeKind::Other("SVGNode".to_owned()));
     svg.geometry = geometry(100.0, 50.0, 150.0, 80.0);
-    document::add_node(&mut harness.graphml, &svg);
+    document::add_node(harness.doc.graphml_mut(), &svg);
     harness.click(vec2(150.0, 100.0));
     assert!(harness.selected.is_empty());
 }
@@ -913,7 +916,7 @@ fn dragged_sides_move_by_whole_numbers() {
     let mut harness = Harness::new(Tool::Cursor);
     let mut graphics = new_box(NODE.min, NODE.max);
     graphics.geometry = geometry(100.5, 50.0, 150.25, 80.0);
-    harness.selected = Selection::node(document::add_node(&mut harness.graphml, &graphics));
+    harness.selected = Selection::node(document::add_node(harness.doc.graphml_mut(), &graphics));
     // From near the right side, at 250.75, by 20.5.
     harness.drag(vec2(250.4, 90.0), vec2(270.9, 90.0));
     assert_eq!(harness.boxes(), [geometry(100.5, 50.0, 171.25, 80.0)]);
@@ -1105,7 +1108,7 @@ fn nodes_move_by_whole_numbers() {
     let mut harness = Harness::new(Tool::Cursor);
     let mut graphics = new_box(NODE.min, NODE.max);
     graphics.geometry = geometry(100.5, 50.25, 150.0, 80.0);
-    harness.selected = Selection::node(document::add_node(&mut harness.graphml, &graphics));
+    harness.selected = Selection::node(document::add_node(harness.doc.graphml_mut(), &graphics));
     // By 30.5 across and 39.6 down.
     harness.drag(vec2(175.4, 90.2), vec2(205.9, 129.8));
     assert_eq!(harness.boxes(), [geometry(131.5, 90.25, 150.0, 80.0)]);
@@ -1135,7 +1138,7 @@ fn borders_are_painted_at_their_width_across_the_outline() {
     let mut graphics = new_box(NODE.min, NODE.max);
     graphics.border.width = 6.5;
     graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-    document::add_node(&mut harness.graphml, &graphics);
+    document::add_node(harness.doc.graphml_mut(), &graphics);
     let shapes = harness.frame(vec![]);
 
     assert_eq!(filled_rects(&shapes, BOX_FILL), [harness.node()]);
@@ -1162,7 +1165,7 @@ fn ellipse_borders_are_painted_across_the_outline() {
     let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.max);
     graphics.border.width = 6.0;
     graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-    document::add_node(&mut harness.graphml, &graphics);
+    document::add_node(harness.doc.graphml_mut(), &graphics);
     let shapes = harness.frame(vec![]);
     let node = harness.node();
 
@@ -1179,7 +1182,7 @@ fn ellipse_borders_are_painted_across_the_outline() {
 fn round_rectangles_are_painted_with_yeds_corners() {
     let mut harness = Harness::new(Tool::Cursor);
     let graphics = new_shape(ShapeType::RoundRectangle, NODE.min, NODE.max);
-    document::add_node(&mut harness.graphml, &graphics);
+    document::add_node(harness.doc.graphml_mut(), &graphics);
     let shapes = harness.frame(vec![]);
 
     assert_eq!(filled_rects(&shapes, BOX_FILL), []);
@@ -1247,8 +1250,8 @@ fn dashed_rounded_borders_run_round_the_corners_from_the_top_of_the_left_side() 
     graphics.border.line_type = yed::LineType::Dashed;
     graphics.border.width = 2.0;
     graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-    let id = document::add_node(&mut harness.graphml, &graphics);
-    document::set_corner_radius(&mut harness.graphml, &id, 20.0);
+    let id = document::add_node(harness.doc.graphml_mut(), &graphics);
+    document::set_corner_radius(harness.doc.graphml_mut(), &id, 20.0);
     let shapes = harness.frame(vec![]);
 
     let outline = line_type::rounded_rect_points(harness.node(), 20.0, Stroke::new(2.0, RED), 1.0);
@@ -1278,7 +1281,7 @@ fn borders_nearly_as_wide_as_their_ellipse_keep_round_it() {
         let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.min + size);
         graphics.border.width = width;
         graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-        document::add_node(&mut harness.graphml, &graphics);
+        document::add_node(harness.doc.graphml_mut(), &graphics);
         let shapes = harness.frame(vec![]);
 
         let node = Rect::from_min_size(harness.node().min, size);
@@ -1300,7 +1303,7 @@ fn flat_ellipses_show_their_border_in_every_line_type() {
         graphics.border.line_type = line_type.clone();
         graphics.border.width = 2.0;
         graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-        document::add_node(&mut harness.graphml, &graphics);
+        document::add_node(harness.doc.graphml_mut(), &graphics);
         let shapes = harness.frame(vec![]);
         let red = shapes.iter().any(|shape| match shape {
             Shape::Rect(rect) => rect.stroke.color == RED,
@@ -1320,7 +1323,7 @@ fn ellipses_of_absurd_sizes_are_painted_in_few_triangles() {
             graphics.geometry.width = size;
             graphics.border.width = width;
             graphics.border.line_type = line_type;
-            document::add_node(&mut harness.graphml, &graphics);
+            document::add_node(harness.doc.graphml_mut(), &graphics);
         }
     }
     let shapes = harness.frame(vec![]);
@@ -1344,7 +1347,7 @@ fn dashed_border(
     graphics.border.line_type = line_type;
     graphics.border.width = width;
     graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-    document::add_node(&mut harness.graphml, &graphics);
+    document::add_node(harness.doc.graphml_mut(), &graphics);
     let shapes = harness.frame(vec![]);
 
     let solid = shapes.iter().any(|shape| match shape {
@@ -1570,7 +1573,7 @@ fn dashed_borders_without_a_color_are_not_painted() {
     let mut graphics = new_box(NODE.min, NODE.max);
     graphics.border.line_type = yed::LineType::Dashed;
     graphics.border.color = None;
-    document::add_node(&mut harness.graphml, &graphics);
+    document::add_node(harness.doc.graphml_mut(), &graphics);
     let shapes = harness.frame(vec![]);
     assert!(!shapes.iter().any(|shape| matches!(shape, Shape::Mesh(_))));
     assert_eq!(filled_rects(&shapes, BOX_FILL), [harness.node()]);
@@ -1847,7 +1850,7 @@ fn the_editor_closes_when_its_node_is_gone() {
     let mut harness = Harness::new(Tool::Cursor);
     let id = harness.add_labelled_box(vec![Label::new("Start")]);
     harness.edit(&id);
-    harness.graphml = GraphMl::default();
+    harness.doc = Document::default();
     harness.frame(vec![]);
     assert!(harness.canvas.editor.is_none());
     assert_eq!(harness.actions, []);
@@ -2129,7 +2132,7 @@ fn dashed_borders_scale_with_the_zoom() {
     let mut graphics = new_box(NODE.min, NODE.max);
     graphics.border.line_type = yed::LineType::Dashed;
     graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-    document::add_node(&mut harness.graphml, &graphics);
+    document::add_node(harness.doc.graphml_mut(), &graphics);
     let dashes = quads(&harness.frame(vec![]), RED);
     harness.zoom(2.0);
     let zoomed = quads(&harness.frame(vec![]), RED);
@@ -2278,7 +2281,7 @@ fn arrowheads_scale_with_the_line_width() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     let edge = harness.add_edge(&node, &other, &[]);
-    document::edit_edge_graphics(&mut harness.graphml, edge, |graphics| {
+    document::edit_edge_graphics(harness.doc.graphml_mut(), edge, |graphics| {
         graphics.line.width = 3.0;
         graphics.arrows.target = yed::Arrow::Standard;
     });
@@ -2302,7 +2305,7 @@ fn edges_shorter_than_an_arrowhead_keep_both_arrowheads() {
     let node = harness.add_box(NODE.min, NODE.max);
     let other = harness.add_box(pos2(260.0, 50.0), pos2(410.0, 130.0));
     let edge = harness.add_edge(&node, &other, &[]);
-    document::edit_edge_graphics(&mut harness.graphml, edge, |graphics| {
+    document::edit_edge_graphics(harness.doc.graphml_mut(), edge, |graphics| {
         graphics.line.width = 2.0;
         graphics.arrows.source = yed::Arrow::Standard;
         graphics.arrows.target = yed::Arrow::Standard;
@@ -2458,7 +2461,7 @@ fn clicking_an_edge_label_selects_the_edge() {
     let route = Route::new(&yed::Path::default(), yed_rect(NODE), yed_rect(OTHER));
     let mut label = Label::new_on_edge("Label");
     label.place_on(&route, point(325.0, 50.0), 40.0, 20.0);
-    document::edit_edge_graphics(&mut harness.graphml, index, |graphics| {
+    document::edit_edge_graphics(harness.doc.graphml_mut(), index, |graphics| {
         graphics.labels.push(label);
     });
     harness.click(vec2(340.0, 45.0));
@@ -2480,7 +2483,7 @@ fn the_selected_edge_shows_handles_on_its_ports_and_bends() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     let index = harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
-    document::edit_edge_graphics(&mut harness.graphml, index, |graphics| {
+    document::edit_edge_graphics(harness.doc.graphml_mut(), index, |graphics| {
         graphics.path.target = point(25.0, 20.0);
     });
     harness.selected = Selection::edge(0);
@@ -2589,7 +2592,7 @@ fn ports_snap_to_the_middle_of_their_node() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     let index = harness.add_edge(&node, &other, &[]);
-    document::edit_edge_graphics(&mut harness.graphml, index, |graphics| {
+    document::edit_edge_graphics(harness.doc.graphml_mut(), index, |graphics| {
         graphics.path.target = point(25.0, 20.0);
     });
     harness.selected = Selection::edge(0);
@@ -2670,7 +2673,7 @@ fn dragging_an_edge_label_moves_it_beside_the_edge() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     let index = harness.add_edge(&node, &other, &[]);
-    document::edit_edge_graphics(&mut harness.graphml, index, |graphics| {
+    document::edit_edge_graphics(harness.doc.graphml_mut(), index, |graphics| {
         graphics.labels.push(Label::new_on_edge("Label"));
     });
     harness.selected = Selection::edge(0);
@@ -2783,7 +2786,7 @@ fn dragging_from_the_empty_canvas_selects_the_nodes_and_edges_inside_the_box() {
     let third = harness.add_box(THIRD.min, THIRD.max);
     let mut svg = NodeGraphics::new(NodeKind::Other("SVGNode".to_owned()));
     svg.geometry = geometry(300.0, 150.0, 20.0, 20.0);
-    let svg = document::add_node(&mut harness.graphml, &svg);
+    let svg = document::add_node(harness.doc.graphml_mut(), &svg);
     harness.add_edge(&node, &other, &[]);
     harness.add_edge(&other, &third, &[]);
     harness.add_edge(&node, &svg, &[]);

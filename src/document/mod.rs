@@ -64,26 +64,46 @@ pub enum Graphics {
     Edge(EdgeGraphics),
 }
 
-impl Graphics {
-    pub fn labels(&self) -> &[Label] {
+/// The graphics of a node or an edge, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub enum GraphicsRef<'a> {
+    Node(&'a NodeGraphics),
+    Edge(&'a EdgeGraphics),
+}
+
+impl<'a> GraphicsRef<'a> {
+    pub fn labels(self) -> &'a [Label] {
         match self {
-            Graphics::Node(graphics) => &graphics.labels,
-            Graphics::Edge(graphics) => &graphics.labels,
+            GraphicsRef::Node(graphics) => &graphics.labels,
+            GraphicsRef::Edge(graphics) => &graphics.labels,
         }
+    }
+
+    /// A node's border, or an edge's line.
+    pub fn stroke(self) -> &'a Stroke {
+        match self {
+            GraphicsRef::Node(graphics) => &graphics.border,
+            GraphicsRef::Edge(graphics) => &graphics.line,
+        }
+    }
+}
+
+impl Graphics {
+    pub fn as_ref(&self) -> GraphicsRef<'_> {
+        match self {
+            Graphics::Node(graphics) => GraphicsRef::Node(graphics),
+            Graphics::Edge(graphics) => GraphicsRef::Edge(graphics),
+        }
+    }
+
+    pub fn labels(&self) -> &[Label] {
+        self.as_ref().labels()
     }
 
     fn labels_mut(&mut self) -> &mut Vec<Label> {
         match self {
             Graphics::Node(graphics) => &mut graphics.labels,
             Graphics::Edge(graphics) => &mut graphics.labels,
-        }
-    }
-
-    /// A node's border, or an edge's line.
-    pub fn stroke(&self) -> &Stroke {
-        match self {
-            Graphics::Node(graphics) => &graphics.border,
-            Graphics::Edge(graphics) => &graphics.line,
         }
     }
 
@@ -132,15 +152,15 @@ impl ColorProperty {
     }
 
     /// `None` if the graphics have no such color.
-    pub fn get(self, graphics: &Graphics) -> Option<Color> {
+    pub fn get(self, graphics: GraphicsRef) -> Option<Color> {
         match (self, graphics) {
-            (ColorProperty::Fill, Graphics::Node(node)) => node.fill.color,
-            (ColorProperty::Gradient, Graphics::Node(node)) => node.fill.gradient,
+            (ColorProperty::Fill, GraphicsRef::Node(node)) => node.fill.color,
+            (ColorProperty::Gradient, GraphicsRef::Node(node)) => node.fill.gradient,
             (ColorProperty::Border | ColorProperty::Line, _) => graphics.stroke().color,
             (ColorProperty::Text(index), _) => {
                 graphics.labels().get(index).map(|label| label.text_color)
             }
-            (ColorProperty::Fill | ColorProperty::Gradient, Graphics::Edge(_)) => None,
+            (ColorProperty::Fill | ColorProperty::Gradient, GraphicsRef::Edge(_)) => None,
         }
     }
 
@@ -187,17 +207,40 @@ fn top_graph_mut(doc: &mut GraphMl) -> &mut Graph {
 /// The readable graphics of the top-level graph's nodes, with their ids and,
 /// for boxes, their [`corner_radius`].
 pub fn node_graphics(doc: &GraphMl) -> impl Iterator<Item = (&str, NodeGraphics, Option<f64>)> {
-    let keys = Keys::find(doc);
-    let radius_key = radius_key(doc);
-    doc.graphs
-        .first()
-        .into_iter()
-        .flat_map(|graph| &graph.nodes)
-        .filter_map(move |node| {
-            let graphics = keys.node_graphics(node).ok().flatten()?;
-            let radius = box_corner_radius(&graphics, node, radius_key);
-            Some((node.id.as_str(), graphics, radius))
-        })
+    let reader = Reader::new(doc);
+    top_nodes(doc).iter().filter_map(move |node| {
+        let (graphics, radius) = reader.node(node)?;
+        Some((node.id.as_str(), graphics, radius))
+    })
+}
+
+/// Reads the graphics of a document's top-level nodes and edges, one at a
+/// time.
+pub struct Reader<'a> {
+    keys: Keys,
+    radius_key: Option<&'a str>,
+}
+
+impl<'a> Reader<'a> {
+    pub fn new(doc: &'a GraphMl) -> Self {
+        Reader {
+            keys: Keys::find(doc),
+            radius_key: radius_key(doc),
+        }
+    }
+
+    /// The readable graphics of `node`, with its [`corner_radius`] if it's a
+    /// box.
+    pub fn node(&self, node: &Node) -> Option<(NodeGraphics, Option<f64>)> {
+        let graphics = self.keys.node_graphics(node).ok().flatten()?;
+        let radius = box_corner_radius(&graphics, node, self.radius_key);
+        Some((graphics, radius))
+    }
+
+    /// The readable graphics of `edge`.
+    pub fn edge(&self, edge: &Edge) -> Option<EdgeGraphics> {
+        self.keys.edge_graphics(edge).ok().flatten()
+    }
 }
 
 /// The readable graphics of the top-level graph's node with id `id`.
@@ -221,12 +264,7 @@ pub fn edit_graphics(doc: &mut GraphMl, id: &str, edit: impl FnOnce(&mut NodeGra
 /// `None` if there's no such box. Boxes are yEd's rectangles, which have
 /// square corners, and its round rectangles.
 pub fn corner_radius(doc: &GraphMl, id: &str) -> Option<f64> {
-    corner_radius_of(doc, id, &graphics_of(doc, id)?)
-}
-
-/// Like [`corner_radius`], with the box's graphics, `graphics`, read already.
-pub fn corner_radius_of(doc: &GraphMl, id: &str, graphics: &NodeGraphics) -> Option<f64> {
-    box_corner_radius(graphics, node(doc, id)?, radius_key(doc))
+    box_corner_radius(&graphics_of(doc, id)?, node(doc, id)?, radius_key(doc))
 }
 
 /// Rounds the corners of the top-level box with id `id` to `radius`, making
@@ -465,13 +503,11 @@ fn label_shift(center: f64, old: f64, new: f64) -> f64 {
 
 /// The readable graphics of the top-level graph's edges, with their indexes
 /// and the ids of the nodes they join.
+#[cfg(test)]
 pub fn edge_graphics(doc: &GraphMl) -> impl Iterator<Item = (usize, &Edge, EdgeGraphics)> {
-    let keys = Keys::find(doc);
+    let reader = Reader::new(doc);
     let edges = top_edges(doc).iter().enumerate();
-    edges.filter_map(move |(index, edge)| {
-        let graphics = keys.edge_graphics(edge).ok().flatten()?;
-        Some((index, edge, graphics))
-    })
+    edges.filter_map(move |(index, edge)| Some((index, edge, reader.edge(edge)?)))
 }
 
 /// The readable graphics of the top-level graph's edge at `index`.
@@ -514,7 +550,16 @@ fn edge_mut(doc: &mut GraphMl, index: usize) -> Option<&mut Edge> {
     doc.graphs.first_mut()?.edges.get_mut(index)
 }
 
-fn top_edges(doc: &GraphMl) -> &[Edge] {
+/// The top-level graph's nodes.
+pub fn top_nodes(doc: &GraphMl) -> &[Node] {
+    match doc.graphs.first() {
+        Some(graph) => &graph.nodes,
+        None => &[],
+    }
+}
+
+/// The top-level graph's edges.
+pub fn top_edges(doc: &GraphMl) -> &[Edge] {
     match doc.graphs.first() {
         Some(graph) => &graph.edges,
         None => &[],

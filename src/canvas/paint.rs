@@ -16,7 +16,7 @@ use crate::line_type;
 use crate::selection::Selection;
 use crate::style::Style;
 
-use super::scene::{Anchor, EdgeLook, Outline, Shown, egui_rect, shape};
+use super::shown::{Anchor, EdgeLook, Outline, Shown, egui_rect, shape};
 use super::{
     BACKGROUND, Canvas, EdgeDrag, EdgePart, HALO, HANDLE_SIZE, LABEL_PADDING, MAX_TEXT_PIXELS,
     Owner, Preview, SELECTION, SELECTION_BOX_FILL, SELECTION_GAP, edge,

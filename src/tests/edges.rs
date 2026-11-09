@@ -16,13 +16,13 @@ fn delete_removes_the_selected_bend_then_its_edge() {
 #[test]
 fn delete_removes_the_selected_node_with_its_edges() {
     let mut harness = fixture_harness();
-    let unchanged = harness.app.graphml.clone();
+    let unchanged = harness.app.doc.graphml().clone();
     harness.press(Modifiers::NONE, Key::Delete);
-    assert_eq!(harness.app.graphml, unchanged);
+    assert_eq!(*harness.app.doc.graphml(), unchanged);
 
     harness.app.selected = Selection::node("n1");
     harness.press(Modifiers::NONE, Key::Delete);
-    assert_eq!(document::graphics_of(&harness.app.graphml, "n1"), None);
+    assert_eq!(document::graphics_of(harness.app.doc.graphml(), "n1"), None);
     assert_eq!(harness.edge_ids(), ["e1"]);
     assert!(harness.app.selected.is_empty());
 }
@@ -33,7 +33,7 @@ fn the_side_panels_delete_button_deletes_the_selected_node() {
     assert!(harness.widget("Delete").is_disabled());
     harness.app.selected = Selection::node("n1");
     harness.click_widget("Delete");
-    assert_eq!(document::graphics_of(&harness.app.graphml, "n1"), None);
+    assert_eq!(document::graphics_of(harness.app.doc.graphml(), "n1"), None);
     assert_eq!(harness.edge_ids(), ["e1"]);
     assert!(harness.app.selected.is_empty());
     assert!(harness.widget("Delete").is_disabled());
@@ -158,14 +158,14 @@ fn ctrl_enter_edits_the_selected_edges_label_on_the_canvas() {
 fn the_line_tool_joins_nodes_and_its_edges_get_labels_beside_them() {
     let mut harness = Harness::new();
     harness.press(Modifiers::NONE, Key::L);
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &new_box());
     let mut right = new_box();
     right.geometry.x += 300.0;
     let right = document::add_node(graphml, &right);
     harness.drag(vec2(150.0, 60.0), vec2(450.0, 60.0));
 
-    let edge = &harness.app.graphml.graphs[0].edges[0];
+    let edge = &harness.app.doc.graphml().graphs[0].edges[0];
     assert_eq!((&edge.source, &edge.target), (&left, &right));
     assert_eq!(harness.app.selected, Selection::edge(0));
     harness.press(CTRL, Key::Enter);
@@ -183,7 +183,7 @@ fn the_line_tool_joins_nodes_and_its_edges_get_labels_beside_them() {
 
 /// The route the labels of the edge at `index` are placed along.
 fn route_of(harness: &Harness, index: usize) -> yed::Route {
-    let graphml = &harness.app.graphml;
+    let graphml = harness.app.doc.graphml();
     let edge = &graphml.graphs[0].edges[index];
     let bounds = |id: &str| document::graphics_of(graphml, id).unwrap().geometry;
     yed::Route::new(

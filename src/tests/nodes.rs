@@ -50,7 +50,7 @@ fn the_side_panel_shows_the_clicked_node() {
     graphics.fill.gradient = Some(yed::Color::WHITE);
     graphics.border.color = None;
     graphics.labels = vec![yed::Label::new("Start"), yed::Label::new("Two\nlines")];
-    document::add_node(&mut harness.app.graphml, &graphics);
+    document::add_node(harness.app.doc.graphml_mut(), &graphics);
     assert_eq!(harness.side_panel(), ["Nothing selected"]);
 
     harness.click(vec2(150.0, 60.0));
@@ -91,7 +91,7 @@ fn the_side_panel_shows_the_clicked_node() {
 #[test]
 fn dragging_a_side_resizes_the_selected_node() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.drag(vec2(250.0, 90.0), vec2(300.0, 90.0));
     assert_eq!(harness.graphics(&id).geometry.width, 200.0);
@@ -105,7 +105,7 @@ fn dragging_a_side_resizes_the_selected_node() {
 #[test]
 fn dragging_the_selected_node_moves_it() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.drag(vec2(175.0, 90.0), vec2(205.0, 130.0));
     let geometry = harness.graphics(&id).geometry;
@@ -122,10 +122,10 @@ fn dragging_the_selected_node_moves_it() {
 #[test]
 fn ctrl_arrows_move_the_selected_node() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
-    let unmoved = harness.app.graphml.clone();
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));
+    let unmoved = harness.app.doc.graphml().clone();
     harness.press(CTRL, Key::ArrowRight);
-    assert_eq!(harness.app.graphml, unmoved);
+    assert_eq!(*harness.app.doc.graphml(), unmoved);
 
     harness.click(vec2(150.0, 60.0));
     let before = harness.graphics(&id);
@@ -165,7 +165,7 @@ fn ctrl_arrows_move_the_selected_node() {
 #[test]
 fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
 
     harness.click_text("#FFCC00");
@@ -197,7 +197,7 @@ fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
 #[test]
 fn no_color_removes_the_color_clicked() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
 
     harness.click_text("#000000");
@@ -213,7 +213,7 @@ fn no_color_removes_the_color_clicked() {
 #[test]
 fn typing_a_color_selects_no_tools() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.click_text("#FFCC00");
     harness.run(vec![]);
@@ -265,7 +265,7 @@ fn typing_a_border_width_in_the_side_panel_sets_it() {
 #[test]
 fn dragging_the_border_width_changes_it_as_it_goes() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     let field = harness.text_at("1");
     // A tenth per point, rightwards.
@@ -279,7 +279,7 @@ fn dragging_the_border_width_changes_it_as_it_goes() {
 #[test]
 fn escape_in_the_border_width_field_keeps_the_width_and_the_tool() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.press(Modifiers::NONE, Key::B);
     harness.click_text("1");
@@ -320,7 +320,7 @@ fn entering_the_border_width_unchanged_keeps_it_exactly() {
     let mut harness = Harness::new();
     let mut graphics = new_box();
     graphics.border.width = 0.125;
-    let id = document::add_node(&mut harness.app.graphml, &graphics);
+    let id = document::add_node(harness.app.doc.graphml_mut(), &graphics);
     harness.click(vec2(150.0, 60.0));
     harness.click_text("0.125");
     harness.press(Modifiers::NONE, Key::Enter);
@@ -343,8 +343,8 @@ fn showing_a_border_width_out_of_range_keeps_it() {
     let mut harness = Harness::new();
     let mut graphics = new_box();
     graphics.border.width = 250.0;
-    document::add_node(&mut harness.app.graphml, &graphics);
-    let before = harness.app.graphml.clone();
+    document::add_node(harness.app.doc.graphml_mut(), &graphics);
+    let before = harness.app.doc.graphml().clone();
     harness.click(vec2(150.0, 60.0));
     let side_panel = harness.side_panel();
     assert!(
@@ -353,20 +353,20 @@ fn showing_a_border_width_out_of_range_keeps_it() {
             .any(|row| row == ["Border width", "250"]),
         "{side_panel:?}"
     );
-    assert_eq!(harness.app.graphml, before);
+    assert_eq!(*harness.app.doc.graphml(), before);
 }
 
 #[test]
 fn typing_a_corner_radius_in_the_side_panel_rounds_the_box() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     assert_eq!(rows(&harness.side_panel(), "Corner radius"), ["0"]);
     harness.click_text("0");
     harness.type_text("10");
     harness.press(Modifiers::NONE, Key::Enter);
 
-    let graphml = &harness.app.graphml;
+    let graphml = harness.app.doc.graphml();
     assert_eq!(document::corner_radius(graphml, &id), Some(10.0));
     let side_panel = harness.side_panel();
     assert_eq!(rows(&side_panel, "Corner radius"), ["10"]);
@@ -388,7 +388,7 @@ fn round_rectangles_read_with_yeds_corner_radius() {
     let mut harness = Harness::new();
     let mut graphics = new_box();
     graphics.kind = NodeKind::Shape(ShapeType::RoundRectangle);
-    document::add_node(&mut harness.app.graphml, &graphics);
+    document::add_node(harness.app.doc.graphml_mut(), &graphics);
     harness.click(vec2(150.0, 60.0));
     assert_eq!(rows(&harness.side_panel(), "Corner radius"), ["4"]);
 }
@@ -398,7 +398,7 @@ fn only_boxes_have_a_corner_radius() {
     let mut harness = Harness::new();
     let mut graphics = new_box();
     graphics.kind = NodeKind::Shape(ShapeType::Ellipse);
-    document::add_node(&mut harness.app.graphml, &graphics);
+    document::add_node(harness.app.doc.graphml_mut(), &graphics);
     harness.click(vec2(175.0, 90.0));
     let side_panel = harness.side_panel();
     assert_eq!(side_panel[..4], ["Id", "n0", "Shape", "ellipse"]);
@@ -409,12 +409,12 @@ fn only_boxes_have_a_corner_radius() {
 fn typed_corner_radii_are_kept_in_range() {
     for (typed, radius) in [("-2", 0.0), ("5000", 1000.0), ("inf", 1000.0)] {
         let mut harness = Harness::new();
-        let id = document::add_node(&mut harness.app.graphml, &new_box());
+        let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
         harness.click(vec2(150.0, 60.0));
         harness.click_text("0");
         harness.type_text(typed);
         harness.press(Modifiers::NONE, Key::Enter);
-        let read = document::corner_radius(&harness.app.graphml, &id);
+        let read = document::corner_radius(harness.app.doc.graphml(), &id);
         assert_eq!(read, Some(radius), "{typed}");
     }
 }
@@ -422,7 +422,7 @@ fn typed_corner_radii_are_kept_in_range() {
 #[test]
 fn picking_a_border_style_in_the_side_panel_sets_it() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     let mut shown = "Solid";
     for (name, line_type) in [
@@ -453,9 +453,9 @@ fn picking_a_border_style_in_the_side_panel_sets_it() {
 #[test]
 fn picking_the_border_style_a_node_has_changes_nothing() {
     let mut harness = Harness::new();
-    document::add_node(&mut harness.app.graphml, &new_box());
+    document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
-    let before = harness.app.graphml.clone();
+    let before = harness.app.doc.graphml().clone();
     harness.click_text("Solid");
     // The list's, painted over the dropdown's own.
     let solids: Vec<_> = harness
@@ -473,13 +473,13 @@ fn picking_the_border_style_a_node_has_changes_nothing() {
     };
     harness.click_at(listed);
     assert!(!Popup::is_any_open(&harness.ctx));
-    assert_eq!(harness.app.graphml, before);
+    assert_eq!(*harness.app.doc.graphml(), before);
 }
 
 #[test]
 fn escape_closes_the_border_style_dropdown_before_it_selects_the_cursor() {
     let mut harness = Harness::new();
-    document::add_node(&mut harness.app.graphml, &new_box());
+    document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.press(Modifiers::NONE, Key::B);
     harness.click_text("Solid");
@@ -508,8 +508,8 @@ fn unknown_border_styles_read_as_written_and_are_drawn_solid() {
     let mut harness = Harness::new();
     let mut graphics = new_box();
     graphics.border.line_type = yed::LineType::Other("wavy".to_owned());
-    document::add_node(&mut harness.app.graphml, &graphics);
-    let before = harness.app.graphml.clone();
+    document::add_node(harness.app.doc.graphml_mut(), &graphics);
+    let before = harness.app.doc.graphml().clone();
     harness.click(vec2(150.0, 60.0));
     let side_panel = harness.side_panel();
     assert!(
@@ -520,7 +520,7 @@ fn unknown_border_styles_read_as_written_and_are_drawn_solid() {
     );
     let shapes = harness.run(vec![]);
     assert_eq!(border(&shapes, YED_FILL), Stroke::new(1.0, Color32::BLACK));
-    assert_eq!(harness.app.graphml, before);
+    assert_eq!(*harness.app.doc.graphml(), before);
 }
 
 #[test]

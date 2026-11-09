@@ -1,24 +1,22 @@
 use egui::{Button, Popup};
 
-use crate::action::Action;
+use crate::action::{Action, Enabled};
 use crate::shortcuts;
 
-/// Shows the menu bar at the top of the window, with New, Open, Save and Save
-/// As disabled while `file_dialog_open`, and Cut and Copy enabled if
-/// `can_copy`. Returns the action clicked.
-pub fn show(ui: &mut egui::Ui, file_dialog_open: bool, can_copy: bool) -> Option<Action> {
+/// Shows the menu bar at the top of the window, its items `enabled` or not.
+/// Returns the action clicked.
+pub fn show(ui: &mut egui::Ui, enabled: Enabled) -> Option<Action> {
     let mut clicked = None;
     egui::Panel::top("menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             let file = ui.menu_button("File", |ui| {
-                let can_pick = !file_dialog_open;
                 let file = items(
                     ui,
                     [
-                        ("New", Action::New, can_pick),
-                        ("Open…", Action::Open, can_pick),
-                        ("Save", Action::Save, can_pick),
-                        ("Save As…", Action::SaveAs, can_pick),
+                        ("New", Action::New, enabled.file),
+                        ("Open…", Action::Open, enabled.file),
+                        ("Save", Action::Save, enabled.file),
+                        ("Save As…", Action::SaveAs, enabled.file),
                     ],
                 );
                 ui.separator();
@@ -29,14 +27,23 @@ pub fn show(ui: &mut egui::Ui, file_dialog_open: bool, can_copy: bool) -> Option
             }
             // Only one menu is open at a time, so only one sets `clicked`.
             ui.menu_button("Edit", |ui| {
-                clicked = items(
+                let history = items(
                     ui,
                     [
-                        ("Cut", Action::Cut, can_copy),
-                        ("Copy", Action::Copy, can_copy),
+                        ("Undo", Action::Undo, enabled.undo),
+                        ("Redo", Action::Redo, enabled.redo),
+                    ],
+                );
+                ui.separator();
+                let clipboard = items(
+                    ui,
+                    [
+                        ("Cut", Action::Cut, enabled.copy),
+                        ("Copy", Action::Copy, enabled.copy),
                         ("Paste", Action::Paste, true),
                     ],
                 );
+                clicked = history.or(clipboard);
             });
         });
     });

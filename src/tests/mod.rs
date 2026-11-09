@@ -6,6 +6,7 @@ mod labels;
 mod multi_selection;
 mod nodes;
 mod remembered_style;
+mod undo;
 mod view;
 
 use eframe::App as _;
@@ -177,7 +178,7 @@ impl Harness {
 
     /// The graphics of the node with id `id`.
     fn graphics(&self, id: &str) -> NodeGraphics {
-        document::graphics_of(&self.app.graphml, id).expect("the node has graphics")
+        document::graphics_of(self.app.doc.graphml(), id).expect("the node has graphics")
     }
 
     /// The text of the first label of the node with id `id`.
@@ -186,7 +187,7 @@ impl Harness {
             item: Item::Node(id.to_owned()),
             index: 0,
         };
-        document::label_text(&self.app.graphml, &label).expect("the node exists")
+        document::label_text(self.app.doc.graphml(), &label).expect("the node exists")
     }
 
     fn type_text(&mut self, text: &str) {
@@ -301,12 +302,12 @@ impl Harness {
 
     /// The graphics of the edge at `index`.
     fn edge(&self, index: usize) -> yed::EdgeGraphics {
-        document::edge_graphics_of(&self.app.graphml, index).expect("the edge has graphics")
+        document::edge_graphics_of(self.app.doc.graphml(), index).expect("the edge has graphics")
     }
 
     /// The ids of the edges.
     fn edge_ids(&self) -> Vec<&str> {
-        let edges = &self.app.graphml.graphs[0].edges;
+        let edges = &self.app.doc.graphml().graphs[0].edges;
         edges.iter().filter_map(|edge| edge.id.as_deref()).collect()
     }
 
@@ -464,7 +465,7 @@ fn new_box() -> NodeGraphics {
 /// Adds the box from [`new_box`] and selects it, then clicks its border width
 /// in the side panel. Returns the box's id.
 fn click_border_width(harness: &mut Harness) -> String {
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.click_text("1");
     id
@@ -486,7 +487,7 @@ fn labelled_box(text: &str) -> NodeGraphics {
 /// Adds a box labelled `text`, then selects it and clicks its label's field in
 /// the side panel. Returns the box's id.
 fn type_in_label_field(harness: &mut Harness, text: &str) -> String {
-    let id = document::add_node(&mut harness.app.graphml, &labelled_box(text));
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box(text));
     harness.click(vec2(150.0, 60.0));
     // The side panel is painted first, so this is its field, not the canvas.
     harness.click_text(text);

@@ -82,7 +82,7 @@ fn ctrl_plus_in_a_label_field_zooms_nothing() {
 #[test]
 fn middle_dragging_the_canvas_pans_it() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     let origin = canvas(&harness.run(vec![])).min;
     let (from, to) = (origin + vec2(300.0, 300.0), origin + vec2(250.0, 280.0));
     harness.run(vec![Event::PointerMoved(from)]);
@@ -99,7 +99,7 @@ fn middle_dragging_the_canvas_pans_it() {
 #[test]
 fn arrows_pan_the_canvas() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     for key in [Key::ArrowRight, Key::ArrowRight, Key::ArrowDown] {
         harness.press(Modifiers::NONE, key);
     }
@@ -113,7 +113,7 @@ fn arrows_pan_the_canvas() {
 #[test]
 fn arrows_pan_while_ctrl_arrows_move_the_selected_node() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.press(Modifiers::NONE, Key::ArrowLeft);
     harness.press(CTRL, Key::ArrowLeft);
@@ -139,4 +139,23 @@ fn arrows_in_a_label_field_move_the_text_cursor() {
     // Unpanned, the box at (100, 50) is still there.
     harness.click(vec2(110.0, 60.0));
     assert_eq!(harness.app.selected, Selection::node(id));
+}
+
+#[test]
+fn frames_that_change_nothing_read_nothing() {
+    let mut harness = fixture_harness();
+    let reads = harness.app.doc.reads();
+    let origin = canvas(&harness.run(vec![])).min;
+    for x in [60.0, 120.0, 180.0, 240.0] {
+        harness.run(vec![Event::PointerMoved(origin + vec2(x, 40.0))]);
+    }
+    harness.app.selected = Selection::of([node("n0"), node("n1"), node("n2"), Item::Edge(0)]);
+    harness.run(vec![]);
+    harness.drag_and_hold(origin + vec2(500.0, 500.0), origin + vec2(520.0, 530.0));
+    assert_eq!(harness.app.doc.reads(), reads);
+
+    // Only what changes is read again.
+    harness.app.selected = Selection::node("n3");
+    harness.press(CTRL, Key::ArrowRight);
+    assert_eq!(harness.app.doc.reads(), reads + 1);
 }

@@ -9,10 +9,12 @@ mod error_dialog;
 mod file_dialog;
 mod font_picker;
 mod fonts;
+mod history;
 mod label_position;
 mod line_type;
 mod menu;
 mod prompt;
+mod scene;
 mod selection;
 mod shortcuts;
 mod side_panel;
@@ -31,13 +33,14 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use action::{Action, FontPart};
+use action::{Action, Enabled, FontPart};
 use canvas::Canvas;
 use color_picker::ColorPicker;
 use document::{ColorProperty, Graphics, Item, LabelRef};
 use file_dialog::{FileDialog, Request};
 use fonts::Fonts;
 use graphml::{GraphMl, yed};
+use history::{Document, Merge};
 use selection::Selection;
 use side_panel::SidePanel;
 use style::Style;
@@ -86,17 +89,23 @@ fn run_gui(app: DrwrApp) -> eframe::Result {
 #[derive(Default)]
 struct DrwrApp {
     tool: Tool,
-    graphml: GraphMl,
-    /// Where `graphml` is saved, as an absolute path; `None` if it isn't.
+    /// The graph, with its scene and undo history.
+    doc: Document,
+    /// Where the graph is saved, as an absolute path; `None` if it isn't.
     file: Option<PathBuf>,
-    /// `graphml` as last opened, saved or made new.
+    /// The graph as last opened, saved or made new.
     saved: GraphMl,
-    /// Whether `graphml` differs from `saved`, as of the last frame that could
-    /// have changed it.
+    /// Whether the graph differs from `saved`, as of version `checked` of it.
     modified: bool,
-    /// Whether an action was performed since `modified` was last updated.
-    performed: bool,
+    checked: u64,
     selected: Selection,
+    /// What was selected before the edits not yet recorded as an undo step.
+    selected_before: Selection,
+    /// What this frame's edits may merge with in the undo history, if there
+    /// were any: `None` if they differ.
+    frame_merge: Option<Option<Merge>>,
+    /// What edits of the actions being performed may merge with.
+    merge_with: Option<Merge>,
     /// What the user last set on nodes, lines and labels, for new ones. Kept
     /// across files.
     style: Style,
@@ -186,10 +195,13 @@ impl DrwrApp {
     /// selected, edited or viewed in the old one.
     fn replace_graph(&mut self, graphml: GraphMl, file: Option<PathBuf>) {
         self.saved = graphml.clone();
-        self.graphml = graphml;
+        self.doc = Document::new(graphml);
         self.file = file;
         self.modified = false;
+        self.checked = self.doc.version();
         self.selected = Selection::default();
+        self.selected_before = Selection::default();
+        self.frame_merge = None;
         // Labels being edited belong to the old graph.
         self.canvas = Canvas::default();
         self.side_panel = SidePanel::default();
@@ -199,26 +211,47 @@ impl DrwrApp {
 
     /// Updates whether the graph is modified, returning whether it is.
     fn check_modified(&mut self) -> bool {
-        self.modified = self.graphml != self.saved;
+        self.doc.sync();
+        self.modified = *self.doc.graphml() != self.saved;
+        self.checked = self.doc.version();
         self.modified
     }
 
-    /// Updates whether the graph is modified, unless nothing this frame could
-    /// have changed it.
-    fn update_modified(&mut self, ctx: &egui::Context) {
-        // Only actions and the canvas edit the graph, the canvas when a button
-        // is let go, so frames with no action and only pointer moves skip
-        // comparing it.
-        let moved_only = ctx.input(|input| {
-            (input.raw.events.iter()).all(|event| {
-                matches!(
-                    event,
-                    egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_)
-                )
-            })
-        });
-        if std::mem::take(&mut self.performed) || !moved_only {
+    /// Updates whether the graph is modified, if it changed since that was
+    /// last checked.
+    fn update_modified(&mut self) {
+        if self.doc.version() != self.checked {
             self.check_modified();
+        }
+    }
+
+    /// Records the edits since the last undo step as a step.
+    fn record(&mut self) {
+        let merge = self.frame_merge.take().flatten();
+        let (before, after) = (&self.selected_before, &self.selected);
+        self.doc.record(before, after, merge);
+        self.selected_before = self.selected.clone();
+    }
+
+    /// Notes an edit, which may merge with the last undo step if it has
+    /// `merge`, as do this frame's other edits.
+    fn edited(&mut self, merge: Option<Merge>) {
+        self.frame_merge = Some(match self.frame_merge {
+            Some(other) if other != merge => None,
+            _ => merge,
+        });
+    }
+
+    /// Undoes or redoes a step with `step`, selecting what was selected then.
+    fn step(&mut self, step: fn(&mut Document) -> Option<Selection>) {
+        // Edits not recorded yet make the last step.
+        self.record();
+        if let Some(selected) = step(&mut self.doc) {
+            self.selected = selected;
+            self.selected_before = self.selected.clone();
+            // They're of the graph as it was.
+            self.canvas.cancel_edits();
+            self.side_panel.cancel_edit();
         }
     }
 
@@ -320,13 +353,14 @@ impl DrwrApp {
         ctx: &egui::Context,
         frame: &eframe::Frame,
     ) {
-        if let Err(err) = atomic_file::write(&path, |file| self.graphml.write_to(file)) {
+        if let Err(err) = atomic_file::write(&path, |file| self.doc.graphml().write_to(file)) {
             self.error = Some(format!("Couldn't save {}:\n{err}", path.display()));
             return;
         }
         self.file = Some(path);
-        self.saved = self.graphml.clone();
+        self.saved = self.doc.graphml().clone();
         self.modified = false;
+        self.checked = self.doc.version();
         if let Some(then) = then {
             self.drop_graph(then, ctx, frame);
         }
@@ -366,14 +400,14 @@ impl DrwrApp {
     /// Edits the graphics of each selected node and edge.
     fn edit_selected(&mut self, edit: impl Fn(&mut Graphics)) {
         for item in self.selected.items() {
-            document::edit(&mut self.graphml, item, &edit);
+            document::edit(self.doc.graphml_mut(), item, &edit);
         }
     }
 
     /// Puts the selected nodes, with the selected edges between them, on the
     /// clipboard. Returns whether any nodes were selected.
     fn copy(&self, ctx: &egui::Context) -> bool {
-        let Some(copied) = document::copy(&self.graphml, self.selected.items()) else {
+        let Some(copied) = document::copy(self.doc.graphml(), self.selected.items()) else {
             return false;
         };
         ctx.copy_text(copied.to_xml());
@@ -383,16 +417,16 @@ impl DrwrApp {
     /// Removes everything selected, nodes with their edges.
     fn remove_selected(&mut self) {
         let selected = std::mem::take(&mut self.selected);
-        document::remove_items(&mut self.graphml, selected.items());
+        document::remove_items(self.doc.graphml_mut(), selected.items());
         // The Delete button's click would otherwise apply a label edited on
         // the canvas to the edge moved into its place.
         self.canvas.cancel_label_edit();
     }
 
     /// Performs `action`, from a shortcut, the menu or the toolbar, unless
-    /// it's Cut, Copy or in the File menu. Those go on `waiting`, taking the
-    /// focus from any text field, so that the side panel and the canvas apply
-    /// what was typed there first.
+    /// it's Undo, Redo, Cut, Copy or in the File menu. Those go on `waiting`,
+    /// taking the focus from any text field, so that the side panel and the
+    /// canvas apply what was typed there first.
     fn perform_or_wait(
         &mut self,
         action: Option<Action>,
@@ -402,7 +436,9 @@ impl DrwrApp {
     ) {
         match action {
             Some(
-                action @ (Action::Cut
+                action @ (Action::Undo
+                | Action::Redo
+                | Action::Cut
                 | Action::Copy
                 | Action::New
                 | Action::Open
@@ -420,7 +456,11 @@ impl DrwrApp {
 
     /// Does what the user asked for, wherever they asked.
     fn perform(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
-        self.performed = true;
+        let edits = self.doc.edits();
+        let merge = match action {
+            Action::MoveBy(..) => Some(Merge::Nudge),
+            _ => self.merge_with,
+        };
         match action {
             // Disabled, as the open file dialog is for the graph as it is.
             Action::New | Action::Open | Action::Save | Action::SaveAs
@@ -430,6 +470,8 @@ impl DrwrApp {
             Action::Save => self.save(None, ctx, frame),
             Action::SaveAs => self.ask_where_to_save(None, ctx, frame),
             Action::Quit => self.close_graph(CloseFor::Quit, ctx, frame),
+            Action::Undo => self.step(Document::undo),
+            Action::Redo => self.step(Document::redo),
             Action::Cut => {
                 if self.copy(ctx) {
                     self.remove_selected();
@@ -445,7 +487,7 @@ impl DrwrApp {
             }
             Action::PasteText(text) => {
                 if let Ok(copied) = GraphMl::parse(&text) {
-                    let pasted = document::paste(&mut self.graphml, copied);
+                    let pasted = document::paste(self.doc.graphml_mut(), copied);
                     if !pasted.is_empty() {
                         self.selected = Selection::of(pasted);
                     }
@@ -466,13 +508,13 @@ impl DrwrApp {
             Action::PanBy(dx, dy) => self.canvas.pan_by(egui::vec2(dx, dy)),
             Action::MoveBy(dx, dy) => match (self.selected.single(), self.selected.bend()) {
                 (Some(&Item::Edge(index)), Some(bend)) => {
-                    document::move_bends(&mut self.graphml, index, Some(bend), dx, dy);
+                    document::move_bends(self.doc.graphml_mut(), index, Some(bend), dx, dy);
                 }
-                _ => document::move_items(&mut self.graphml, self.selected.items(), dx, dy),
+                _ => document::move_items(self.doc.graphml_mut(), self.selected.items(), dx, dy),
             },
             Action::Delete => match (self.selected.single(), self.selected.bend()) {
                 (Some(&Item::Edge(index)), Some(bend)) => {
-                    document::remove_bend(&mut self.graphml, index, bend);
+                    document::remove_bend(self.doc.graphml_mut(), index, bend);
                     self.selected = Selection::edge(index);
                 }
                 _ if !self.selected.is_empty() => self.remove_selected(),
@@ -480,7 +522,7 @@ impl DrwrApp {
             },
             Action::EditColor(property) => {
                 let mut graphics = (self.selected.items().iter())
-                    .filter_map(|item| document::graphics(&self.graphml, item));
+                    .filter_map(|item| document::graphics(self.doc.graphml(), item));
                 // The first's, as the side panel shows none when they differ.
                 // A text color is a label's, which some items may lack.
                 let first = match property {
@@ -489,7 +531,7 @@ impl DrwrApp {
                 };
                 if let Some(graphics) = first {
                     let title = format!("{} color", property.name());
-                    let color = property.get(&graphics);
+                    let color = property.get(graphics.as_ref());
                     self.color_picker
                         .open(property, title, color, property.optional());
                 }
@@ -510,13 +552,13 @@ impl DrwrApp {
             }
             Action::SetCornerRadius(radius) => {
                 for id in self.selected.nodes() {
-                    document::set_corner_radius(&mut self.graphml, id, radius);
+                    document::set_corner_radius(self.doc.graphml_mut(), id, radius);
                 }
                 self.style.set_corner_radius(&self.selected, radius);
             }
             Action::SetArrow(end, arrow) => {
                 for index in self.selected.edges() {
-                    document::set_arrow(&mut self.graphml, index, end, arrow);
+                    document::set_arrow(self.doc.graphml_mut(), index, end, arrow);
                 }
             }
             Action::EditLabel => {
@@ -525,7 +567,7 @@ impl DrwrApp {
                         item: item.clone(),
                         index: 0,
                     };
-                    if let Some(text) = document::label_text(&self.graphml, &label) {
+                    if let Some(text) = document::label_text(self.doc.graphml(), &label) {
                         self.canvas.edit_label(label, text);
                     }
                 }
@@ -533,7 +575,7 @@ impl DrwrApp {
             Action::EditLabelInDialog(labels) => {
                 let texts = labels
                     .iter()
-                    .map(|label| document::label_text(&self.graphml, label));
+                    .map(|label| document::label_text(self.doc.graphml(), label));
                 if let Some(texts) = texts.collect::<Option<Vec<_>>>()
                     && let Some(first) = texts.first()
                 {
@@ -548,11 +590,11 @@ impl DrwrApp {
                 }
             }
             Action::SetLabel(label, text) => {
-                document::set_label(&mut self.graphml, &label, &text, &self.style);
+                document::set_label(self.doc.graphml_mut(), &label, &text, &self.style);
             }
             Action::SetFont(label, part) => {
                 self.style.set_font(&part);
-                document::edit_label(&mut self.graphml, &label, |label| {
+                document::edit_label(self.doc.graphml_mut(), &label, |label| {
                     let font = &mut label.font;
                     match part {
                         FontPart::Family(family) => font.family = family,
@@ -562,8 +604,11 @@ impl DrwrApp {
                 });
             }
             Action::SetLabelPosition(label, position) => {
-                document::set_label_position(&mut self.graphml, &label, position);
+                document::set_label_position(self.doc.graphml_mut(), &label, position);
             }
+        }
+        if self.doc.edits() != edits {
+            self.edited(merge);
         }
     }
 }
@@ -591,6 +636,10 @@ impl eframe::App for DrwrApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // Unless edits wait to be recorded, as tests make between frames.
+        if !self.doc.has_unrecorded() {
+            self.selected_before = self.selected.clone();
+        }
         let mut waiting = Vec::new();
         // Before the menu, so an Escape that closes it doesn't also select the
         // Cursor tool.
@@ -599,27 +648,35 @@ impl eframe::App for DrwrApp {
         }
         // Panels are laid out outside-in in the order they're added, so the
         // canvas (the central panel) must come last.
-        let can_copy = self.selected.has_nodes();
-        let file_dialog_open = self.file_dialog.is_open();
-        let menu = menu::show(ui, file_dialog_open, can_copy);
+        let enabled = Enabled {
+            file: !self.file_dialog.is_open(),
+            copy: self.selected.has_nodes(),
+            undo: self.doc.can_undo(),
+            redo: self.doc.can_redo(),
+        };
+        let menu = menu::show(ui, enabled);
         self.perform_or_wait(menu, &mut waiting, ui.ctx(), frame);
         let (tool, zoom) = (self.tool, self.canvas.zoom());
-        let toolbar = toolbar::show(ui, file_dialog_open, can_copy, tool, zoom);
+        let toolbar = toolbar::show(ui, enabled, tool, zoom);
         self.perform_or_wait(toolbar, &mut waiting, ui.ctx(), frame);
         status_bar::show(ui, self.tool, self.file.as_deref(), self.modified);
-        for action in self
-            .side_panel
-            .show(ui, &self.graphml, &self.selected, &self.fonts)
-        {
+        let side = (self.side_panel).show(ui, self.doc.read(), &self.selected, &self.fonts);
+        self.merge_with = self.side_panel.dragged();
+        for action in side {
             self.perform(action, ui.ctx(), frame);
         }
+        self.merge_with = None;
+        let edits = self.doc.edits();
         let actions = self.canvas.show(
             ui,
             self.tool,
-            &mut self.graphml,
+            &mut self.doc,
             &mut self.selected,
             &self.style,
         );
+        if self.doc.edits() != edits {
+            self.edited(None);
+        }
         for action in actions.into_iter().chain(waiting) {
             self.perform(action, ui.ctx(), frame);
         }
@@ -635,7 +692,8 @@ impl eframe::App for DrwrApp {
                 self.perform(Action::SetLabel(label, text.clone()), ui.ctx(), frame);
             }
         }
-        self.update_modified(ui.ctx());
+        self.record();
+        self.update_modified();
         if std::mem::take(&mut self.close_requested) {
             self.close_graph(CloseFor::Quit, ui.ctx(), frame);
         }

@@ -1,8 +1,9 @@
 mod edge;
 mod paint;
-mod scene;
+mod shown;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use egui::emath::TSTransform;
 use egui::{
@@ -16,6 +17,8 @@ use graphml::yed::{
 
 use crate::action::Action;
 use crate::document::{self, EdgeEnd, Item, LabelRef};
+use crate::history::Document;
+use crate::scene::SceneEdge;
 use crate::selection::Selection;
 use crate::style::Style;
 use crate::text_field::{self, End};
@@ -23,7 +26,7 @@ use crate::tool::{NodeShape, Tool};
 use crate::zoom;
 
 use paint::{halign, label_font, label_rect};
-use scene::{Anchor, EdgeLook, Scene, SceneEdge, Shown, egui_pos, yed_point, yed_rect};
+use shown::{Anchor, EdgeLook, Shown, egui_pos, yed_point, yed_rect};
 
 /// White like paper, even in the dark theme.
 const BACKGROUND: Color32 = Color32::WHITE;
@@ -234,7 +237,7 @@ impl Canvas {
         &mut self,
         ui: &mut egui::Ui,
         tool: Tool,
-        graphml: &mut GraphMl,
+        doc: &mut Document,
         selected: &mut Selection,
         style: &Style,
     ) -> Vec<Action> {
@@ -268,7 +271,8 @@ impl Canvas {
                 self.edge_drag = None;
             }
 
-            let scene = Scene::read(graphml);
+            // A copy, so that edits can change the document while it's shown.
+            let scene = doc.scene().clone();
             let shown = Shown {
                 scene: &scene,
                 painter: &painter,
@@ -298,44 +302,41 @@ impl Canvas {
                     None
                 }
                 _ if tool.arrows().is_some() => {
-                    drawn_edge = self.draw_edge(&response, shown, graphml, selected, tool, style);
+                    drawn_edge = self.draw_edge(&response, shown, doc, selected, tool, style);
                     None
                 }
-                _ => self.draw_node(response.clone(), to_screen, graphml, selected, tool, style),
+                _ => self.draw_node(response.clone(), to_screen, doc, selected, tool, style),
             };
             let (mut resized, mut dragged_edge, mut moved, mut boxed) = (None, None, None, None);
             if tool == Tool::Cursor {
                 match selected.single().cloned() {
                     Some(Item::Node(id)) => {
                         self.edge_drag = None;
-                        let geometry = self.resize_node(ui, shown, graphml, &id);
+                        let geometry = self.resize_node(ui, shown, doc, &id);
                         resized = geometry.map(|geometry| (id, geometry));
                     }
                     Some(Item::Edge(_)) => {
                         self.resize = None;
-                        dragged_edge =
-                            self.drag_edge(ui, response.clone(), shown, graphml, selected);
+                        dragged_edge = self.drag_edge(ui, response.clone(), shown, doc, selected);
                     }
                     None => (self.resize, self.edge_drag) = (None, None),
                 }
-                moved = self.move_selection(ui, &response, to_screen, graphml, selected);
+                moved = self.move_selection(ui, &response, to_screen, doc, selected);
                 boxed = self.select_in_box(ui, &response, shown, selected);
             }
 
             // What a release did shows in the same frame.
             let released = ui.input(primary_release).is_some();
-            let mut scene = if released {
-                Scene::read(graphml)
-            } else {
-                scene
-            };
+            let mut scene = if released { doc.scene().clone() } else { scene };
+            // Drags show on the copy, sharing the graphics of the rest.
             if let Some((id, geometry)) = resized
                 && let Some(node) = scene.node(&id)
             {
-                document::resize(&mut scene.nodes[node].graphics, geometry);
+                let node = Arc::make_mut(&mut scene.nodes[node]);
+                document::resize(&mut node.graphics, geometry);
             }
             if let Some(delta) = moved {
-                let edges = document::bends_moved_with(graphml, selected.items());
+                let edges = document::bends_moved_with(doc.graphml(), selected.items());
                 scene.translate(selected, &edges, delta);
             }
             let shown = Shown {
@@ -458,6 +459,18 @@ impl Canvas {
         self.editor = None;
     }
 
+    /// Drops the drags, the edge being drawn and the label being edited, which
+    /// are of the document as it was.
+    pub fn cancel_edits(&mut self) {
+        self.shape_drag = None;
+        self.resize = None;
+        self.move_drag = None;
+        self.box_drag = None;
+        self.edge_draw = None;
+        self.edge_drag = None;
+        self.editor = None;
+    }
+
     /// Shows the label being edited, if there is one, a new one in `style`'s
     /// font. Returns the edit once Enter or a click elsewhere applies it.
     fn show_editor(&mut self, ui: &mut egui::Ui, shown: Shown, style: &Style) -> Option<Action> {
@@ -531,13 +544,13 @@ impl Canvas {
     }
 
     /// Drags out a node in `style` with the primary button, if `tool` draws
-    /// nodes, adding it to `graphml` and selecting it on release. Returns the
+    /// nodes, adding it to `doc` and selecting it on release. Returns the
     /// node while it's being drawn.
     fn draw_node(
         &mut self,
         response: Response,
         to_screen: TSTransform,
-        graphml: &mut GraphMl,
+        doc: &mut Document,
         selected: &mut Selection,
         tool: Tool,
         style: &Style,
@@ -570,6 +583,7 @@ impl Canvas {
             && graphics.geometry.width > 0.0
             && graphics.geometry.height > 0.0
         {
+            let graphml = doc.graphml_mut();
             let id = document::add_node(graphml, &graphics);
             // Boxes only: it leaves other shapes as they are.
             if let Some(radius) = style.corner_radius() {
@@ -582,13 +596,13 @@ impl Canvas {
 
     /// Draws an edge in `style` with the primary button, if `tool` draws
     /// edges: from a node, through bends where it's let go elsewhere, to the
-    /// node it's let go on, by a drag or by clicks. Adds it to `graphml` and
+    /// node it's let go on, by a drag or by clicks. Adds it to `doc` and
     /// selects it once it ends on a node. Returns it while it's being drawn.
     fn draw_edge(
         &mut self,
         response: &Response,
         shown: Shown,
-        graphml: &mut GraphMl,
+        doc: &mut Document,
         selected: &mut Selection,
         tool: Tool,
         style: &Style,
@@ -627,6 +641,7 @@ impl Canvas {
                         Some(node) => {
                             let graphics = new_edge(arrows, &draw.bends, style);
                             let target = &scene.nodes[node].id;
+                            let graphml = doc.graphml_mut();
                             let index =
                                 document::add_edge(graphml, &draw.source, target, &graphics);
                             *selected = Selection::edge(index);
@@ -668,7 +683,7 @@ impl Canvas {
         ui: &egui::Ui,
         canvas: Response,
         shown: Shown,
-        graphml: &mut GraphMl,
+        doc: &mut Document,
         selection: &mut Selection,
     ) -> Option<EdgeLook<'static>> {
         let Some(&Item::Edge(index)) = selection.single() else {
@@ -744,7 +759,7 @@ impl Canvas {
             && to_graph(pointer) != drag.from
         {
             let moved = self.dragged_edge(edge, drag, pointer, shown);
-            commit_edge(graphml, shown, edge, &moved, drag, selection);
+            commit_edge(doc.graphml_mut(), shown, edge, &moved, drag, selection);
         }
         None
     }
@@ -880,7 +895,7 @@ impl Canvas {
         ui: &egui::Ui,
         canvas: &Response,
         to_screen: TSTransform,
-        graphml: &mut GraphMl,
+        doc: &mut Document,
         selected: &Selection,
     ) -> Option<Vec2> {
         let drag = self.move_drag?;
@@ -894,7 +909,8 @@ impl Canvas {
             && to != drag.from
         {
             let delta = to - drag.from;
-            document::move_items(graphml, selected.items(), delta.x.into(), delta.y.into());
+            let (dx, dy) = (delta.x.into(), delta.y.into());
+            document::move_items(doc.graphml_mut(), selected.items(), dx, dy);
         }
         None
     }
@@ -943,7 +959,7 @@ impl Canvas {
         &mut self,
         ui: &egui::Ui,
         shown: Shown,
-        graphml: &mut GraphMl,
+        doc: &mut Document,
         id: &str,
     ) -> Option<yed::Rect> {
         let index = shown.scene.node(id)?;
@@ -979,7 +995,7 @@ impl Canvas {
             if let Some(to) = ui.input(primary_release).map(to_graph) {
                 let new = drag.geometry(geometry, to);
                 if new != geometry {
-                    document::edit_graphics(graphml, id, |graphics| {
+                    document::edit_graphics(doc.graphml_mut(), id, |graphics| {
                         document::resize(graphics, new);
                     });
                 }

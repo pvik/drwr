@@ -13,11 +13,13 @@ use graphml::yed::{
 
 use crate::action::{Action, FontPart};
 use crate::color_picker;
-use crate::document::{self, ColorProperty, EdgeEnd, Graphics, Item, LabelRef};
+use crate::document::{self, ColorProperty, EdgeEnd, GraphicsRef, Item, LabelRef};
 use crate::font_picker::FontPicker;
 use crate::fonts::{self, Fonts};
+use crate::history::Merge;
 use crate::label_position;
 use crate::line_type;
+use crate::scene::Scene;
 use crate::selection::Selection;
 use crate::text_field::{self, End};
 use crate::toolbar;
@@ -49,6 +51,9 @@ pub struct SidePanel {
     /// The number field whose typing Escape just cancelled, which egui 0.37
     /// applies anyway a frame later.
     escaped: Option<Id>,
+    /// The number field dragged to a new number this frame, as one change
+    /// with the rest of its drag.
+    dragged: Option<Merge>,
     font_picker: FontPicker,
 }
 
@@ -64,21 +69,22 @@ struct FieldEdit {
 }
 
 /// The selected nodes and edges, with their graphics.
-type Items<'a> = [(&'a Item, Graphics)];
+type Items<'a> = [(&'a Item, GraphicsRef<'a>)];
 
 impl SidePanel {
     /// Shows the toolbar and the properties of the `selected` nodes and
-    /// edges, with the font families `fonts` offers. Returns the actions asked
-    /// for.
+    /// edges of `graphml`, read from its `scene`, with the font families
+    /// `fonts` offers. Returns the actions asked for.
     pub fn show(
         &mut self,
         ui: &mut Ui,
-        graphml: &GraphMl,
+        (graphml, scene): (&GraphMl, &Scene),
         selected: &Selection,
         fonts: &Fonts,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
         let mut clicked = None;
+        self.dragged = None;
         let panel = egui::Panel::right("side_panel");
         // Wide enough for the border style dropdown, which would otherwise
         // widen the panel the first time a node is selected.
@@ -91,12 +97,12 @@ impl SidePanel {
                 // resizing.
                 ui.take_available_width();
                 let items: Vec<_> = (selected.items().iter())
-                    .filter_map(|item| Some((item, document::graphics(graphml, item)?)))
+                    .filter_map(|item| Some((item, scene.graphics(item)?)))
                     .collect();
                 if items.is_empty() {
                     ui.weak("Nothing selected");
                 } else {
-                    actions = self.properties(ui, graphml, &items, fonts);
+                    actions = self.properties(ui, (graphml, scene), &items, fonts);
                 }
             });
         });
@@ -114,25 +120,36 @@ impl SidePanel {
         applied.chain(actions).chain(clicked).collect()
     }
 
+    /// What the actions [`Self::show`] last returned may merge with in the
+    /// undo history: the rest of a number field's drag.
+    pub fn dragged(&self) -> Option<Merge> {
+        self.dragged
+    }
+
+    /// Drops the label text being typed, which is for labels as they were.
+    pub fn cancel_edit(&mut self) {
+        self.edit = None;
+    }
+
     /// The properties that the selected nodes and edges, `items`, all have,
     /// each blank where their values differ. Returns the actions asked for.
     fn properties(
         &mut self,
         ui: &mut Ui,
-        graphml: &GraphMl,
+        (graphml, scene): (&GraphMl, &Scene),
         items: &Items,
         fonts: &Fonts,
     ) -> Vec<Action> {
         let nodes: Vec<(&str, &NodeGraphics)> = (items.iter())
             .filter_map(|(item, graphics)| match (item, graphics) {
-                (Item::Node(id), Graphics::Node(node)) => Some((id.as_str(), node)),
+                (Item::Node(id), GraphicsRef::Node(node)) => Some((id.as_str(), *node)),
                 _ => None,
             })
             .collect();
         let edges: Vec<(&graphml::Edge, &EdgeGraphics)> = (items.iter())
             .filter_map(|(item, graphics)| match (item, graphics) {
-                (&&Item::Edge(index), Graphics::Edge(edge)) => {
-                    Some((document::edge(graphml, index)?, edge))
+                (&&Item::Edge(index), GraphicsRef::Edge(edge)) => {
+                    Some((document::edge(graphml, index)?, *edge))
                 }
                 _ => None,
             })
@@ -169,7 +186,7 @@ impl SidePanel {
                 };
                 for &property in colors {
                     ui.label(property.name());
-                    let color = same(items.iter().map(|(_, g)| property.get(g)));
+                    let color = same(items.iter().map(|(_, g)| property.get(*g)));
                     if color_button(ui, color).clicked() {
                         actions.push(Action::EditColor(property));
                     }
@@ -186,9 +203,7 @@ impl SidePanel {
                 let line_type = line_style_box(ui, same(types));
                 actions.extend(line_type.map(Action::SetLineType));
                 ui.end_row();
-                let radii = nodes
-                    .iter()
-                    .map(|(id, node)| document::corner_radius_of(graphml, id, node));
+                let radii = (nodes.iter()).map(|(id, _)| scene.nodes[scene.node(id)?].radius);
                 // Only boxes have one.
                 if edges.is_empty()
                     && let Some(radii) = radii.collect::<Option<Vec<_>>>()
@@ -396,7 +411,12 @@ impl SidePanel {
         if escaped {
             self.escaped = Some(response.id);
         }
-        (set && !cancelled && (differ || value != first)).then(|| T::from_f64(value))
+        let changed = set && !cancelled && (differ || value != first);
+        if changed && response.dragged() {
+            let since = ui.input(|input| input.pointer.press_start_time());
+            self.dragged = Some(Merge::Drag(response.id, since.unwrap_or_default()));
+        }
+        changed.then(|| T::from_f64(value))
     }
 }
 

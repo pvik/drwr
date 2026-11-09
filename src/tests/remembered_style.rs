@@ -44,7 +44,7 @@ fn new_nodes_get_the_fill_and_border_last_set() {
 #[test]
 fn new_lines_get_the_line_last_set_and_new_nodes_keep_their_look() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &new_box());
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
     document::add_edge(graphml, &left, &right, &edge_through(&[]));
@@ -86,7 +86,7 @@ fn new_lines_get_the_line_last_set_and_new_nodes_keep_their_look() {
 #[test]
 fn line_rows_set_on_nodes_and_lines_together_restyle_new_ones_of_both() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &new_box());
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
     document::add_edge(graphml, &left, &right, &edge_through(&[]));
@@ -115,7 +115,7 @@ fn line_rows_set_on_nodes_and_lines_together_restyle_new_ones_of_both() {
 #[test]
 fn new_items_keep_the_defaults_of_what_was_never_set() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.app.selected = Selection::node(id);
     harness.perform(Action::SetLineWidth(2.0));
 
@@ -144,7 +144,7 @@ fn new_items_keep_the_defaults_of_what_was_never_set() {
 #[test]
 fn new_labels_get_the_font_and_text_color_last_set() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let styled = document::add_node(graphml, &labelled_box("Styled"));
     let mut kept = labelled_box("Kept");
     kept.geometry.x = 400.0;
@@ -203,7 +203,7 @@ fn new_labels_get_the_font_and_text_color_last_set() {
 #[test]
 fn labels_added_in_the_side_panel_or_its_dialog_get_the_font_last_set() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let styled = document::add_node(graphml, &labelled_box("Styled"));
     let in_field = document::add_node(graphml, &box_at(300.0, 0.0));
     let in_dialog = document::add_node(graphml, &box_at(600.0, 0.0));
@@ -233,7 +233,7 @@ fn labels_added_in_the_side_panel_or_its_dialog_get_the_font_last_set() {
 #[test]
 fn only_new_boxes_get_the_corner_radius_last_set() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.app.selected = Selection::node(id.clone());
     harness.perform(Action::SetCornerRadius(10.0));
     for (tool, x) in [(Tool::Circle, 20.0), (Tool::Ellipse, 200.0)] {
@@ -243,7 +243,7 @@ fn only_new_boxes_get_the_corner_radius_last_set() {
             NodeKind::Shape(ShapeType::Ellipse)
         );
         // Only its graphics, with no radius kept.
-        let nodes = &harness.app.graphml.graphs[0].nodes;
+        let nodes = &harness.app.doc.graphml().graphs[0].nodes;
         let node = nodes.iter().find(|node| node.id == drawn).unwrap();
         assert_eq!(node.data.len(), 1, "{tool:?}");
     }
@@ -257,7 +257,7 @@ fn only_new_boxes_get_the_corner_radius_last_set() {
         harness.perform(Action::SetCornerRadius(radius));
         let drawn = harness.draw_node(Tool::Box, vec2(x, 400.0), vec2(x + 120.0, 460.0));
         assert_eq!(harness.graphics(&drawn).kind, NodeKind::Shape(shape));
-        let drawn_radius = document::corner_radius(&harness.app.graphml, &drawn);
+        let drawn_radius = document::corner_radius(harness.app.doc.graphml(), &drawn);
         assert_eq!(drawn_radius, Some(radius));
     }
 }
@@ -304,12 +304,15 @@ fn pasting_reproduces_what_was_copied_whatever_was_set_since() {
 #[test]
 fn open_neither_restyles_the_file_nor_forgets_what_was_set() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.app.selected = Selection::node(id);
     harness.perform(Action::SetColor(ColorProperty::Fill, Some(RED)));
     harness.perform(Action::SetLineWidth(3.0));
     harness.app.open(Path::new(FIXTURE)).unwrap();
-    assert_eq!(harness.app.graphml, GraphMl::read_file(FIXTURE).unwrap());
+    assert_eq!(
+        *harness.app.doc.graphml(),
+        GraphMl::read_file(FIXTURE).unwrap()
+    );
 
     // Below the file's nodes.
     let drawn = harness.draw_node(Tool::Box, vec2(20.0, 500.0), vec2(140.0, 560.0));
@@ -321,12 +324,12 @@ fn open_neither_restyles_the_file_nor_forgets_what_was_set() {
 #[test]
 fn new_keeps_what_was_set_for_new_items() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.app.selected = Selection::node(id);
     harness.perform(Action::SetColor(ColorProperty::Fill, Some(RED)));
     harness.perform(Action::New);
     harness.answer_prompt("Don't Save");
-    assert_eq!(harness.app.graphml, yed::new_document());
+    assert_eq!(*harness.app.doc.graphml(), yed::new_document());
 
     let drawn = harness.draw_node(Tool::Box, vec2(20.0, 20.0), vec2(140.0, 80.0));
     assert_eq!(harness.graphics(&drawn).fill.color, Some(RED));

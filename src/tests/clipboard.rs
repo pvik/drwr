@@ -54,7 +54,7 @@ fn ctrl_x_then_ctrl_v_puts_the_nodes_back() {
     let (copied, _) = harness.clipboard(vec![Event::Cut]);
     assert_eq!(copied.len(), 1);
     assert!(harness.app.selected.is_empty());
-    assert_eq!(document::graphics_of(&harness.app.graphml, "n4"), None);
+    assert_eq!(document::graphics_of(harness.app.doc.graphml(), "n4"), None);
 
     harness.run(vec![Event::Paste(copied[0].clone())]);
     assert_eq!(harness.app.selected, Selection::node("n4"));
@@ -65,10 +65,10 @@ fn ctrl_x_then_ctrl_v_puts_the_nodes_back() {
 fn cut_and_copy_with_only_lines_selected_do_nothing() {
     let mut harness = fixture_harness();
     harness.app.selected = Selection::edge(0);
-    let before = harness.app.graphml.clone();
+    let before = harness.app.doc.graphml().clone();
     let (copied, _) = harness.clipboard(vec![Event::Copy, Event::Cut]);
     assert_eq!(copied, [""; 0]);
-    assert_eq!(harness.app.graphml, before);
+    assert_eq!(*harness.app.doc.graphml(), before);
     assert_eq!(harness.app.selected, Selection::edge(0));
 }
 
@@ -76,9 +76,9 @@ fn cut_and_copy_with_only_lines_selected_do_nothing() {
 fn pasting_text_other_than_graphml_does_nothing() {
     let mut harness = fixture_harness();
     harness.app.selected = Selection::node("n0");
-    let before = harness.app.graphml.clone();
+    let before = harness.app.doc.graphml().clone();
     harness.run(vec![Event::Paste("Hello".to_owned())]);
-    assert_eq!(harness.app.graphml, before);
+    assert_eq!(*harness.app.doc.graphml(), before);
     assert_eq!(harness.app.selected, Selection::node("n0"));
 }
 
@@ -92,7 +92,7 @@ fn clipboard_keys_in_a_label_field_edit_its_text() {
     harness.run(vec![Event::Paste("Pasted".to_owned())]);
     harness.press(Modifiers::NONE, Key::Enter);
     assert_eq!(harness.label(&id), "Pasted");
-    assert_eq!(harness.app.graphml.graphs[0].nodes.len(), 1);
+    assert_eq!(harness.app.doc.graphml().graphs[0].nodes.len(), 1);
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn the_toolbar_buttons_cut_copy_and_paste() {
     let cut = at(&mut harness, "Cut");
     let (copied, _) = harness.click_for_clipboard(cut);
     assert_eq!(parse_copied(copied).graphs[0].nodes[0].id, "n6");
-    assert_eq!(document::graphics_of(&harness.app.graphml, "n6"), None);
+    assert_eq!(document::graphics_of(harness.app.doc.graphml(), "n6"), None);
     assert!(harness.app.selected.is_empty());
 }
 
@@ -145,7 +145,7 @@ fn the_edit_menu_cuts_copies_and_pastes() {
 #[test]
 fn the_cut_button_applies_the_label_typed_first() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &labelled_box("Left"));
     let middle = document::add_node(graphml, &box_at(300.0, 0.0));
     let right = document::add_node(graphml, &box_at(600.0, 0.0));

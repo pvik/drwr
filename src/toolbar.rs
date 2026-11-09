@@ -1,6 +1,6 @@
 use egui::{Button, ComboBox, Image, ImageSource, Vec2, include_image};
 
-use crate::action::Action;
+use crate::action::{Action, Enabled};
 use crate::shortcuts;
 use crate::tool::Tool;
 use crate::zoom;
@@ -11,6 +11,8 @@ const SAVE_ICON: ImageSource<'static> = include_image!("../assets/icons/save.svg
 const CUT_ICON: ImageSource<'static> = include_image!("../assets/icons/cut.svg");
 const COPY_ICON: ImageSource<'static> = include_image!("../assets/icons/copy.svg");
 const PASTE_ICON: ImageSource<'static> = include_image!("../assets/icons/paste.svg");
+const UNDO_ICON: ImageSource<'static> = include_image!("../assets/icons/undo.svg");
+const REDO_ICON: ImageSource<'static> = include_image!("../assets/icons/redo.svg");
 const ZOOM_IN_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_in.svg");
 const ZOOM_OUT_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_out.svg");
 const DELETE_ICON: ImageSource<'static> = include_image!("../assets/icons/delete.svg");
@@ -32,40 +34,43 @@ const BUTTON_PADDING: Vec2 = Vec2::splat(4.0);
 /// Wide enough for "400%", so the zoom dropdown keeps its width.
 const ZOOM_BOX_WIDTH: f32 = 64.0;
 
-/// Shows the New, Open and Save buttons, disabled while `file_dialog_open`,
-/// the Cut, Copy and Paste buttons with Cut and Copy enabled if `can_copy`, a
-/// button per tool with the `selected` one highlighted, then the zoom buttons
-/// and a dropdown showing `zoom`. Returns the action clicked.
-pub fn show(
-    ui: &mut egui::Ui,
-    file_dialog_open: bool,
-    can_copy: bool,
-    selected: Tool,
-    zoom: f32,
-) -> Option<Action> {
+/// Shows the New, Open and Save buttons, the Cut, Copy and Paste buttons, the
+/// Undo and Redo buttons, each as `enabled` says, a button per tool with the
+/// `selected` one highlighted, then the zoom buttons and a dropdown showing
+/// `zoom`. Returns the action clicked.
+pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> Option<Action> {
     let toolbar = egui::Panel::top("toolbar").show(ui, |ui| {
         button_row(ui, |ui| {
             // So the zoom dropdown is as tall as the icon buttons.
             ui.spacing_mut().interact_size.y = ICON_SIZE.y + 2.0 * BUTTON_PADDING.y;
 
-            let can_pick = !file_dialog_open;
             let file = action_buttons(
                 ui,
                 [
-                    (Action::New, "New", NEW_ICON, can_pick),
-                    (Action::Open, "Open", OPEN_ICON, can_pick),
-                    (Action::Save, "Save", SAVE_ICON, can_pick),
+                    (Action::New, "New", NEW_ICON, enabled.file),
+                    (Action::Open, "Open", OPEN_ICON, enabled.file),
+                    (Action::Save, "Save", SAVE_ICON, enabled.file),
                 ],
             );
 
             ui.separator();
 
-            let edit = action_buttons(
+            let clipboard = action_buttons(
                 ui,
                 [
-                    (Action::Cut, "Cut", CUT_ICON, can_copy),
-                    (Action::Copy, "Copy", COPY_ICON, can_copy),
+                    (Action::Cut, "Cut", CUT_ICON, enabled.copy),
+                    (Action::Copy, "Copy", COPY_ICON, enabled.copy),
                     (Action::Paste, "Paste", PASTE_ICON, true),
+                ],
+            );
+
+            ui.separator();
+
+            let history = action_buttons(
+                ui,
+                [
+                    (Action::Undo, "Undo", UNDO_ICON, enabled.undo),
+                    (Action::Redo, "Redo", REDO_ICON, enabled.redo),
                 ],
             );
 
@@ -92,7 +97,10 @@ pub fn show(
                 ],
             );
             let preset = zoom_box(ui, zoom).map(Action::SetZoom);
-            file.or(edit).or(picked).or(zoom_step).or(preset)
+            (file.or(clipboard).or(history))
+                .or(picked)
+                .or(zoom_step)
+                .or(preset)
         })
     });
     toolbar.inner

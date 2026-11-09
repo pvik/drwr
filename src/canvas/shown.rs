@@ -1,40 +1,16 @@
-//! The graph as the canvas shows it, and what's where on screen.
+//! The scene as the canvas shows it, and what's where on screen.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 
 use egui::emath::TSTransform;
 use egui::{Painter, Pos2, Rect, Vec2, pos2, vec2};
-use graphml::GraphMl;
 use graphml::yed::{self, EdgeGraphics, NodeGraphics, NodeKind, Route, ShapeType};
 
-use crate::document::{self, EdgeEnd, Item};
+use crate::document::{EdgeEnd, Item};
+use crate::scene::{Scene, SceneEdge, SceneNode};
 use crate::selection::Selection;
 
 use super::{EdgePart, GRAB, Owner, edge};
-
-/// The top-level graph's nodes and edges, as the canvas shows them.
-pub struct Scene {
-    pub nodes: Vec<SceneNode>,
-    /// Those whose nodes are both in `nodes`.
-    pub edges: Vec<SceneEdge>,
-}
-
-pub struct SceneNode {
-    pub id: String,
-    pub graphics: NodeGraphics,
-    /// The corner radius of a box.
-    pub radius: Option<f64>,
-}
-
-pub struct SceneEdge {
-    /// Its index in the document.
-    pub index: usize,
-    /// The indexes of its nodes in the scene.
-    pub source: usize,
-    pub target: usize,
-    pub graphics: EdgeGraphics,
-}
 
 /// Where an end of an edge is: on a node of the scene, by its index, or at a
 /// point in graph coordinates.
@@ -63,74 +39,16 @@ pub struct Shown<'a> {
     pub text_zoom: f32,
 }
 
-impl Scene {
-    pub fn read(graphml: &GraphMl) -> Self {
-        let nodes: Vec<SceneNode> = document::node_graphics(graphml)
-            .map(|(id, graphics, radius)| SceneNode {
-                id: id.to_owned(),
-                graphics,
-                radius,
-            })
-            .collect();
-        let ids: HashMap<&str, usize> = (nodes.iter().enumerate())
-            .map(|(index, node)| (node.id.as_str(), index))
-            .collect();
-        let edges = document::edge_graphics(graphml)
-            .filter_map(|(index, edge, graphics)| {
-                Some(SceneEdge {
-                    index,
-                    source: *ids.get(edge.source.as_str())?,
-                    target: *ids.get(edge.target.as_str())?,
-                    graphics,
-                })
-            })
-            .collect();
-        Scene { nodes, edges }
-    }
-
-    /// The index of the node with id `id`.
-    pub fn node(&self, id: &str) -> Option<usize> {
-        self.nodes.iter().position(|node| node.id == id)
-    }
-
-    /// The edge at `index` in the document.
-    pub fn edge(&self, index: usize) -> Option<&SceneEdge> {
-        self.edges.iter().find(|edge| edge.index == index)
-    }
-
-    /// Moves the `selected` nodes, and the bends of the edges at `edges`, by
-    /// `delta` in graph points, as a drag shows them before it's let go.
-    pub fn translate(&mut self, selected: &Selection, edges: &HashSet<usize>, delta: Vec2) {
-        let (dx, dy) = (f64::from(delta.x), f64::from(delta.y));
-        for node in &mut self.nodes {
-            if selected.contains_node(&node.id) {
-                node.graphics.geometry.x += dx;
-                node.graphics.geometry.y += dy;
-            }
-        }
-        let moved = self
-            .edges
-            .iter_mut()
-            .filter(|edge| edges.contains(&edge.index));
-        for point in moved.flat_map(|edge| &mut edge.graphics.path.points) {
-            point.x += dx;
-            point.y += dy;
-        }
-    }
-}
-
-impl SceneNode {
-    /// The shape the canvas draws it as, if it can draw it.
-    fn outline(&self) -> Option<Outline> {
-        shape(&self.graphics, self.radius)
-    }
+/// The shape the canvas draws `node` as, if it can draw it.
+fn outline(node: &SceneNode) -> Option<Outline> {
+    shape(&node.graphics, node.radius)
 }
 
 impl<'a> EdgeLook<'a> {
     /// `edge` as the document has it.
     pub fn of(edge: &'a SceneEdge) -> Self {
         EdgeLook {
-            graphics: Cow::Borrowed(&edge.graphics),
+            graphics: Cow::Borrowed(&*edge.graphics),
             source: Anchor::Node(edge.source),
             target: Anchor::Node(edge.target),
         }
@@ -174,7 +92,7 @@ impl Shown<'_> {
     /// Whether `pos` on screen is inside the node at index `node`, or its
     /// bounds if the canvas can't draw it.
     fn inside(&self, node: usize, pos: Pos2) -> bool {
-        let outline = self.scene.nodes[node].outline();
+        let outline = outline(&self.scene.nodes[node]);
         inside(outline, self.node_rect(node), self.to_screen.scaling, pos)
     }
 
@@ -214,7 +132,7 @@ impl Shown<'_> {
 
     /// Whether the node at index `node` is drawn, and inside `rect` on screen.
     pub fn in_box(&self, node: usize, rect: Rect) -> bool {
-        let drawn = self.scene.nodes[node].outline().is_some();
+        let drawn = outline(&self.scene.nodes[node]).is_some();
         drawn && rect.contains_rect(self.node_rect(node))
     }
 
@@ -232,7 +150,7 @@ impl Shown<'_> {
     /// those `only` has if it's given.
     pub fn node_at(&self, pos: Pos2, only: Option<&Selection>) -> Option<usize> {
         let nodes = self.scene.nodes.iter().enumerate().rev();
-        let drawn = nodes.filter(|(_, node)| node.outline().is_some());
+        let drawn = nodes.filter(|(_, node)| outline(node).is_some());
         let mut wanted =
             drawn.filter(|(_, node)| only.is_none_or(|only| only.contains_node(&node.id)));
         let (index, _) = wanted.find(|&(index, _)| self.inside(index, pos))?;
@@ -263,7 +181,7 @@ impl Shown<'_> {
         let inside = |anchor: Anchor| {
             let node = match anchor {
                 Anchor::Node(node) => {
-                    Some((self.scene.nodes[node].outline(), self.node_rect(node)))
+                    Some((outline(&self.scene.nodes[node]), self.node_rect(node)))
                 }
                 Anchor::Point(_) => None,
             };
@@ -305,7 +223,7 @@ pub enum Outline {
 
 /// The shape the canvas draws a node as, if it's a kind it can draw yet.
 /// `corner_radius` rounds the corners of a box; see
-/// [`document::corner_radius`].
+/// [`crate::document::corner_radius`].
 pub fn shape(graphics: &NodeGraphics, corner_radius: Option<f64>) -> Option<Outline> {
     match &graphics.kind {
         NodeKind::Shape(ShapeType::Rectangle | ShapeType::RoundRectangle) => {

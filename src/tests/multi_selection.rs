@@ -10,7 +10,7 @@ fn the_side_panel_shows_what_the_selected_nodes_share() {
     right.geometry.width = 100.0;
     right.fill.color = Some(RED);
     right.labels.push(yed::Label::new("Second"));
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     document::add_node(graphml, &left);
     document::add_node(graphml, &right);
     harness.click(vec2(150.0, 60.0));
@@ -44,7 +44,7 @@ fn the_side_panel_shows_what_the_selected_nodes_share() {
 #[test]
 fn nodes_and_lines_selected_together_share_line_rows() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &labelled_box("Same"));
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
     let mut line = edge_through(&[]);
@@ -70,7 +70,7 @@ fn nodes_and_lines_selected_together_share_line_rows() {
 #[test]
 fn the_side_panel_shows_what_the_selected_lines_share() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &new_box());
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
     let below = document::add_node(graphml, &box_at(0.0, 300.0));
@@ -105,7 +105,7 @@ fn the_side_panel_shows_what_the_selected_lines_share() {
 #[test]
 fn values_set_in_the_side_panel_go_to_every_selected_item() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let mut thick = new_box();
     thick.border.width = 2.0;
     let thick = document::add_node(graphml, &thick);
@@ -140,7 +140,7 @@ fn values_set_in_the_side_panel_go_to_every_selected_item() {
 #[test]
 fn colors_picked_in_the_side_panel_go_to_every_selected_node() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &new_box());
     let mut right = box_at(300.0, 0.0);
     right.fill.color = Some(yed::Color::rgb(0x00, 0x00, 0xFF));
@@ -163,7 +163,7 @@ fn colors_picked_in_the_side_panel_go_to_every_selected_node() {
 #[test]
 fn a_blank_label_field_sets_every_label_only_once_typed_in() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &labelled_box("Left"));
     let mut right = labelled_box("Right");
     right.geometry.x = 400.0;
@@ -184,7 +184,7 @@ fn a_blank_label_field_sets_every_label_only_once_typed_in() {
 #[test]
 fn the_label_dialog_sets_every_selected_label_once_changed() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &labelled_box("Left"));
     // Without a label, which it gets.
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
@@ -206,7 +206,7 @@ fn the_label_dialog_sets_every_selected_label_once_changed() {
 #[test]
 fn font_changes_go_to_every_selected_label_keeping_the_rest_of_each_font() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &labelled_box("Left"));
     let mut right = labelled_box("Right");
     right.geometry.x = 400.0;
@@ -233,7 +233,7 @@ fn font_changes_go_to_every_selected_label_keeping_the_rest_of_each_font() {
 #[test]
 fn only_boxes_together_have_a_corner_radius() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let mut ellipse = box_at(300.0, 0.0);
     ellipse.kind = NodeKind::Shape(ShapeType::Ellipse);
     let items = [new_box(), box_at(0.0, 200.0), ellipse]
@@ -247,7 +247,7 @@ fn only_boxes_together_have_a_corner_radius() {
 #[test]
 fn ctrl_arrows_move_everything_selected() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &new_box());
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
     let below = document::add_node(graphml, &box_at(0.0, 300.0));
@@ -266,7 +266,7 @@ fn ctrl_arrows_move_everything_selected() {
 #[test]
 fn delete_removes_everything_selected() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let left = document::add_node(graphml, &new_box());
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
     let below = document::add_node(graphml, &box_at(0.0, 300.0));
@@ -281,8 +281,11 @@ fn delete_removes_everything_selected() {
     harness.app.selected = Selection::of([Item::Edge(0), Item::Node(left.clone())]);
     harness.click_widget("Delete");
     assert_eq!(harness.edge_ids(), [""; 0]);
-    assert_eq!(document::graphics_of(&harness.app.graphml, &left), None);
-    assert!(document::graphics_of(&harness.app.graphml, &right).is_some());
+    assert_eq!(
+        document::graphics_of(harness.app.doc.graphml(), &left),
+        None
+    );
+    assert!(document::graphics_of(harness.app.doc.graphml(), &right).is_some());
 }
 
 /// Drags a box round the fixture's n0 and n1 and the bends of e0 between
@@ -315,7 +318,7 @@ fn delete_removes_the_boxed_nodes_and_edges() {
     drag_box_round_e0(&mut harness);
     harness.press(Modifiers::NONE, Key::Delete);
     for id in ["n0", "n1"] {
-        assert_eq!(document::graphics_of(&harness.app.graphml, id), None);
+        assert_eq!(document::graphics_of(harness.app.doc.graphml(), id), None);
     }
     assert_eq!(harness.edge_ids(), ["e1"]);
     assert!(harness.app.selected.is_empty());
@@ -336,7 +339,7 @@ fn boxed_edges_are_copied_and_pasted_with_their_nodes() {
 #[test]
 fn font_rows_show_for_the_labels_that_some_selected_items_have() {
     let mut harness = Harness::new();
-    let graphml = &mut harness.app.graphml;
+    let graphml = harness.app.doc.graphml_mut();
     let mut labelled = labelled_box("Box");
     labelled.labels[0].font.size = 20;
     labelled.labels[0].text_color = RED;

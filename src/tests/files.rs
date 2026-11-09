@@ -4,9 +4,9 @@ use crate::testing::ScratchDir;
 #[test]
 fn starts_with_an_empty_unsaved_graph() {
     let app = DrwrApp::new(Fonts::default());
-    assert_eq!(app.graphml, yed::new_document());
+    assert_eq!(*app.doc.graphml(), yed::new_document());
     assert_eq!(app.file, None);
-    assert_eq!(app.saved, app.graphml);
+    assert_eq!(app.saved, *app.doc.graphml());
     assert!(!app.modified);
 }
 
@@ -14,8 +14,8 @@ fn starts_with_an_empty_unsaved_graph() {
 fn open_replaces_the_graph() {
     let mut app = DrwrApp::default();
     app.open(Path::new(FIXTURE)).unwrap();
-    assert_eq!(app.graphml, GraphMl::read_file(FIXTURE).unwrap());
-    assert_ne!(app.graphml, GraphMl::default());
+    assert_eq!(*app.doc.graphml(), GraphMl::read_file(FIXTURE).unwrap());
+    assert_ne!(*app.doc.graphml(), GraphMl::default());
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn open_records_the_absolute_path() {
 fn failed_open_keeps_the_graph() {
     let mut app = DrwrApp::default();
     app.open(Path::new(FIXTURE)).unwrap();
-    let before = app.graphml.clone();
+    let before = app.doc.graphml().clone();
 
     app.selected = Selection::node("n0".to_owned());
 
@@ -44,7 +44,7 @@ fn failed_open_keeps_the_graph() {
     let err = app.open(missing).unwrap_err();
     assert!(matches!(err, graphml::Error::Io(_)), "{err:?}");
 
-    assert_eq!(app.graphml, before);
+    assert_eq!(*app.doc.graphml(), before);
     assert_eq!(app.file.as_deref(), Some(Path::new(FIXTURE)));
     assert_eq!(app.selected_node(), Some("n0"));
 }
@@ -67,7 +67,7 @@ fn ctrl_n_replaces_the_graph_with_an_empty_unsaved_one() {
     harness.app.canvas.set_zoom(2.0);
     let fonts = harness.app.fonts.clone();
     harness.press(CTRL, Key::N);
-    assert_eq!(harness.app.graphml, yed::new_document());
+    assert_eq!(*harness.app.doc.graphml(), yed::new_document());
     assert_eq!(harness.app.file, None);
     assert!(harness.app.selected.is_empty());
     assert_eq!(harness.app.canvas.zoom(), 1.0);
@@ -95,7 +95,7 @@ fn new_closes_the_dialogs_and_drops_the_labels_being_edited() {
     assert!(!harness.app.label_dialog.is_open());
     harness.run(vec![]);
     harness.run(vec![]);
-    assert_eq!(harness.app.graphml, yed::new_document());
+    assert_eq!(*harness.app.doc.graphml(), yed::new_document());
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn ctrl_s_saves_to_the_file() {
     harness.press(CTRL, Key::S);
     assert!(!harness.app.file_dialog.is_open());
     assert_eq!(harness.app.file.as_deref(), Some(file.as_path()));
-    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
     assert_ne!(read(&file), read(Path::new(FIXTURE)));
 }
 
@@ -221,8 +221,8 @@ fn saving_an_unsaved_graph_asks_where_and_adds_the_extension() {
     harness.answer(Some(&dir.path("drawn")));
     let file = dir.path("drawn.graphml");
     assert_eq!(harness.app.file.as_deref(), Some(file.as_path()));
-    assert_eq!(read(&file), harness.app.graphml);
-    assert_eq!(harness.app.graphml.graphs[0].nodes.len(), 1);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
+    assert_eq!(harness.app.doc.graphml().graphs[0].nodes.len(), 1);
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn a_name_without_an_extension_asks_before_replacing_that_file() {
     harness.press(CTRL, Key::S);
     harness.answer(Some(&dir.path("plan")));
     harness.answer_prompt("Replace");
-    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
     assert_eq!(harness.app.file, Some(file));
     assert!(!harness.app.modified);
 }
@@ -293,14 +293,14 @@ fn replacing_goes_on_to_close_the_graph_and_cancelling_drops_that() {
     std::fs::copy(FIXTURE, &file).unwrap();
     let mut harness = Harness::new();
     harness.draw_box();
-    let drawn = harness.app.graphml.clone();
+    let drawn = harness.app.doc.graphml().clone();
     let new = yed::new_document();
     for (answer, graphml) in [("Cancel", &drawn), ("Replace", &new)] {
         harness.press(CTRL, Key::N);
         harness.answer_prompt("Save");
         harness.answer(Some(&dir.path("plan")));
         harness.answer_prompt(answer);
-        assert_eq!(&harness.app.graphml, graphml, "{answer}");
+        assert_eq!(harness.app.doc.graphml(), graphml, "{answer}");
         assert!(!harness.asks_to_save(), "{answer}");
     }
     assert_eq!(read(&file), drawn);
@@ -392,11 +392,11 @@ fn file_actions_wait_while_a_file_dialog_is_open() {
     for label in ["New", "Open", "Save"] {
         assert!(harness.widget(label).is_disabled(), "{label}");
     }
-    let before = harness.app.graphml.clone();
+    let before = harness.app.doc.graphml().clone();
     for key in [Key::N, Key::O] {
         harness.press(CTRL, key);
     }
-    assert_eq!(harness.app.graphml, before);
+    assert_eq!(*harness.app.doc.graphml(), before);
     let request = harness.app.file_dialog.request();
     assert!(matches!(request, Some(Request::Save { .. })), "{request:?}");
 
@@ -453,7 +453,7 @@ fn ctrl_s_in_a_label_field_saves_the_label_typed() {
     retype_queue(&mut harness);
     harness.press(CTRL, Key::S);
     assert_eq!(harness.label("n2"), "Stack");
-    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
     assert!(!harness.app.modified);
     assert!(!harness.ctx.text_edit_focused());
 }
@@ -469,7 +469,7 @@ fn ctrl_s_saves_the_label_edited_on_the_canvas() {
     harness.type_text("Renamed");
     harness.press(CTRL, Key::S);
     assert_eq!(harness.label("n2"), "Renamed");
-    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn ctrl_s_in_the_border_width_field_saves_the_width_typed() {
     harness.type_text("4.5");
     harness.press(CTRL, Key::S);
     assert_eq!(harness.graphics(&id).border.width, 4.5);
-    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
 }
 
 /// Selects the fixture's n2 and types "Stack" over its label, "Queue", in
@@ -617,7 +617,7 @@ fn quit_asks_to_save_changes_first() {
     harness.quit();
     let commands = harness.answer_prompt("Save");
     assert!(commands.contains(&egui::ViewportCommand::Close));
-    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
     assert!(!harness.close_window());
 }
 
@@ -649,7 +649,7 @@ fn ctrl_q_asks_to_save_changes_first() {
 
     let commands = harness.answer_prompt("Save");
     assert!(commands.contains(&egui::ViewportCommand::Close));
-    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(read(&file), *harness.app.doc.graphml());
     assert!(!harness.close_window());
 }
 
@@ -710,14 +710,14 @@ fn open_asks_to_save_changes_before_showing_the_dialog() {
 fn saving_from_the_prompt_goes_on_to_open() {
     let dir = ScratchDir::new("open-save");
     let (mut harness, file) = modified_fixture(&dir);
-    let moved = harness.app.graphml.clone();
+    let moved = harness.app.doc.graphml().clone();
     harness.press(CTRL, Key::O);
     harness.answer_prompt("Save");
     assert_eq!(read(&file), moved);
     assert_eq!(harness.app.file_dialog.request(), Some(&Request::Open));
 
     harness.answer(Some(Path::new(FIXTURE)));
-    assert_eq!(harness.app.graphml, read(Path::new(FIXTURE)));
+    assert_eq!(*harness.app.doc.graphml(), read(Path::new(FIXTURE)));
     assert!(!harness.app.modified);
 }
 
@@ -733,10 +733,10 @@ fn new_asks_to_save_an_unsaved_graph_where_first() {
     assert!(matches!(request, Some(Request::Save { .. })), "{request:?}");
 
     let file = dir.path("drawn.graphml");
-    let drawn = harness.app.graphml.clone();
+    let drawn = harness.app.doc.graphml().clone();
     harness.answer(Some(&file));
     assert_eq!(read(&file), drawn);
-    assert_eq!(harness.app.graphml, yed::new_document());
+    assert_eq!(*harness.app.doc.graphml(), yed::new_document());
     assert_eq!(harness.app.file, None);
     assert!(!harness.app.modified);
 }
@@ -745,11 +745,11 @@ fn new_asks_to_save_an_unsaved_graph_where_first() {
 fn cancelling_save_as_from_the_prompt_keeps_the_graph() {
     let mut harness = Harness::new();
     harness.draw_box();
-    let drawn = harness.app.graphml.clone();
+    let drawn = harness.app.doc.graphml().clone();
     harness.press(CTRL, Key::N);
     harness.answer_prompt("Save");
     harness.answer(None);
-    assert_eq!(harness.app.graphml, drawn);
+    assert_eq!(*harness.app.doc.graphml(), drawn);
     assert!(harness.app.modified);
     assert!(!harness.asks_to_save());
 }
@@ -760,11 +760,11 @@ fn a_failed_save_from_the_prompt_keeps_the_graph() {
     harness.app.file = Some(PathBuf::from("/nonexistent/yed.graphml"));
     harness.app.selected = Selection::node("n0");
     harness.press(CTRL, Key::ArrowRight);
-    let moved = harness.app.graphml.clone();
+    let moved = harness.app.doc.graphml().clone();
     harness.press(CTRL, Key::N);
     harness.answer_prompt("Save");
     assert!(harness.app.error.is_some());
-    assert_eq!(harness.app.graphml, moved);
+    assert_eq!(*harness.app.doc.graphml(), moved);
     assert!(harness.app.modified);
 }
 
@@ -774,7 +774,7 @@ fn new_without_saving_drops_the_changes() {
     harness.draw_box();
     harness.press(CTRL, Key::N);
     harness.answer_prompt("Don't Save");
-    assert_eq!(harness.app.graphml, yed::new_document());
+    assert_eq!(*harness.app.doc.graphml(), yed::new_document());
     assert!(!harness.app.modified);
 }
 
@@ -785,7 +785,7 @@ fn enter_saves_from_the_prompt() {
     harness.press(CTRL, Key::N);
     harness.run(vec![]);
     harness.press(Modifiers::NONE, Key::Enter);
-    assert_eq!(harness.app.graphml, yed::new_document());
+    assert_eq!(*harness.app.doc.graphml(), yed::new_document());
     assert_ne!(read(&file), read(Path::new(FIXTURE)));
 }
 

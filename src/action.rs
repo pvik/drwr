@@ -11,6 +11,11 @@ pub enum Action {
     Save,
     SaveAs,
     Quit,
+    /// Undoes the last change to the graph, selecting what was selected
+    /// before it.
+    Undo,
+    /// Redoes the last change undone, selecting what was selected after it.
+    Redo,
     /// Copies, then removes what's selected.
     Cut,
     /// Puts the selected nodes, with the selected edges between them, on the
@@ -64,4 +69,15 @@ pub enum FontPart {
     Family(String),
     Style(FontStyle),
     Size(u32),
+}
+
+/// Which commands the menu and the toolbar offer now.
+#[derive(Clone, Copy, Debug)]
+pub struct Enabled {
+    /// New, Open, Save and Save As, unavailable while a file dialog is open.
+    pub file: bool,
+    /// Cut and Copy, which need nodes selected.
+    pub copy: bool,
+    pub undo: bool,
+    pub redo: bool,
 }

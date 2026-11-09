@@ -48,7 +48,7 @@ fn clicking_away_from_the_side_panel_applies_the_label() {
 #[test]
 fn a_node_without_labels_gets_one_from_the_side_panel() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     let field = harness.empty_field();
     harness.click_at(field);
@@ -90,7 +90,7 @@ fn ctrl_arrows_in_a_label_field_move_the_text_cursor() {
 #[test]
 fn the_dots_button_edits_the_label_in_a_dialog() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));
     harness.click(vec2(150.0, 60.0));
     harness.click_text("...");
     assert!(harness.app.label_dialog.is_open());
@@ -120,7 +120,7 @@ fn the_dots_button_applies_the_label_being_typed_first() {
 #[test]
 fn double_clicking_a_node_edits_its_label_on_the_canvas() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));
     harness.double_click(vec2(150.0, 60.0));
     harness.run(vec![]);
     assert!(harness.ctx.text_edit_focused());
@@ -134,7 +134,7 @@ fn double_clicking_a_node_edits_its_label_on_the_canvas() {
 #[test]
 fn ctrl_enter_edits_the_selected_nodes_label_on_the_canvas() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.press(CTRL, Key::Enter);
     assert!(!harness.ctx.text_edit_focused());
 
@@ -150,7 +150,7 @@ fn ctrl_enter_edits_the_selected_nodes_label_on_the_canvas() {
 #[test]
 fn ctrl_enter_edits_the_label_whatever_the_tool() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     for (key, tool) in [
         (Key::B, Tool::Box),
@@ -219,7 +219,7 @@ fn drawing_the_next_box_applies_the_label_typed_in_the_side_panel() {
 #[test]
 fn escape_on_the_canvas_keeps_the_label_and_the_tool() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));
     harness.click(vec2(150.0, 60.0));
     harness.press(Modifiers::NONE, Key::B);
     harness.press(CTRL, Key::Enter);
@@ -236,7 +236,7 @@ fn escape_on_the_canvas_keeps_the_label_and_the_tool() {
 fn select_labelled_box(harness: &mut Harness) -> String {
     let mut graphics = labelled_box("Start");
     graphics.border.color = None;
-    let id = document::add_node(&mut harness.app.graphml, &graphics);
+    let id = document::add_node(harness.app.doc.graphml_mut(), &graphics);
     harness.click(vec2(150.0, 60.0));
     id
 }
@@ -364,7 +364,7 @@ fn font_rows_edit_their_own_label() {
     let mut harness = Harness::new();
     let mut graphics = new_box();
     graphics.labels = vec![yed::Label::new("One"), yed::Label::new("Two")];
-    let id = document::add_node(&mut harness.app.graphml, &graphics);
+    let id = document::add_node(harness.app.doc.graphml_mut(), &graphics);
     harness.click(vec2(150.0, 60.0));
     let sizes = harness.texts_at("12");
     let [_, second] = sizes[..] else {
@@ -458,8 +458,8 @@ fn the_position_list_shows_every_position() {
 #[test]
 fn labels_placed_elsewhere_read_as_custom() {
     let mut harness = Harness::new();
-    let id = document::add_node(&mut harness.app.graphml, &labelled_box("Start"));
-    let realizer = harness.app.graphml.graphs[0].nodes[0].data[0]
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));
+    let realizer = harness.app.doc.graphml_mut().graphs[0].nodes[0].data[0]
         .element_mut()
         .unwrap();
     let label = realizer.child_mut("NodeLabel").unwrap();
