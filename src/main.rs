@@ -2,6 +2,7 @@ mod action;
 mod canvas;
 mod cli;
 mod color_picker;
+mod dialog;
 mod document;
 mod error_dialog;
 mod file_dialog;

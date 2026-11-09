@@ -1,5 +1,6 @@
-use egui::{Context, Id, Key, KeyboardShortcut, Modal, Modifiers, ScrollArea, TextEdit, Ui};
+use egui::{Context, Key, KeyboardShortcut, Modifiers, ScrollArea, TextEdit, Ui};
 
+use crate::dialog;
 use crate::text_field;
 
 const FIELD_WIDTH: f32 = 320.0;
@@ -56,16 +57,8 @@ impl<T> TextDialog<T> {
     /// Shows the dialog while it's open. Returns its target and the text once
     /// OK is pressed.
     pub fn show(&mut self, ctx: &Context) -> Option<(T, String)> {
-        let dialog = self.dialog.as_mut()?;
-        let modal = Modal::new(Id::unique("text_dialog")).show(ctx, |ui| dialog.ui(ui));
-        if modal.inner {
-            let dialog = self.dialog.take()?;
-            return Some((dialog.target, dialog.text));
-        }
-        if modal.should_close() {
-            self.dialog = None;
-        }
-        None
+        let accepted = dialog::show(ctx, "text_dialog", &mut self.dialog, Dialog::ui)?;
+        Some((accepted.target, accepted.text))
     }
 }
 
@@ -87,14 +80,8 @@ impl<T> Dialog<T> {
         if std::mem::take(&mut self.focus) {
             text_field::focus_all(ui.ctx(), field.inner, &self.text);
         }
-        ui.separator();
-        ui.horizontal(|ui| {
-            let shortcut = ui.ctx().format_shortcut(&OK);
-            ok |= ui.button("OK").on_hover_text(shortcut).clicked();
-            if ui.button("Cancel").clicked() {
-                ui.close();
-            }
-        });
+        let shortcut = ui.ctx().format_shortcut(&OK);
+        ok |= dialog::ok_cancel(ui, Some(&shortcut));
         ok
     }
 }

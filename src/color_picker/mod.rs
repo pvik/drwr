@@ -1,10 +1,11 @@
 use egui::color_picker;
 use egui::{
-    Color32, Context, DragValue, Id, Key, Modal, Painter, Rect, Response, Role, Sense, Stroke,
-    StrokeKind, TextEdit, Ui, Vec2, WidgetInfo, vec2,
+    Color32, Context, DragValue, Key, Painter, Rect, Response, Role, Sense, Stroke, StrokeKind,
+    TextEdit, Ui, Vec2, WidgetInfo, vec2,
 };
 use graphml::yed::Color;
 
+use crate::dialog;
 use crate::text_field;
 
 /// How many of the last colors picked the dialog offers.
@@ -91,21 +92,15 @@ impl<T> ColorPicker<T> {
     /// Shows the dialog while it's open. Returns its target and the color
     /// picked once OK is pressed.
     pub fn show(&mut self, ctx: &Context) -> Option<(T, Option<Color>)> {
-        let dialog = self.dialog.as_mut()?;
         let recent = &self.recent;
-        let modal = Modal::new(Id::unique("color_picker")).show(ctx, |ui| dialog.ui(ui, recent));
-        if modal.inner {
-            let dialog = self.dialog.take()?;
-            let picked = dialog.picked();
-            if let Some(color) = picked {
-                self.remember(color);
-            }
-            return Some((dialog.target, picked));
+        let accepted = dialog::show(ctx, "color_picker", &mut self.dialog, |dialog, ui| {
+            dialog.ui(ui, recent)
+        })?;
+        let picked = accepted.picked();
+        if let Some(color) = picked {
+            self.remember(color);
         }
-        if modal.should_close() {
-            self.dialog = None;
-        }
-        None
+        Some((accepted.target, picked))
     }
 
     fn remember(&mut self, color: Color) {
@@ -150,13 +145,7 @@ impl<T> Dialog<T> {
                 ok |= self.swatches(ui, recent, RECENT / 2);
             });
         });
-        ui.separator();
-        ui.horizontal(|ui| {
-            ok |= ui.button("OK").clicked();
-            if ui.button("Cancel").clicked() {
-                ui.close();
-            }
-        });
+        ok |= dialog::ok_cancel(ui, None);
         // A focused button takes Enter as a click instead.
         let enter = ui.input(|input| input.key_pressed(Key::Enter))
             && ui.memory(|memory| memory.focused().is_none());
