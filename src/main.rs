@@ -34,7 +34,7 @@ use color_picker::ColorPicker;
 use document::{ColorProperty, Graphics, Item, LabelRef};
 use file_dialog::{FileDialog, Request};
 use fonts::Fonts;
-use graphml::GraphMl;
+use graphml::{GraphMl, yed};
 use selection::Selection;
 use side_panel::SidePanel;
 use style::Style;
@@ -48,10 +48,7 @@ const NAME: &str = "drwr";
 fn main() -> eframe::Result {
     match cli::parse(std::env::args_os().skip(1)) {
         Ok(cli::Command::Run { file }) => {
-            let mut app = DrwrApp {
-                fonts: Arc::new(Fonts::system()),
-                ..DrwrApp::default()
-            };
+            let mut app = DrwrApp::new(Fonts::system());
             if let Some(path) = file
                 && let Err(err) = app.open(&path)
             {
@@ -145,6 +142,16 @@ enum CloseFor {
 }
 
 impl DrwrApp {
+    /// The app with a new drawing open, its labels drawn in `fonts`.
+    fn new(fonts: Fonts) -> Self {
+        let mut app = DrwrApp {
+            fonts: Arc::new(fonts),
+            ..DrwrApp::default()
+        };
+        app.replace_graph(yed::new_document(), None);
+        app
+    }
+
     /// Sets up `ctx` to show the app in.
     fn init(&self, ctx: &egui::Context) {
         // Needed to render the toolbar's SVG icons.
@@ -198,7 +205,7 @@ impl DrwrApp {
     /// one, asks for one to open, or quits.
     fn drop_graph(&mut self, close_for: CloseFor, ctx: &egui::Context, frame: &eframe::Frame) {
         match close_for {
-            CloseFor::New => self.replace_graph(GraphMl::default(), None),
+            CloseFor::New => self.replace_graph(yed::new_document(), None),
             CloseFor::Open => {
                 (self.file_dialog).open(FilePurpose::Open, Request::Open, ctx, frame);
             }

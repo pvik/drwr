@@ -33,7 +33,7 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let ctx = egui::Context::default();
-        let app = DrwrApp::default();
+        let app = DrwrApp::new(Fonts::default());
         app.init(&ctx);
         let mut harness = Harness {
             ctx,
@@ -363,9 +363,11 @@ fn the_error_dialog_keeps_the_keys_until_dismissed() {
 
 #[test]
 fn starts_with_an_empty_unsaved_graph() {
-    let app = DrwrApp::default();
-    assert_eq!(app.graphml, GraphMl::default());
+    let app = DrwrApp::new(Fonts::default());
+    assert_eq!(app.graphml, yed::new_document());
     assert_eq!(app.file, None);
+    assert_eq!(app.saved, app.graphml);
+    assert!(!app.modified);
 }
 
 #[test]
@@ -425,7 +427,7 @@ fn ctrl_n_replaces_the_graph_with_an_empty_unsaved_one() {
     harness.app.canvas.set_zoom(2.0);
     let fonts = harness.app.fonts.clone();
     harness.press(CTRL, Key::N);
-    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.graphml, yed::new_document());
     assert_eq!(harness.app.file, None);
     assert!(harness.app.selected.is_empty());
     assert_eq!(harness.app.canvas.zoom(), 1.0);
@@ -455,7 +457,7 @@ fn new_closes_the_dialogs_and_drops_the_labels_being_edited() {
     assert!(!harness.app.label_dialog.is_open());
     harness.run(vec![]);
     harness.run(vec![]);
-    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.graphml, yed::new_document());
 }
 
 #[test]
@@ -1586,7 +1588,7 @@ fn new_keeps_what_was_set_for_new_items() {
     harness.perform(Action::SetColor(ColorProperty::Fill, Some(RED)));
     harness.perform(Action::New);
     harness.answer_unsaved("Don't Save");
-    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.graphml, yed::new_document());
 
     let drawn = harness.draw_node(Tool::Box, vec2(20.0, 20.0), vec2(140.0, 80.0));
     assert_eq!(harness.graphics(&drawn).fill.color, Some(RED));
@@ -3058,6 +3060,24 @@ fn saving_an_unsaved_graph_asks_where_and_adds_the_extension() {
 }
 
 #[test]
+fn a_box_drawn_and_saved_is_in_a_yed_document() {
+    let dir = ScratchDir::new("save-new-document");
+    let mut harness = Harness::new();
+    harness.draw_box();
+    harness.press(CTRL, Key::S);
+    let file = dir.path("drawn.graphml");
+    harness.answer(Some(&file));
+
+    let saved = read(&file);
+    let xmlns = saved.attributes.get("xmlns").map(String::as_str);
+    assert_eq!(xmlns, Some("http://graphml.graphdrawing.org/xmlns"));
+    let new = yed::new_document();
+    assert_eq!(saved.attributes, new.attributes);
+    assert_eq!(saved.keys, new.keys);
+    assert_eq!(saved.graphs[0].nodes.len(), 1);
+}
+
+#[test]
 fn save_as_writes_the_fixture_byte_for_byte_and_switches_to_the_copy() {
     let dir = ScratchDir::new("save-as");
     let mut harness = Harness::open(Path::new(FIXTURE));
@@ -3460,7 +3480,7 @@ fn new_asks_to_save_an_unsaved_graph_where_first() {
     let drawn = harness.app.graphml.clone();
     harness.answer(Some(&file));
     assert_eq!(read(&file), drawn);
-    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.graphml, yed::new_document());
     assert_eq!(harness.app.file, None);
     assert!(!harness.app.modified);
 }
@@ -3498,7 +3518,7 @@ fn new_without_saving_drops_the_changes() {
     harness.draw_box();
     harness.press(CTRL, Key::N);
     harness.answer_unsaved("Don't Save");
-    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.graphml, yed::new_document());
     assert!(!harness.app.modified);
 }
 
@@ -3509,7 +3529,7 @@ fn enter_saves_from_the_prompt() {
     harness.press(CTRL, Key::N);
     harness.run(vec![]);
     harness.press(Modifiers::NONE, Key::Enter);
-    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.graphml, yed::new_document());
     assert_ne!(read(&file), read(Path::new(FIXTURE)));
 }
 
