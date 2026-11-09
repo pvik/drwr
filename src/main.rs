@@ -18,6 +18,7 @@ mod scene;
 mod selection;
 mod shortcuts;
 mod side_panel;
+mod stacking;
 mod status_bar;
 mod style;
 #[cfg(test)]
@@ -41,6 +42,7 @@ use file_dialog::{FileDialog, Request};
 use fonts::Fonts;
 use graphml::{GraphMl, yed};
 use history::{Document, Merge};
+use scene::Scene;
 use selection::Selection;
 use side_panel::SidePanel;
 use style::Style;
@@ -414,6 +416,15 @@ impl DrwrApp {
         true
     }
 
+    /// Puts the top-level nodes in the order `restacked` gives, if it moves
+    /// any of the selected.
+    fn restack(&mut self, restacked: fn(&GraphMl, &Scene, &Selection) -> Option<Vec<usize>>) {
+        let (graphml, scene) = self.doc.read();
+        if let Some(order) = restacked(graphml, scene, &self.selected) {
+            document::reorder_nodes(self.doc.graphml_mut(), &order);
+        }
+    }
+
     /// Removes everything selected, nodes with their edges.
     fn remove_selected(&mut self) {
         let selected = std::mem::take(&mut self.selected);
@@ -520,6 +531,8 @@ impl DrwrApp {
                 _ if !self.selected.is_empty() => self.remove_selected(),
                 _ => {}
             },
+            Action::Raise => self.restack(stacking::raised),
+            Action::Lower => self.restack(stacking::lowered),
             Action::EditColor(property) => {
                 let mut graphics = (self.selected.items().iter())
                     .filter_map(|item| document::graphics(self.doc.graphml(), item));
@@ -646,11 +659,17 @@ impl eframe::App for DrwrApp {
         for action in shortcuts::pressed(ui.ctx(), self.typing) {
             self.perform_or_wait(Some(action), &mut waiting, ui.ctx(), frame);
         }
+        let (graphml, scene) = self.doc.read();
+        let raise = stacking::raised(graphml, scene, &self.selected).is_some();
+        let lower = stacking::lowered(graphml, scene, &self.selected).is_some();
         // Panels are laid out outside-in in the order they're added, so the
         // canvas (the central panel) must come last.
         let enabled = Enabled {
             file: !self.file_dialog.is_open(),
             copy: self.selected.has_nodes(),
+            delete: !self.selected.is_empty(),
+            raise,
+            lower,
             undo: self.doc.can_undo(),
             redo: self.doc.can_redo(),
         };
@@ -660,7 +679,8 @@ impl eframe::App for DrwrApp {
         let toolbar = toolbar::show(ui, enabled, tool, zoom);
         self.perform_or_wait(toolbar, &mut waiting, ui.ctx(), frame);
         status_bar::show(ui, self.tool, self.file.as_deref(), self.modified);
-        let side = (self.side_panel).show(ui, self.doc.read(), &self.selected, &self.fonts);
+        let side =
+            (self.side_panel).show(ui, enabled, self.doc.read(), &self.selected, &self.fonts);
         self.merge_with = self.side_panel.dragged();
         for action in side {
             self.perform(action, ui.ctx(), frame);

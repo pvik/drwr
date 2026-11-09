@@ -6,6 +6,7 @@ mod labels;
 mod multi_selection;
 mod nodes;
 mod remembered_style;
+mod stacking;
 mod undo;
 mod view;
 

@@ -11,7 +11,7 @@ use graphml::yed::{
     self, Arrow, Color, EdgeGraphics, FontStyle, LabelPosition, LineType, NodeGraphics, NodeKind,
 };
 
-use crate::action::{Action, FontPart};
+use crate::action::{Action, Enabled, FontPart};
 use crate::color_picker;
 use crate::document::{self, ColorProperty, EdgeEnd, GraphicsRef, Item, LabelRef};
 use crate::font_picker::FontPicker;
@@ -72,12 +72,14 @@ struct FieldEdit {
 type Items<'a> = [(&'a Item, GraphicsRef<'a>)];
 
 impl SidePanel {
-    /// Shows the toolbar and the properties of the `selected` nodes and
-    /// edges of `graphml`, read from its `scene`, with the font families
-    /// `fonts` offers. Returns the actions asked for.
+    /// Shows the toolbar, its buttons enabled as `enabled` says, and the
+    /// properties of the `selected` nodes and edges of `graphml`, read from
+    /// its `scene`, with the font families `fonts` offers. Returns the
+    /// actions asked for.
     pub fn show(
         &mut self,
         ui: &mut Ui,
+        enabled: Enabled,
         (graphml, scene): (&GraphMl, &Scene),
         selected: &Selection,
         fonts: &Fonts,
@@ -89,7 +91,7 @@ impl SidePanel {
         // Wide enough for the border style dropdown, which would otherwise
         // widen the panel the first time a node is selected.
         panel.default_size(245.0).show(ui, |ui| {
-            clicked = toolbar::show_for_selection(ui, !selected.is_empty());
+            clicked = toolbar::show_for_selection(ui, enabled);
             ui.separator();
             // A node's rows can outgrow a small window, more so with labels.
             ScrollArea::vertical().show(ui, |ui| {

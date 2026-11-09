@@ -388,7 +388,7 @@ fn random_edit(doc: &mut GraphMl, rng: &mut Lcg) {
         .collect();
     let edges = document::top_edges(doc).len();
     let some_node = |rng: &mut Lcg| node(&ids[rng.below(ids.len())]);
-    match rng.below(9) {
+    match rng.below(10) {
         0 if !ids.is_empty() => {
             let items = [some_node(rng), some_node(rng)];
             let dx = rng.below(40) as f64 - 20.25;
@@ -421,6 +421,12 @@ fn random_edit(doc: &mut GraphMl, rng: &mut Lcg) {
             };
             let text = format!("label {}", rng.below(100));
             document::set_label(doc, &label, &text, &crate::style::Style::default());
+        }
+        8 if ids.len() > 1 => {
+            let mut order: Vec<usize> = (0..ids.len()).collect();
+            let moved = order.remove(rng.below(ids.len()));
+            order.insert(rng.below(ids.len()), moved);
+            document::reorder_nodes(doc, &order);
         }
         _ => {
             let mut graphics = rectangle();
@@ -483,7 +489,7 @@ fn corpus_edits_undo_and_redo_exactly() {
         collect(&path, &mut files);
     }
     assert!(!files.is_empty(), "no .graphml files in GRAPHML_CORPUS");
-    let edits: [fn(&mut GraphMl); 6] = [
+    let edits: [fn(&mut GraphMl); 7] = [
         |g| {
             let items = all_items(g);
             document::move_items(g, &items, 0.5, -1.25);
@@ -504,6 +510,12 @@ fn corpus_edits_undo_and_redo_exactly() {
             let items: Vec<_> = all_items(g).into_iter().take(3).collect();
             if let Some(copied) = document::copy(g, &items) {
                 document::paste(g, copied);
+            }
+        },
+        |g| {
+            let first = Selection::of(all_items(g).into_iter().take(3));
+            if let Some(order) = crate::stacking::raised(g, &Scene::read(g), &first) {
+                document::reorder_nodes(g, &order);
             }
         },
         |g| {

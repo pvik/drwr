@@ -13,7 +13,7 @@ const SHIFT_COMMAND: Modifiers = Modifiers::SHIFT.plus(Modifiers::COMMAND);
 
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 32] = [
+const SHORTCUTS: [(Modifiers, Key, Action); 34] = [
     (Modifiers::COMMAND, Key::N,          Action::New),
     (Modifiers::COMMAND, Key::O,          Action::Open),
     // Before Ctrl+S, which egui also matches with Shift held.
@@ -43,6 +43,8 @@ const SHORTCUTS: [(Modifiers, Key, Action); 32] = [
     (Modifiers::NONE,    Key::ArrowUp,    Action::PanBy(0.0, -PAN_STEP)),
     (Modifiers::NONE,    Key::ArrowDown,  Action::PanBy(0.0, PAN_STEP)),
     (Modifiers::NONE,    Key::Delete,     Action::Delete),
+    (Modifiers::NONE,    Key::PageUp,     Action::Raise),
+    (Modifiers::NONE,    Key::PageDown,   Action::Lower),
     (Modifiers::NONE,    Key::Escape,     Action::SelectTool(Tool::Cursor)),
     (Modifiers::NONE,    Key::B,          Action::SelectTool(Tool::Box)),
     (Modifiers::NONE,    Key::C,          Action::SelectTool(Tool::Circle)),

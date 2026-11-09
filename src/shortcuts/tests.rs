@@ -43,6 +43,8 @@ fn shortcuts_pick_their_actions() {
         (NONE, Key::ArrowRight, Action::PanBy(40.0, 0.0)),
         (NONE, Key::ArrowUp, Action::PanBy(0.0, -40.0)),
         (NONE, Key::ArrowDown, Action::PanBy(0.0, 40.0)),
+        (NONE, Key::PageUp, Action::Raise),
+        (NONE, Key::PageDown, Action::Lower),
         (NONE, Key::Escape, Action::SelectTool(Tool::Cursor)),
         (NONE, Key::B, Action::SelectTool(Tool::Box)),
         (NONE, Key::C, Action::SelectTool(Tool::Circle)),

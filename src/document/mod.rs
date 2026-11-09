@@ -615,6 +615,16 @@ fn remove_node(doc: &mut GraphMl, id: &str) {
     drop_unused_radius_key(doc);
 }
 
+/// Puts the top-level graph's nodes in `order`, which has each index once.
+pub fn reorder_nodes(doc: &mut GraphMl, order: &[usize]) {
+    let Some(graph) = doc.graphs.first_mut() else {
+        return;
+    };
+    let mut nodes: Vec<_> = graph.nodes.drain(..).map(Some).collect();
+    let take = |&index: &usize| nodes[index].take().expect("each index once");
+    graph.nodes = order.iter().map(take).collect();
+}
+
 /// Moves the port at the `end` of the top-level graph's edge at `index` onto
 /// the node with id `node`, `port` from its middle.
 pub fn move_port(doc: &mut GraphMl, index: usize, end: EdgeEnd, node: &str, port: Point) {

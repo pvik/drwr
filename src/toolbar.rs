@@ -16,6 +16,8 @@ const REDO_ICON: ImageSource<'static> = include_image!("../assets/icons/redo.svg
 const ZOOM_IN_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_in.svg");
 const ZOOM_OUT_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom_out.svg");
 const DELETE_ICON: ImageSource<'static> = include_image!("../assets/icons/delete.svg");
+const RAISE_ICON: ImageSource<'static> = include_image!("../assets/icons/raise.svg");
+const LOWER_ICON: ImageSource<'static> = include_image!("../assets/icons/lower.svg");
 
 #[rustfmt::skip]
 const TOOLS: [(Tool, &str, ImageSource<'static>); 7] = [
@@ -120,13 +122,23 @@ fn action_buttons<const N: usize>(
     clicked
 }
 
-/// Adds the side panel's toolbar, whose Delete button is enabled if a node or
-/// edge is `selected`. Returns the action clicked.
-pub fn show_for_selection(ui: &mut egui::Ui, selected: bool) -> Option<Action> {
+/// Adds the side panel's toolbar: the Delete button, then the Raise and Lower
+/// buttons, each as `enabled` says. Returns the action clicked.
+pub fn show_for_selection(ui: &mut egui::Ui, enabled: Enabled) -> Option<Action> {
     button_row(ui, |ui| {
-        let action = Action::Delete;
-        let button = icon_button(DELETE_ICON, "Delete");
-        add(ui, button, selected, "Delete", &action).then_some(action)
+        let delete = action_buttons(
+            ui,
+            [(Action::Delete, "Delete", DELETE_ICON, enabled.delete)],
+        );
+        ui.separator();
+        let stacking = action_buttons(
+            ui,
+            [
+                (Action::Raise, "Raise", RAISE_ICON, enabled.raise),
+                (Action::Lower, "Lower", LOWER_ICON, enabled.lower),
+            ],
+        );
+        delete.or(stacking)
     })
 }
 

@@ -41,6 +41,11 @@ pub enum Action {
     /// Removes the selected bend, or else everything selected, nodes with
     /// their edges.
     Delete,
+    /// Moves the selected nodes up a step in the stacking order; see
+    /// [`crate::stacking::raised`].
+    Raise,
+    /// Moves the selected nodes down a step in the stacking order.
+    Lower,
     /// Opens the color picker on a color of the selected nodes and edges.
     EditColor(ColorProperty),
     /// Sets a color of the selected nodes and edges; `None` removes it.
@@ -71,13 +76,18 @@ pub enum FontPart {
     Size(u32),
 }
 
-/// Which commands the menu and the toolbar offer now.
+/// Which commands the menu and the toolbars offer now.
 #[derive(Clone, Copy, Debug)]
 pub struct Enabled {
     /// New, Open, Save and Save As, unavailable while a file dialog is open.
     pub file: bool,
     /// Cut and Copy, which need nodes selected.
     pub copy: bool,
+    /// Delete, which needs something selected.
+    pub delete: bool,
+    /// Raise and Lower, which need a selected node they'd move.
+    pub raise: bool,
+    pub lower: bool,
     pub undo: bool,
     pub redo: bool,
 }
