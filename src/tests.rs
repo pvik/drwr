@@ -416,6 +416,46 @@ fn open_clears_the_selection() {
 }
 
 #[test]
+fn ctrl_n_replaces_the_graph_with_an_empty_unsaved_one() {
+    let mut harness = fixture_harness();
+    harness.app.selected = Selection::node("n0");
+    harness.app.tool = Tool::Box;
+    harness.app.canvas.set_zoom(2.0);
+    let fonts = harness.app.fonts.clone();
+    harness.press(CTRL, Key::N);
+    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.file, None);
+    assert!(harness.app.selected.is_empty());
+    assert_eq!(harness.app.canvas.zoom(), 1.0);
+    assert_eq!(harness.app.tool, Tool::Box);
+    assert!(Arc::ptr_eq(&harness.app.fonts, &fonts));
+}
+
+#[test]
+fn new_closes_the_dialogs_and_drops_the_labels_being_edited() {
+    let mut harness = Harness::new();
+    type_in_label_field(&mut harness, "Start");
+    harness.type_text("Stop");
+    harness
+        .app
+        .color_picker
+        .open(ColorProperty::Fill, "Fill", None, true);
+    let edit = LabelEdit {
+        labels: vec![],
+        text: String::new(),
+    };
+    harness.app.label_dialog.open(edit, "Label", "");
+    harness
+        .app
+        .perform(Action::New, &harness.ctx, &harness.frame);
+    assert!(!harness.app.color_picker.is_open());
+    assert!(!harness.app.label_dialog.is_open());
+    harness.run(vec![]);
+    harness.run(vec![]);
+    assert_eq!(harness.app.graphml, GraphMl::default());
+}
+
+#[test]
 fn the_side_panel_shows_the_clicked_node() {
     let mut harness = Harness::new();
     let mut graphics = NodeGraphics::new(NodeKind::Shape(ShapeType::Rectangle));
@@ -1533,6 +1573,19 @@ fn open_neither_restyles_the_file_nor_forgets_what_was_set() {
     let graphics = harness.graphics(&drawn);
     assert_eq!(graphics.fill.color, Some(RED));
     assert_eq!(graphics.border.width, 3.0);
+}
+
+#[test]
+fn new_keeps_what_was_set_for_new_items() {
+    let mut harness = Harness::new();
+    let id = document::add_node(&mut harness.app.graphml, &new_box());
+    harness.app.selected = Selection::node(id);
+    harness.perform(Action::SetColor(ColorProperty::Fill, Some(RED)));
+    harness.perform(Action::New);
+    assert_eq!(harness.app.graphml, GraphMl::default());
+
+    let drawn = harness.draw_node(Tool::Box, vec2(20.0, 20.0), vec2(140.0, 80.0));
+    assert_eq!(harness.graphics(&drawn).fill.color, Some(RED));
 }
 
 #[test]

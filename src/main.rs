@@ -121,15 +121,22 @@ impl DrwrApp {
     /// Replaces the graph with the GraphML file at `path`, or keeps it on error.
     fn open(&mut self, path: &Path) -> Result<(), graphml::Error> {
         let path = std::path::absolute(path)?;
-        self.graphml = GraphMl::read_file(&path)?;
-        self.file = Some(path);
+        let graphml = GraphMl::read_file(&path)?;
+        self.replace_graph(graphml, Some(path));
+        Ok(())
+    }
+
+    /// Replaces the graph with `graphml`, saved at `file`, dropping what was
+    /// selected, edited or viewed in the old one.
+    fn replace_graph(&mut self, graphml: GraphMl, file: Option<PathBuf>) {
+        self.graphml = graphml;
+        self.file = file;
         self.selected = Selection::default();
         // Labels being edited belong to the old graph.
         self.canvas = Canvas::default();
         self.side_panel = SidePanel::default();
         self.color_picker.close();
         self.label_dialog.close();
-        Ok(())
     }
 
     /// Edits the graphics of each selected node and edge.
@@ -178,9 +185,7 @@ impl DrwrApp {
     /// Does what the user asked for, wherever they asked.
     fn perform(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
         match action {
-            Action::New => {
-                // TODO: replace the graph with an empty, unsaved one.
-            }
+            Action::New => self.replace_graph(GraphMl::default(), None),
             Action::Open => self.open_dialog.open(ctx, frame),
             Action::Save => {
                 // TODO: save the graph, asking for a file if it's unsaved.
