@@ -7,6 +7,7 @@ mod labels;
 mod multi_selection;
 mod nodes;
 mod remembered_style;
+mod snapping;
 mod stacking;
 mod svg_nodes;
 mod undo;

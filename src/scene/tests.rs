@@ -92,7 +92,7 @@ fn moving_copies_only_what_moves() {
     let scene = Scene::read(&doc);
     let mut moved = scene.clone();
     let edges = HashSet::from([1]);
-    moved.translate(&Selection::node("n2"), &edges, vec2(5.0, 0.0));
+    moved.translate(&Selection::node("n2"), &edges, 5.0, 0.0);
 
     let shared = |a: &Scene, b: &Scene, node: usize| Arc::ptr_eq(&a.nodes[node], &b.nodes[node]);
     assert!(!shared(&scene, &moved, 2));

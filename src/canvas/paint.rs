@@ -6,7 +6,10 @@ use std::sync::Arc;
 use egui::emath::TSTransform;
 use egui::epaint::{CircleShape, PathShape, TextShape};
 use egui::text::LayoutJob;
-use egui::{Align, Align2, Color32, FontId, Galley, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
+use egui::{
+    Align, Align2, Color32, FontId, Galley, Mesh, Painter, Rangef, Rect, Stroke, StrokeKind, Vec2,
+    pos2, vec2,
+};
 use graphml::yed::{self, Alignment, Label, NodeGraphics, Route};
 
 use crate::color_picker::color32;
@@ -14,14 +17,16 @@ use crate::document::Item;
 use crate::fonts;
 use crate::line_type;
 use crate::selection::Selection;
+use crate::snap::{Axis, Guide};
 use crate::style::Style;
 use crate::svg_image::SvgImage;
 
 use super::shown::{Anchor, EdgeLook, Outline, Shown, egui_rect, shape};
 use super::textures::Textures;
 use super::{
-    BACKGROUND, Canvas, EdgeDrag, EdgePart, HALO, HANDLE_SIZE, LABEL_PADDING, MAX_TEXT_PIXELS,
-    Owner, Preview, SELECTION, SELECTION_BOX_FILL, SELECTION_GAP, edge, grid,
+    BACKGROUND, Canvas, EdgeDrag, EdgePart, GUIDE, GUIDE_OVERHANG, HALO, HANDLE_SIZE,
+    LABEL_PADDING, MAX_TEXT_PIXELS, Owner, Preview, SELECTION, SELECTION_BOX_FILL, SELECTION_GAP,
+    edge, grid,
 };
 
 impl Canvas {
@@ -112,6 +117,7 @@ impl Canvas {
         for outline in outlines {
             painter.rect_stroke(outline, 0.0, SELECTION, StrokeKind::Outside);
         }
+        paint_guides(painter, shown.to_screen, &self.guides);
         if kept
             && let Some(index) = selected_edge
             && let Some(edge) = scene.edge(index)
@@ -359,4 +365,41 @@ pub fn halign(alignment: &Alignment) -> Align {
         Alignment::Right => Align::RIGHT,
         _ => Align::Center,
     }
+}
+
+/// Paints `guides`, in graph points, a pixel wide and a little longer than
+/// what they span.
+fn paint_guides(painter: &Painter, to_screen: TSTransform, guides: &[Guide]) {
+    if guides.is_empty() {
+        return;
+    }
+    let pixels_per_point = painter.pixels_per_point();
+    let mut mesh = Mesh::default();
+    for guide in guides {
+        let at = |along: f64| {
+            let (x, y) = match guide.axis {
+                Axis::X => (guide.at, along),
+                Axis::Y => (along, guide.at),
+            };
+            to_screen * pos2(x as f32, y as f32)
+        };
+        let (from, to) = (at(guide.from), at(guide.to));
+        let line = match guide.axis {
+            Axis::X => Rect::from_x_y_ranges(pixel(from.x, pixels_per_point), from.y..=to.y),
+            Axis::Y => Rect::from_x_y_ranges(from.x..=to.x, pixel(from.y, pixels_per_point)),
+        };
+        let overhang = match guide.axis {
+            Axis::X => vec2(0.0, GUIDE_OVERHANG),
+            Axis::Y => vec2(GUIDE_OVERHANG, 0.0),
+        };
+        mesh.add_colored_rect(line.expand2(overhang), GUIDE);
+    }
+    painter.add(mesh);
+}
+
+/// The pixel a line a pixel wide at `at` on screen is drawn on, as egui puts
+/// a 1 px border there.
+pub(super) fn pixel(at: f32, pixels_per_point: f32) -> Rangef {
+    let start = (at * pixels_per_point).floor();
+    Rangef::new(start, start + 1.0) / pixels_per_point
 }

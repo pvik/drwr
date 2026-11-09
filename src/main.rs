@@ -20,6 +20,7 @@ mod scene;
 mod selection;
 mod shortcuts;
 mod side_panel;
+mod snap;
 mod stacking;
 mod status_bar;
 mod style;
@@ -684,6 +685,9 @@ impl DrwrApp {
             Action::PanBy(dx, dy) => self.canvas.pan_by(egui::vec2(dx, dy)),
             Action::ToggleGridLines => {
                 self.canvas_options.grid_lines = !self.canvas_options.grid_lines;
+            }
+            Action::ToggleSnapLines => {
+                self.canvas_options.snap_lines = !self.canvas_options.snap_lines;
             }
             Action::MoveBy(dx, dy) => match (self.selected.single(), self.selected.bend()) {
                 (Some(&Item::Edge(index)), Some(bend)) => {

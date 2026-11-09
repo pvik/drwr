@@ -42,6 +42,8 @@ pub enum Action {
     PanBy(f32, f32),
     /// Shows or hides the canvas's grid lines.
     ToggleGridLines,
+    /// Turns snapping to other nodes' sides and middles on or off.
+    ToggleSnapLines,
     /// Moves the selected bend, or else everything selected, right and down
     /// by these distances, in points; see [`crate::document::move_items`].
     MoveBy(f64, f64),

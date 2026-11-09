@@ -3,6 +3,8 @@
 use egui::emath::TSTransform;
 use egui::{Color32, Mesh, Painter, Rangef, Rect};
 
+use super::paint::pixel;
+
 /// How far apart the lines can be, in graph points. Each spacing is a whole
 /// multiple of the one before, so the lines of the finer spacings fade in
 /// between those of the coarser as the view zooms in.
@@ -21,12 +23,7 @@ const DARK: f32 = 0.17;
 /// Paints grid lines across the canvas at `rect`, which `to_screen` takes
 /// graph coordinates to. They're a pixel wide at any zoom.
 pub fn paint(painter: &Painter, rect: Rect, to_screen: TSTransform) {
-    let pixels_per_point = painter.pixels_per_point();
-    // The pixel egui would put a 1 px border at `at` on.
-    let pixel = |at: f32| {
-        let start = (at * pixels_per_point).floor();
-        Rangef::new(start, start + 1.0) / pixels_per_point
-    };
+    let pixel = |at: f32| pixel(at, painter.pixels_per_point());
     let (origin, zoom) = (to_screen.translation, to_screen.scaling);
     let across = lines(rect.x_range(), origin.x, zoom)
         .into_iter()

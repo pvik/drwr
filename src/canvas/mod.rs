@@ -23,6 +23,7 @@ use crate::document::{self, EdgeEnd, Item, LabelRef};
 use crate::history::Document;
 use crate::scene::SceneEdge;
 use crate::selection::Selection;
+use crate::snap::{Axis, Feature, Guide, Side, Targets};
 use crate::style::Style;
 use crate::text_field::{self, End};
 use crate::tool::{NodeShape, Tool};
@@ -31,7 +32,7 @@ use crate::zoom;
 pub use drawing::{Drawing, Mark, Pen, Text};
 use paint::{halign, label_font, label_rect};
 pub use shown::Outline;
-use shown::{Anchor, EdgeLook, Shown, egui_pos, yed_point, yed_rect};
+use shown::{Anchor, EdgeLook, Shown, egui_pos, yed_point};
 use textures::Textures;
 
 /// White like paper, even in the dark theme.
@@ -55,6 +56,10 @@ const HALO: Stroke = Stroke {
 };
 /// How wide the handles on the selected edge's bends and ends are.
 const HANDLE_SIZE: f32 = 7.0;
+/// The guides showing what a drag lines up with: magenta, as in drawing apps.
+const GUIDE: Color32 = Color32::from_rgb(0xE6, 0x00, 0x8A);
+/// How far guides reach past what they span, in screen points.
+const GUIDE_OVERHANG: f32 = 8.0;
 
 /// The sides and corners of the selected node that can be dragged, e.g.
 /// `RIGHT_CENTER` for its right side.
@@ -72,6 +77,8 @@ const HANDLES: [Align2; 8] = [
 /// which takes in its outline.
 const GRAB: f32 = 5.0;
 const MIN_SIZE: f64 = 1.0;
+/// How near on screen, in points, what's dragged snaps onto a line.
+const SNAP_REACH: f32 = 6.0;
 
 /// Between a label's text and its bounds, as yEd measures labels.
 const LABEL_PADDING: f32 = 2.0;
@@ -86,9 +93,21 @@ const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
 const EDITOR_MIN_WIDTH: f32 = 60.0;
 
 /// What the View menu turns on for the canvas.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Options {
     pub grid_lines: bool,
+    /// Whether drags snap onto the sides and middles of other nodes, with
+    /// guides showing what lines up, unless Alt is held.
+    pub snap_lines: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            grid_lines: false,
+            snap_lines: true,
+        }
+    }
 }
 
 /// The drawing canvas, which shows the graph zoomed and panned.
@@ -113,6 +132,10 @@ pub struct Canvas {
     edge_drag: Option<EdgeDrag>,
     editor: Option<LabelEditor>,
     textures: Textures,
+    /// Whether drags snap this frame.
+    snapping: bool,
+    /// What this frame's drag lines up with.
+    guides: Vec<Guide>,
 }
 
 /// Where the graph shows on the canvas.
@@ -193,7 +216,7 @@ struct EdgeDraw {
     /// The id of the node it starts from.
     source: String,
     /// In graph coordinates.
-    bends: Vec<Pos2>,
+    bends: Vec<yed::Point>,
 }
 
 /// A drag of part of the selected edge.
@@ -279,6 +302,9 @@ impl Canvas {
             self.pan(ui, rect);
             let to_screen = self.view.to_screen(rect);
             let text_zoom = self.text_zoom(ui.ctx());
+            // Alt skips snapping, e.g. to place a node just beside a line.
+            self.snapping = self.options.snap_lines && !ui.input(|input| input.modifiers.alt);
+            self.guides.clear();
             // A shortcut can switch tools mid-drag, which drops the shape.
             self.shape_drag.take_if(|drag| drag.tool != tool);
             self.edge_draw.take_if(|draw| draw.tool != tool);
@@ -322,7 +348,7 @@ impl Canvas {
                     drawn_edge = self.draw_edge(&response, shown, doc, selected, tool, style);
                     None
                 }
-                _ => self.draw_node(response.clone(), to_screen, doc, selected, tool, style),
+                _ => self.draw_node(response.clone(), shown, doc, selected, tool, style),
             };
             let (mut resized, mut dragged_edge, mut moved, mut boxed) = (None, None, None, None);
             if tool == Tool::Cursor {
@@ -338,7 +364,7 @@ impl Canvas {
                     }
                     None => (self.resize, self.edge_drag) = (None, None),
                 }
-                moved = self.move_selection(ui, &response, to_screen, doc, selected);
+                moved = self.move_selection(ui, &response, shown, doc, selected);
                 boxed = self.select_in_box(ui, &response, shown, selected);
             }
 
@@ -352,9 +378,9 @@ impl Canvas {
                 let node = Arc::make_mut(&mut scene.nodes[node]);
                 document::resize(&mut node.graphics, geometry);
             }
-            if let Some(delta) = moved {
+            if let Some([dx, dy]) = moved {
                 let edges = document::bends_moved_with(doc.graphml(), selected.items());
-                scene.translate(selected, &edges, delta);
+                scene.translate(selected, &edges, dx, dy);
             }
             let shown = Shown {
                 scene: &scene,
@@ -574,7 +600,7 @@ impl Canvas {
     fn draw_node(
         &mut self,
         response: Response,
-        to_screen: TSTransform,
+        shown: Shown,
         doc: &mut Document,
         selected: &mut Selection,
         tool: Tool,
@@ -582,14 +608,7 @@ impl Canvas {
     ) -> Option<NodeGraphics> {
         let shape = tool.node_shape()?;
         let response = response.on_hover_cursor(CursorIcon::Crosshair);
-        let to_graph = |pos: Pos2| graph_point(to_screen, pos);
-        // Within egui's click distance on screen a press is a click, which
-        // draws nothing, even if it slips across a whole number.
-        let max_click_dist = response.ctx.options(|o| o.input_options.max_click_dist);
-        let node = |(drag, end): (ShapeDrag, Pos2)| {
-            let distance = drag.from.distance(end) * to_screen.scaling;
-            (distance > max_click_dist).then(|| new_node(&shape, drag.from, end, style))
-        };
+        let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
         if response.drag_started_by(PointerButton::Primary) {
             let from = response.ctx.input(|i| i.pointer.press_origin());
             self.shape_drag = from.map(|from| ShapeDrag {
@@ -597,17 +616,26 @@ impl Canvas {
                 from: to_graph(from),
             });
         }
-        if !response.drag_stopped() {
-            let end = response.interact_pointer_pos().map(to_graph);
-            return self.shape_drag.zip(end).and_then(node);
+        let drawing = !response.drag_stopped();
+        let (drag, end) = if drawing {
+            (self.shape_drag, response.interact_pointer_pos())
+        } else {
+            (self.shape_drag.take(), response.ctx.input(primary_release))
+        };
+        let (drag, end) = drag.zip(end.map(to_graph))?;
+        // Within egui's click distance on screen a press is a click, which
+        // draws nothing, even if it slips across a whole number.
+        let max_click_dist = response.ctx.options(|o| o.input_options.max_click_dist);
+        if drag.from.distance(end) * shown.to_screen.scaling <= max_click_dist {
+            return None;
         }
-
-        let end = response.ctx.input(primary_release).map(to_graph);
-        let graphics = self.shape_drag.take().zip(end).and_then(node);
-        if let Some(graphics) = graphics
-            && graphics.geometry.width > 0.0
-            && graphics.geometry.height > 0.0
-        {
+        let (geometry, guides) = self.snap_shape(shown, &shape, drag.from, end);
+        let graphics = new_node(&shape, geometry, style);
+        if drawing {
+            self.guides = guides;
+            return Some(graphics);
+        }
+        if geometry.width > 0.0 && geometry.height > 0.0 {
             let graphml = doc.graphml_mut();
             let id = document::add_node(graphml, &graphics);
             // Boxes only: it leaves other shapes as they are.
@@ -617,6 +645,123 @@ impl Canvas {
             *selected = Selection::node(id);
         }
         None
+    }
+
+    /// The bounds of a node of `shape` dragged out from `from` to `to`, in
+    /// graph points: as wide as high if it's square, by the longer side of
+    /// the drag. Its sides are moved to line up with those of nodes nearby,
+    /// with the guides showing what lines up.
+    fn snap_shape(
+        &self,
+        shown: Shown,
+        shape: &NodeShape,
+        from: Pos2,
+        to: Pos2,
+    ) -> (yed::Rect, Vec<Guide>) {
+        let mut from = [from.x, from.y].map(f64::from);
+        let pointer = [to.x, to.y].map(f64::from);
+        let corner = |from: [f64; 2]| {
+            let mut size = [0, 1].map(|i| pointer[i] - from[i]);
+            if shape.square {
+                let side = size[0].abs().max(size[1].abs());
+                size = size.map(|size| side.copysign(size));
+            }
+            [0, 1].map(|i| from[i] + size[i])
+        };
+        let mut to = corner(from);
+        let Some(targets) = self.targets(shown, |_| false) else {
+            return (between(from, to), Vec::new());
+        };
+        // How far the sides at `corner` would move, the box spanning to `other`.
+        let shifts = |corner: [f64; 2], other: [f64; 2]| {
+            let rect = between(corner, other);
+            Axis::BOTH.map(|axis| {
+                let i = axis as usize;
+                let side = if corner[i] <= other[i] {
+                    Side::Start
+                } else {
+                    Side::End
+                };
+                targets.snap(&[Feature::side(&rect, axis, side)])[i]
+            })
+        };
+        let shift = shifts(from, to);
+        for i in 0..2 {
+            from[i] += shift[i].unwrap_or_default();
+        }
+        to = corner(from);
+        let shift = shifts(to, from);
+        // The size across axis `i` with `to` moved by `shift`, unless too small.
+        let size = |i: usize, to: [f64; 2], shift: f64| {
+            let size = to[i] + shift - from[i];
+            (size.abs() >= MIN_SIZE).then_some(size)
+        };
+        if shape.square {
+            // By the side that moves least, the other keeping up.
+            let nearest = (0..2)
+                .filter_map(|i| Some((i, shift[i]?)))
+                .min_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()));
+            if let Some(side) = nearest.and_then(|(i, shift)| size(i, to, shift)) {
+                to = [0, 1].map(|i| from[i] + side.abs().copysign(to[i] - from[i]));
+            }
+        } else {
+            for i in 0..2 {
+                if let Some(size) = shift[i].and_then(|shift| size(i, to, shift)) {
+                    to[i] = from[i] + size;
+                }
+            }
+        }
+        let rect = between(from, to);
+        let sides = Axis::BOTH.map(|axis| [Side::Start, Side::End].map(|side| (axis, side)));
+        let features: Vec<_> = (sides.into_iter().flatten())
+            .map(|(axis, side)| Feature::side(&rect, axis, side))
+            .collect();
+        (rect, targets.guides(&features))
+    }
+
+    /// What drags snap onto this frame, unless snapping is off or Alt is
+    /// held: the nodes drawn on the canvas, but those `skip` picks by index.
+    fn targets(&self, shown: Shown, skip: impl Fn(usize) -> bool) -> Option<Targets> {
+        if !self.snapping {
+            return None;
+        }
+        let zoom = f64::from(shown.to_screen.scaling);
+        let mut targets = Targets::new(f64::from(SNAP_REACH) / zoom);
+        let visible = shown.painter.clip_rect();
+        for node in 0..shown.scene.nodes.len() {
+            if shown.is_drawn(node) && !skip(node) && shown.node_rect(node).intersects(visible) {
+                targets.add_node(shown.geometry(node));
+            }
+        }
+        Some(targets)
+    }
+
+    /// `point`, in graph points, moved to line up with a side or middle of a
+    /// node drawn on the canvas, or with one of `neighbours`, with the guides
+    /// showing what lines up. Only the middles of the node at index
+    /// `middles` count, e.g. of the node a port is on.
+    fn snap_point(
+        &self,
+        shown: Shown,
+        point: yed::Point,
+        neighbours: &[yed::Point],
+        middles: Option<usize>,
+    ) -> (yed::Point, Vec<Guide>) {
+        let Some(mut targets) = self.targets(shown, |node| Some(node) == middles) else {
+            return (point, Vec::new());
+        };
+        if let Some(node) = middles {
+            targets.add_middles(shown.geometry(node));
+        }
+        for &neighbour in neighbours {
+            targets.add_point(neighbour);
+        }
+        let [dx, dy] = targets.snap(&Feature::point(point));
+        let snapped = yed::Point {
+            x: point.x + dx.unwrap_or_default(),
+            y: point.y + dy.unwrap_or_default(),
+        };
+        (snapped, targets.guides(&Feature::point(snapped)))
     }
 
     /// Draws an edge in `style` with the primary button, if `tool` draws
@@ -642,6 +787,14 @@ impl Canvas {
             || response.drag_stopped_by(PointerButton::Primary))
         .then(|| response.ctx.input(primary_release))
         .flatten();
+        // Where a release off the nodes adds a bend, lined up with a node or
+        // with the bend or node before.
+        let bend = released.filter(|&pos| shown.node_at(pos, None).is_none());
+        let bend = bend.zip(self.edge_draw.as_ref()).and_then(|(pos, draw)| {
+            let at = yed_point(graph_point(shown.to_screen, pos));
+            let before = self.point_before(shown, draw)?;
+            Some(self.snap_point(shown, at, &[before], None).0)
+        });
         match &mut self.edge_draw {
             None => {
                 let start = if response.drag_started_by(PointerButton::Primary) {
@@ -674,9 +827,10 @@ impl Canvas {
                             return None;
                         }
                         None => {
-                            let bend = graph_point(shown.to_screen, pos);
                             // The second click of a double click adds none.
-                            if draw.bends.last() != Some(&bend) {
+                            if let Some(bend) = bend
+                                && draw.bends.last() != Some(&bend)
+                            {
                                 draw.bends.push(bend);
                             }
                         }
@@ -690,13 +844,26 @@ impl Canvas {
         // It can loop back to its node only through a bend.
         let target = match shown.node_at(pointer, None) {
             Some(node) if node != source || !draw.bends.is_empty() => Anchor::Node(node),
-            _ => Anchor::Point(graph_point(shown.to_screen, pointer)),
+            _ => {
+                let at = yed_point(graph_point(shown.to_screen, pointer));
+                let before = self.point_before(shown, draw)?;
+                let (at, guides) = self.snap_point(shown, at, &[before], None);
+                self.guides = guides;
+                Anchor::Point(egui_pos(at))
+            }
         };
         Some(EdgeLook {
             graphics: Cow::Owned(new_edge(arrows, &draw.bends, style)),
             source: Anchor::Node(source),
             target,
         })
+    }
+
+    /// Where the edge being `draw`n runs to the pointer from, in graph
+    /// points: its last bend, or else the middle of its node.
+    fn point_before(&self, shown: Shown, draw: &EdgeDraw) -> Option<yed::Point> {
+        let source = || Some(shown.center(shown.scene.node(&draw.source)?));
+        draw.bends.last().copied().or_else(source)
     }
 
     /// Lets the parts of the only selected edge be dragged with the primary
@@ -777,81 +944,105 @@ impl Canvas {
         let (_, response) = parts.iter().find(|(part, _)| *part == handle)?;
         if !response.drag_stopped() {
             let pointer = response.interact_pointer_pos()?;
-            return Some(self.dragged_edge(edge, drag, pointer, shown));
+            let (look, guides) = self.dragged_edge(edge, drag, pointer, shown);
+            self.guides = guides;
+            return Some(look);
         }
         self.edge_drag = None;
         if let Some(pointer) = ui.input(primary_release)
             && to_graph(pointer) != drag.from
         {
-            let moved = self.dragged_edge(edge, drag, pointer, shown);
+            let (moved, _) = self.dragged_edge(edge, drag, pointer, shown);
             commit_edge(doc.graphml_mut(), shown, edge, &moved, drag, selection);
         }
         None
     }
 
-    /// How `edge` looks with `drag` taken to `pointer` on screen.
+    /// How `edge` looks with `drag` taken to `pointer` on screen, with the
+    /// guides showing what a dragged bend or port lines up with.
     fn dragged_edge(
         &self,
         edge: &SceneEdge,
         drag: EdgeDrag,
         pointer: Pos2,
         shown: Shown,
-    ) -> EdgeLook<'static> {
+    ) -> (EdgeLook<'static>, Vec<Guide>) {
         let mut look = EdgeLook::of(edge).into_owned();
         let to = graph_point(shown.to_screen, pointer);
         let delta = to - drag.from;
+        let (dx, dy) = (f64::from(delta.x), f64::from(delta.y));
         let old = shown.route(&look);
+        // From port to port, in graph points.
+        let route = shown.route_points(&look);
+        let mut guides = Vec::new();
         let graphics = look.graphics.to_mut();
         let path = &mut graphics.path;
         match drag.part {
             EdgePart::Bend(bend) => {
                 if let Some(point) = path.points.get_mut(bend) {
-                    point.x += f64::from(delta.x);
-                    point.y += f64::from(delta.y);
+                    let moved = yed::Point {
+                        x: point.x + dx,
+                        y: point.y + dy,
+                    };
+                    let neighbours = [route[bend], route[bend + 2]];
+                    (*point, guides) = self.snap_point(shown, moved, &neighbours, None);
                 }
             }
-            EdgePart::Line(bend) => {
-                let point = yed_point(to);
-                path.points.insert(bend.min(path.points.len()), point);
+            EdgePart::Line(segment) => {
+                let segment = segment.min(path.points.len());
+                let neighbours = [route[segment], route[segment + 1]];
+                let (point, lined_up) = self.snap_point(shown, yed_point(to), &neighbours, None);
+                path.points.insert(segment, point);
+                guides = lined_up;
                 let new = shown.route(&look);
                 document::keep_labels(look.graphics.to_mut(), &old, &new);
             }
             EdgePart::End(end) => {
                 let bends = !path.points.is_empty();
-                let (port, anchor, node, other) = match end {
-                    EdgeEnd::Source => {
-                        (&mut path.source, &mut look.source, edge.source, edge.target)
-                    }
-                    EdgeEnd::Target => {
-                        (&mut path.target, &mut look.target, edge.target, edge.source)
-                    }
+                let (port, anchor, node, other, neighbour) = match end {
+                    EdgeEnd::Source => (
+                        &mut path.source,
+                        &mut look.source,
+                        edge.source,
+                        edge.target,
+                        route[1],
+                    ),
+                    EdgeEnd::Target => (
+                        &mut path.target,
+                        &mut look.target,
+                        edge.target,
+                        edge.source,
+                        route[route.len() - 2],
+                    ),
                 };
                 let center = shown.center(node);
-                let moved = yed::Point {
-                    x: center.x + port.x + f64::from(delta.x),
-                    y: center.y + port.y + f64::from(delta.y),
+                let mut moved = yed::Point {
+                    x: center.x + port.x + dx,
+                    y: center.y + port.y + dy,
                 };
-                let at = egui_pos(moved);
                 // Like a new edge, it loops back to its other node only through
                 // a bend.
-                let onto = shown
-                    .node_at(shown.to_screen * at, None)
-                    .filter(|&onto| onto == node || onto != other || bends);
-                match onto {
+                let land = |at: yed::Point| {
+                    let onto = shown.node_at(shown.to_screen * egui_pos(at), None);
+                    onto.filter(|&onto| onto == node || onto != other || bends)
+                };
+                let landing = land(moved);
+                // Onto the middles of the node it's on, where new edges' ports
+                // are, as long as it stays on that node.
+                let (snapped, lined_up) = self.snap_point(shown, moved, &[neighbour], landing);
+                if land(snapped) == landing {
+                    (moved, guides) = (snapped, lined_up);
+                }
+                match landing {
                     Some(onto) => {
                         let center = shown.center(onto);
-                        let mut offset = yed::Point {
+                        let offset = yed::Point {
                             x: moved.x - center.x,
                             y: moved.y - center.y,
                         };
-                        // Near the middle it snaps there, where new edges' ports are.
-                        let zoom = f64::from(shown.to_screen.scaling);
-                        if offset.x.hypot(offset.y) * zoom <= f64::from(GRAB) {
-                            offset = yed::Point::default();
-                        }
                         (*port, *anchor) = (offset, Anchor::Node(onto));
                     }
-                    None => *anchor = Anchor::Point(at),
+                    None => *anchor = Anchor::Point(egui_pos(moved)),
                 }
             }
             EdgePart::Label(index) => {
@@ -865,7 +1056,7 @@ impl Canvas {
                 }
             }
         }
-        look
+        (look, guides)
     }
 
     /// Starts what a drag of the primary button from the canvas does with the
@@ -914,30 +1105,69 @@ impl Canvas {
 
     /// Moves the selected nodes and edges while a drag that
     /// [`Self::start_drag`] started goes on, changing the document on release.
-    /// Returns how far they've moved so far, in graph points.
+    /// Returns how far right and down they've moved so far, in graph points.
     fn move_selection(
         &mut self,
         ui: &egui::Ui,
         canvas: &Response,
-        to_screen: TSTransform,
+        shown: Shown,
         doc: &mut Document,
         selected: &Selection,
-    ) -> Option<Vec2> {
+    ) -> Option<[f64; 2]> {
         let drag = self.move_drag?;
-        let to_graph = |pos: Pos2| graph_point(to_screen, pos);
+        let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
         if !canvas.drag_stopped() {
             let to = canvas.interact_pointer_pos().map(to_graph)?;
-            return Some(to - drag.from);
+            let (delta, guides) = self.snap_move(shown, selected, to - drag.from);
+            self.guides = guides;
+            return Some(delta);
         }
         self.move_drag = None;
-        if let Some(to) = ui.input(primary_release).map(to_graph)
-            && to != drag.from
-        {
-            let delta = to - drag.from;
-            let (dx, dy) = (delta.x.into(), delta.y.into());
-            document::move_items(doc.graphml_mut(), selected.items(), dx, dy);
+        if let Some(to) = ui.input(primary_release).map(to_graph) {
+            let ([dx, dy], _) = self.snap_move(shown, selected, to - drag.from);
+            // Ending where it started changes nothing.
+            if dx != 0.0 || dy != 0.0 {
+                document::move_items(doc.graphml_mut(), selected.items(), dx, dy);
+            }
         }
         None
+    }
+
+    /// How far right and down to move the `selected` nodes for a drag by
+    /// `delta`, in graph points, so that one lines up with a node left in
+    /// place, with the guides showing what lines up. With no nodes selected,
+    /// the selected edges' bends line up instead.
+    fn snap_move(&self, shown: Shown, selected: &Selection, delta: Vec2) -> ([f64; 2], Vec<Guide>) {
+        let mut delta = [delta.x, delta.y].map(f64::from);
+        let scene = shown.scene;
+        let moving = |node: usize| selected.contains_node(&scene.nodes[node].id);
+        let Some(targets) = self.targets(shown, moving) else {
+            return (delta, Vec::new());
+        };
+        let features = |[dx, dy]: [f64; 2]| {
+            let nodes = (0..scene.nodes.len()).filter(|&node| moving(node) && shown.is_drawn(node));
+            let lines = nodes.flat_map(|node| {
+                let mut rect = shown.geometry(node);
+                (rect.x, rect.y) = (rect.x + dx, rect.y + dy);
+                Feature::box_lines(&rect)
+            });
+            let mut features: Vec<_> = lines.collect();
+            if features.is_empty() {
+                let edges = (scene.edges.iter()).filter(|edge| selected.contains_edge(edge.index));
+                let bends = edges.flat_map(|edge| edge.graphics.path.points.iter());
+                let moved = |bend: &yed::Point| yed::Point {
+                    x: bend.x + dx,
+                    y: bend.y + dy,
+                };
+                features = bends.flat_map(|bend| Feature::point(moved(bend))).collect();
+            }
+            features
+        };
+        let shift = targets.snap(&features(delta));
+        for (delta, shift) in delta.iter_mut().zip(shift) {
+            *delta += shift.unwrap_or_default();
+        }
+        (delta, targets.guides(&features(delta)))
     }
 
     /// Selects the nodes inside the box that a drag [`Self::start_drag`]
@@ -1014,13 +1244,15 @@ impl Canvas {
             // Like yEd, which keeps the proportions while Shift is held.
             let keep = ui.input(|input| input.modifiers.shift);
             if !response.drag_stopped() {
-                let to = response.interact_pointer_pos().map(to_graph);
-                resized = to.map(|to| drag.geometry(geometry, to, keep));
+                if let Some(to) = response.interact_pointer_pos().map(to_graph) {
+                    let (new, guides) = self.snap_resize(shown, index, drag, to, keep);
+                    (resized, self.guides) = (Some(new), guides);
+                }
                 continue;
             }
             self.resize = None;
             if let Some(to) = ui.input(primary_release).map(to_graph) {
-                let new = drag.geometry(geometry, to, keep);
+                let (new, _) = self.snap_resize(shown, index, drag, to, keep);
                 if new != geometry {
                     document::edit_graphics(doc.graphml_mut(), id, |graphics| {
                         document::resize(graphics, new);
@@ -1030,9 +1262,96 @@ impl Canvas {
         }
         resized
     }
+
+    /// The bounds `drag` to `to` gives the node at index `node`, kept in
+    /// proportion by a corner if `keep` says so, its dragged sides moved to
+    /// line up with those of nodes nearby, with the guides showing what lines
+    /// up.
+    fn snap_resize(
+        &self,
+        shown: Shown,
+        node: usize,
+        drag: Resize,
+        to: Pos2,
+        keep: bool,
+    ) -> (yed::Rect, Vec<Guide>) {
+        let old = shown.geometry(node);
+        let new = drag.geometry(old, to, keep);
+        let Some(targets) = self.targets(shown, |other| other == node) else {
+            return (new, Vec::new());
+        };
+        let sides = drag.sides();
+        let features = |rect: &yed::Rect| -> Vec<_> {
+            (sides.iter())
+                .map(|&(axis, side)| Feature::side(rect, axis, side))
+                .collect()
+        };
+        let snapped = drag.moved(old, new, targets.snap(&features(&new)), keep);
+        (snapped, targets.guides(&features(&snapped)))
+    }
 }
 
 impl Resize {
+    /// The sides of the node that the handle drags.
+    fn sides(&self) -> Vec<(Axis, Side)> {
+        let sides = Axis::BOTH.into_iter().zip(self.handle.0);
+        let sides = sides.filter_map(|(axis, align)| match align {
+            Align::Min => Some((axis, Side::Start)),
+            Align::Center => None,
+            Align::Max => Some((axis, Side::End)),
+        });
+        sides.collect()
+    }
+
+    /// `new`, the bounds this drag gives `old`, with the sides it drags moved
+    /// right and down by `shift`, but to no less than [`MIN_SIZE`]. Kept in
+    /// proportion by a corner if `keep` says so, by the side that moves least.
+    fn moved(
+        &self,
+        old: yed::Rect,
+        new: yed::Rect,
+        shift: [Option<f64>; 2],
+        keep: bool,
+    ) -> yed::Rect {
+        // How long `new` is across `axis` with its side there moved by `shift`.
+        let grown = |axis: Axis, shift: f64| {
+            let side = self.handle.0[axis as usize];
+            let size = extent(&new, axis) + if side == Align::Min { -shift } else { shift };
+            (size >= MIN_SIZE).then_some(size)
+        };
+        let shifts = Axis::BOTH.into_iter().zip(shift);
+        let shifts = shifts.filter_map(|(axis, shift)| Some((axis, shift?)));
+        if keep && self.keeps(old) {
+            let nearest = shifts.min_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()));
+            let scale =
+                nearest.and_then(|(axis, shift)| Some(grown(axis, shift)? / extent(&old, axis)));
+            return scale.map_or(new, |scale| self.scaled(old, scale));
+        }
+        let mut rect = new;
+        for (axis, shift) in shifts {
+            let Some(size) = grown(axis, shift) else {
+                continue;
+            };
+            let (start, extent) = match axis {
+                Axis::X => (&mut rect.x, &mut rect.width),
+                Axis::Y => (&mut rect.y, &mut rect.height),
+            };
+            if self.handle.0[axis as usize] == Align::Min {
+                *start += shift;
+            }
+            *extent = size;
+        }
+        rect
+    }
+
+    /// Whether the handle keeps `old` in proportion while Shift is held: if
+    /// it's a corner, and `old` has a size.
+    fn keeps(&self, old: yed::Rect) -> bool {
+        let [x_side, y_side] = self.handle.0;
+        let corner = x_side != Align::Center && y_side != Align::Center;
+        corner && old.width > 0.0 && old.height > 0.0
+    }
+
     /// The bounds `old` would have with the handle dragged to `to`, in graph
     /// coordinates, kept in proportion by a corner if `keep` says so.
     fn geometry(&self, old: yed::Rect, to: Pos2, keep: bool) -> yed::Rect {
@@ -1040,8 +1359,7 @@ impl Resize {
         let [x_side, y_side] = self.handle.0;
         let (x, width) = drag_side(old.x, old.width, x_side, delta.x.into());
         let (y, height) = drag_side(old.y, old.height, y_side, delta.y.into());
-        let corner = x_side != Align::Center && y_side != Align::Center;
-        if !(keep && corner && old.width > 0.0 && old.height > 0.0) {
+        if !(keep && self.keeps(old)) {
             return yed::Rect {
                 x,
                 y,
@@ -1050,10 +1368,15 @@ impl Resize {
             };
         }
         // As far as the side dragged further, so it keeps up with the pointer.
-        let scale = (width / old.width).max(height / old.height);
+        self.scaled(old, (width / old.width).max(height / old.height))
+    }
+
+    /// `old` scaled by `scale` from the corner opposite the handle, which
+    /// stays put, but to no less than [`MIN_SIZE`].
+    fn scaled(&self, old: yed::Rect, scale: f64) -> yed::Rect {
+        let [x_side, y_side] = self.handle.0;
         let scale = scale.max(MIN_SIZE / old.width.min(old.height));
         let (width, height) = (old.width * scale, old.height * scale);
-        // From the opposite corner, which stays put.
         let start = |start: f64, old: f64, new: f64, side: Align| match side {
             Align::Min => start + old - new,
             _ => start,
@@ -1159,10 +1482,10 @@ fn commit_edge(
 }
 
 /// A new edge in `style`, with `arrows` and `bends` in graph coordinates.
-fn new_edge(arrows: Arrows, bends: &[Pos2], style: &Style) -> EdgeGraphics {
+fn new_edge(arrows: Arrows, bends: &[yed::Point], style: &Style) -> EdgeGraphics {
     let mut graphics = EdgeGraphics::new(EdgeKind::PolyLine);
     graphics.arrows = arrows;
-    graphics.path.points = bends.iter().copied().map(yed_point).collect();
+    graphics.path.points = bends.to_vec();
     style.apply_to_edge(&mut graphics);
     graphics
 }
@@ -1193,27 +1516,38 @@ fn graph_point(to_screen: TSTransform, pos: Pos2) -> Pos2 {
     (to_screen.inverse() * pos).round()
 }
 
-/// A new node of `shape` in `style`, dragged out between two corners in graph
-/// coordinates.
-fn new_node(shape: &NodeShape, corner: Pos2, opposite: Pos2, style: &Style) -> NodeGraphics {
-    let mut size = opposite - corner;
-    if shape.square {
-        // The longer side of the drag, so the node keeps up with the pointer.
-        let side = size.abs().max_elem();
-        size = vec2(side.copysign(size.x), side.copysign(size.y));
-    }
-    let mut graphics = new_shape(shape.shape.clone(), corner, corner + size);
+/// A new node of `shape` in `style`, with bounds `geometry`.
+fn new_node(shape: &NodeShape, geometry: yed::Rect, style: &Style) -> NodeGraphics {
+    let mut graphics = new_shape(shape.shape.clone(), geometry);
     style.apply_to_node(&mut graphics);
     graphics
 }
 
-/// A `shape` with yEd's default look but filled with [`NEW_NODE_FILL`],
-/// spanning two corners in graph coordinates.
-fn new_shape(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
+/// A `shape` with yEd's default look but filled with [`NEW_NODE_FILL`], with
+/// bounds `geometry`.
+fn new_shape(shape: ShapeType, geometry: yed::Rect) -> NodeGraphics {
     let mut graphics = NodeGraphics::new(NodeKind::Shape(shape));
-    graphics.geometry = yed_rect(Rect::from_two_pos(corner, opposite));
+    graphics.geometry = geometry;
     graphics.fill.color = Some(NEW_NODE_FILL);
     graphics
+}
+
+/// How long `rect` is across `axis`.
+fn extent(rect: &yed::Rect, axis: Axis) -> f64 {
+    match axis {
+        Axis::X => rect.width,
+        Axis::Y => rect.height,
+    }
+}
+
+/// The box between two corners, in graph points.
+fn between(corner: [f64; 2], opposite: [f64; 2]) -> yed::Rect {
+    yed::Rect {
+        x: corner[0].min(opposite[0]),
+        y: corner[1].min(opposite[1]),
+        width: (opposite[0] - corner[0]).abs(),
+        height: (opposite[1] - corner[1]).abs(),
+    }
 }
 
 #[cfg(test)]

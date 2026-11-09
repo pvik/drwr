@@ -174,7 +174,7 @@ fn grid_painted(shapes: &[Shape]) -> bool {
 }
 
 #[test]
-fn the_view_menu_has_the_zoom_commands_then_canvas_grid_lines() {
+fn the_view_menu_has_the_zoom_commands_then_grid_and_snap_lines() {
     let mut harness = Harness::new();
     harness.click_widget("View");
     let labels = [
@@ -182,6 +182,7 @@ fn the_view_menu_has_the_zoom_commands_then_canvas_grid_lines() {
         "Zoom Out Ctrl+Minus",
         "Zoom to 100% Ctrl+0",
         GRID_LINES,
+        "Snap Lines",
     ];
     let ys: Vec<_> = (labels.iter())
         .map(|label| testing::center(&harness.widget(label)).y)
@@ -244,12 +245,18 @@ fn canvas_grid_lines_toggle_from_the_view_menu_and_with_ctrl_quote() {
 }
 
 #[test]
-fn canvas_grid_lines_stay_on_for_new_and_opened_graphs() {
+fn grid_and_snap_lines_stay_as_set_for_new_and_opened_graphs() {
     let mut harness = Harness::new();
     harness.press(CTRL, Key::Quote);
+    harness.perform(Action::ToggleSnapLines);
     harness.press(CTRL, Key::N);
     harness.run(vec![]);
-    assert!(harness.app.canvas_options.grid_lines);
+    let options = canvas::Options {
+        grid_lines: true,
+        snap_lines: false,
+    };
+    assert_eq!(harness.app.canvas_options, options);
     harness.app.open(Path::new(FIXTURE)).unwrap();
     assert!(grid_painted(&harness.run(vec![])));
+    assert_eq!(harness.app.canvas_options, options);
 }

@@ -132,10 +132,14 @@ impl Shown<'_> {
             .map(|(segment, _)| EdgePart::Line(segment))
     }
 
+    /// Whether the canvas draws the node at index `node`.
+    pub fn is_drawn(&self, node: usize) -> bool {
+        outline(&self.scene.nodes[node]).is_some()
+    }
+
     /// Whether the node at index `node` is drawn, and inside `rect` on screen.
     pub fn in_box(&self, node: usize, rect: Rect) -> bool {
-        let drawn = outline(&self.scene.nodes[node]).is_some();
-        drawn && rect.contains_rect(self.node_rect(node))
+        self.is_drawn(node) && rect.contains_rect(self.node_rect(node))
     }
 
     /// Whether `edge` is inside `rect` on screen: both its nodes, by
@@ -161,19 +165,27 @@ impl Shown<'_> {
 
     /// Where `look` runs on screen, from port to port through its bends.
     pub fn unclipped(&self, look: &EdgeLook) -> Vec<Pos2> {
+        let to_screen = |point| self.to_screen * egui_pos(point);
+        self.route_points(look).into_iter().map(to_screen).collect()
+    }
+
+    /// Where `look` runs in graph coordinates, from port to port through its
+    /// bends.
+    pub fn route_points(&self, look: &EdgeLook) -> Vec<yed::Point> {
         let port = |anchor: Anchor, offset: yed::Point| match anchor {
             Anchor::Node(node) => {
                 let center = self.center(node);
-                pos2((center.x + offset.x) as f32, (center.y + offset.y) as f32)
+                yed::Point {
+                    x: center.x + offset.x,
+                    y: center.y + offset.y,
+                }
             }
-            Anchor::Point(point) => point,
+            Anchor::Point(point) => yed_point(point),
         };
         let path = &look.graphics.path;
-        let bends = path.points.iter().copied().map(egui_pos);
         std::iter::once(port(look.source, path.source))
-            .chain(bends)
+            .chain(path.points.iter().copied())
             .chain(std::iter::once(port(look.target, path.target)))
-            .map(|point| self.to_screen * point)
             .collect()
     }
 
@@ -335,6 +347,7 @@ pub fn egui_rect(rect: yed::Rect, transform: TSTransform) -> Rect {
 }
 
 /// An egui rect as a yEd one.
+#[cfg(test)]
 pub fn yed_rect(rect: Rect) -> yed::Rect {
     yed::Rect {
         x: rect.min.x.into(),

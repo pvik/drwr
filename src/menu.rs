@@ -59,13 +59,13 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled, options: canvas::Options) -> Op
                     ],
                 );
                 ui.separator();
+                let (grid, snap) = (options.grid_lines, options.snap_lines);
                 let options = check_items(
                     ui,
-                    [(
-                        "Canvas Grid Lines",
-                        Action::ToggleGridLines,
-                        options.grid_lines,
-                    )],
+                    [
+                        ("Canvas Grid Lines", Action::ToggleGridLines, grid),
+                        ("Snap Lines", Action::ToggleSnapLines, snap),
+                    ],
                 );
                 clicked = zoom.or(options);
             });

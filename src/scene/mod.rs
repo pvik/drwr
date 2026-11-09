@@ -4,7 +4,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use egui::Vec2;
 use graphml::GraphMl;
 use graphml::yed::{self, EdgeGraphics, NodeGraphics, NodeKind};
 
@@ -73,10 +72,10 @@ impl Scene {
         }
     }
 
-    /// Moves the `selected` nodes, and the bends of the edges at `edges`, by
-    /// `delta` in graph points, as a drag shows them before it's let go.
-    pub fn translate(&mut self, selected: &Selection, edges: &HashSet<usize>, delta: Vec2) {
-        let (dx, dy) = (f64::from(delta.x), f64::from(delta.y));
+    /// Moves the `selected` nodes, and the bends of the edges at `edges`,
+    /// right and down by these distances in graph points, as a drag shows
+    /// them before it's let go.
+    pub fn translate(&mut self, selected: &Selection, edges: &HashSet<usize>, dx: f64, dy: f64) {
         for node in &mut self.nodes {
             if selected.contains_node(&node.id) {
                 let geometry = &mut Arc::make_mut(node).graphics.geometry;

@@ -6,6 +6,7 @@ use egui::epaint::{ClippedShape, ColorMode, PathShape, Primitive, Vertex};
 use egui::{Key, Modifiers, RawInput, Shape, StrokeKind, ViewportId, pos2, vec2};
 use graphml::yed::{Alignment, Label};
 
+use super::shown::yed_rect;
 use super::*;
 use crate::fonts::{self, Fonts};
 use crate::line_type;
@@ -179,7 +180,8 @@ impl Harness {
     /// one with id `target`, through `bends` in graph coordinates, returning
     /// its index.
     fn add_edge(&mut self, source: &str, target: &str, bends: &[Pos2]) -> usize {
-        let graphics = new_edge(Tool::Line.arrows().unwrap(), bends, &Style::default());
+        let bends: Vec<_> = bends.iter().copied().map(yed_point).collect();
+        let graphics = new_edge(Tool::Line.arrows().unwrap(), &bends, &Style::default());
         document::add_edge(self.doc.graphml_mut(), source, target, &graphics)
     }
 
@@ -215,7 +217,7 @@ impl Harness {
     /// Adds an ellipse between two corners in graph coordinates, returning
     /// its id.
     fn add_ellipse(&mut self, corner: Pos2, opposite: Pos2) -> String {
-        let graphics = new_shape(ShapeType::Ellipse, corner, opposite);
+        let graphics = shape_between(ShapeType::Ellipse, corner, opposite);
         document::add_node(self.doc.graphml_mut(), &graphics)
     }
 
@@ -291,7 +293,13 @@ impl Harness {
 
 /// A box with yEd's default look between two corners in graph coordinates.
 fn new_box(corner: Pos2, opposite: Pos2) -> NodeGraphics {
-    new_shape(ShapeType::Rectangle, corner, opposite)
+    shape_between(ShapeType::Rectangle, corner, opposite)
+}
+
+/// A `shape` as the canvas draws new ones, between two corners in graph
+/// coordinates.
+fn shape_between(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
+    new_shape(shape, yed_rect(Rect::from_two_pos(corner, opposite)))
 }
 
 fn filled_rects(shapes: &[Shape], fill: Color32) -> Vec<Rect> {
@@ -704,7 +712,7 @@ fn clicking_an_ellipse_selects_it_only_inside_its_outline() {
 #[test]
 fn ellipses_of_negative_size_cannot_be_clicked() {
     let mut harness = Harness::new(Tool::Cursor);
-    let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.max);
+    let mut graphics = shape_between(ShapeType::Ellipse, NODE.min, NODE.max);
     graphics.geometry = geometry(300.0, 200.0, -150.0, -80.0);
     document::add_node(harness.doc.graphml_mut(), &graphics);
     harness.click(vec2(225.0, 160.0));
@@ -1190,7 +1198,7 @@ const RED: Color32 = Color32::from_rgb(0xFF, 0x00, 0x00);
 #[test]
 fn ellipse_borders_are_painted_across_the_outline() {
     let mut harness = Harness::new(Tool::Cursor);
-    let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.max);
+    let mut graphics = shape_between(ShapeType::Ellipse, NODE.min, NODE.max);
     graphics.border.width = 6.0;
     graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
     document::add_node(harness.doc.graphml_mut(), &graphics);
@@ -1209,7 +1217,7 @@ fn ellipse_borders_are_painted_across_the_outline() {
 #[test]
 fn round_rectangles_are_painted_with_yeds_corners() {
     let mut harness = Harness::new(Tool::Cursor);
-    let graphics = new_shape(ShapeType::RoundRectangle, NODE.min, NODE.max);
+    let graphics = shape_between(ShapeType::RoundRectangle, NODE.min, NODE.max);
     document::add_node(harness.doc.graphml_mut(), &graphics);
     let shapes = harness.frame(vec![]);
 
@@ -1306,7 +1314,7 @@ fn dashed_rounded_borders_run_round_the_corners_from_the_top_of_the_left_side() 
 fn borders_nearly_as_wide_as_their_ellipse_keep_round_it() {
     for (size, width) in [(vec2(100.0, 30.0), 29.9), (vec2(150.0, 80.0), 79.0)] {
         let mut harness = Harness::new(Tool::Cursor);
-        let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.min + size);
+        let mut graphics = shape_between(ShapeType::Ellipse, NODE.min, NODE.min + size);
         graphics.border.width = width;
         graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
         document::add_node(harness.doc.graphml_mut(), &graphics);
@@ -1327,7 +1335,7 @@ fn borders_nearly_as_wide_as_their_ellipse_keep_round_it() {
 fn flat_ellipses_show_their_border_in_every_line_type() {
     for line_type in line_type::ALL {
         let mut harness = Harness::new(Tool::Cursor);
-        let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.min + vec2(150.0, 0.0));
+        let mut graphics = shape_between(ShapeType::Ellipse, NODE.min, NODE.min + vec2(150.0, 0.0));
         graphics.border.line_type = line_type.clone();
         graphics.border.width = 2.0;
         graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
@@ -1347,7 +1355,7 @@ fn ellipses_of_absurd_sizes_are_painted_in_few_triangles() {
     let mut harness = Harness::new(Tool::Cursor);
     for (size, width) in [(1e10, 1.0), (150.0, 1e10)] {
         for line_type in [yed::LineType::Line, yed::LineType::Dashed] {
-            let mut graphics = new_shape(ShapeType::Ellipse, NODE.min, NODE.max);
+            let mut graphics = shape_between(ShapeType::Ellipse, NODE.min, NODE.max);
             graphics.geometry.width = size;
             graphics.border.width = width;
             graphics.border.line_type = line_type;
@@ -1371,7 +1379,7 @@ fn dashed_border(
     harness.ctx.set_zoom_factor(zoom);
     let shapes = harness.frame(vec![]);
     harness.origin = filled_rects(&shapes, BACKGROUND)[0].min;
-    let mut graphics = new_shape(shape.clone(), NODE.min, NODE.max);
+    let mut graphics = shape_between(shape.clone(), NODE.min, NODE.max);
     graphics.border.line_type = line_type;
     graphics.border.width = width;
     graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
@@ -2690,7 +2698,7 @@ fn dragging_a_port_moves_it_within_its_node() {
 }
 
 #[test]
-fn ports_snap_to_the_middle_of_their_node() {
+fn ports_snap_to_the_middles_of_their_node() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     let index = harness.add_edge(&node, &other, &[]);
@@ -2698,9 +2706,10 @@ fn ports_snap_to_the_middle_of_their_node() {
         graphics.path.target = point(25.0, 20.0);
     });
     harness.selected = Selection::edge(0);
-    harness.drag(vec2(500.0, 110.0), vec2(481.0, 94.0));
-    assert_eq!(harness.edges()[0].2.path.target, point(6.0, 4.0));
-    harness.drag(vec2(481.0, 94.0), vec2(478.0, 93.0));
+    // 4 below the node's middle, and 9 right of it, which is too far.
+    harness.drag(vec2(500.0, 110.0), vec2(484.0, 94.0));
+    assert_eq!(harness.edges()[0].2.path.target, point(9.0, 0.0));
+    harness.drag(vec2(484.0, 90.0), vec2(478.0, 92.0));
     assert_eq!(harness.edges()[0].2.path.target, point(0.0, 0.0));
 }
 
@@ -3341,4 +3350,243 @@ fn shift_keeps_boxes_in_proportion_too_and_while_dragging() {
         harness.drag(vec2(287.5, 150.0), vec2(0.0, 0.0));
     });
     assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 1.875, 1.0)]);
+}
+
+/// The guides painted, as quads in their color.
+fn guides(shapes: &[Shape]) -> Vec<Rect> {
+    quads(shapes, GUIDE)
+}
+
+/// Drags the node in [`NODE`], selected, by `by`, returning what the last
+/// frame before the release painted.
+fn drag_node_by(harness: &mut Harness, by: Vec2) -> Vec<Shape> {
+    let from = NODE.center().to_vec2();
+    let held = harness.drag_and_hold(from, from + by);
+    harness.frame(vec![button(harness.origin + from + by, false)]);
+    held
+}
+
+#[test]
+fn moved_nodes_snap_into_line_with_other_nodes() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_two_boxes();
+    harness.selected = Selection::node(node);
+    // Under the other box, but 3 left of it.
+    drag_node_by(&mut harness, vec2(297.0, 200.0));
+    assert_eq!(harness.boxes()[0], geometry(400.0, 250.0, 150.0, 80.0));
+}
+
+#[test]
+fn guides_show_what_the_moved_node_lines_up_with() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_two_boxes();
+    harness.selected = Selection::node(node);
+    let held = drag_node_by(&mut harness, vec2(297.0, 200.0));
+    // Down its sides and middle, from the other box's top to its bottom,
+    // a pixel wide and a little longer.
+    let line = |x: f32| {
+        let at = harness.origin + vec2(x, 50.0 - GUIDE_OVERHANG);
+        Rect::from_min_size(at, vec2(1.0, 280.0 + 2.0 * GUIDE_OVERHANG))
+    };
+    assert_eq!(guides(&held), [line(400.0), line(475.0), line(550.0)]);
+    // Not once let go.
+    assert_eq!(guides(&harness.frame(vec![])), []);
+}
+
+#[test]
+fn moved_nodes_touch_the_nodes_beside_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_two_boxes();
+    harness.selected = Selection::node(node);
+    // Its right side 4 left of the other box's left side, 20 below its top.
+    drag_node_by(&mut harness, vec2(146.0, 20.0));
+    assert_eq!(harness.boxes()[0], geometry(250.0, 70.0, 150.0, 80.0));
+}
+
+#[test]
+fn alt_skips_snapping() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_two_boxes();
+    harness.selected = Selection::node(node);
+    let held = harness.holding(Modifiers::ALT, |harness| {
+        drag_node_by(harness, vec2(297.0, 200.0))
+    });
+    assert_eq!(guides(&held), []);
+    assert_eq!(harness.boxes()[0], geometry(397.0, 250.0, 150.0, 80.0));
+}
+
+#[test]
+fn nothing_snaps_with_snap_lines_off() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.options.snap_lines = false;
+    let (node, _) = harness.add_two_boxes();
+    harness.selected = Selection::node(node);
+    let held = drag_node_by(&mut harness, vec2(297.0, 200.0));
+    assert_eq!(guides(&held), []);
+    assert_eq!(harness.boxes()[0], geometry(397.0, 250.0, 150.0, 80.0));
+}
+
+#[test]
+fn nodes_snap_only_into_line_with_nodes_in_view() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let node = harness.add_box(NODE.min, NODE.max);
+    harness.add_box(pos2(100.0, 5000.0), pos2(250.0, 5080.0));
+    harness.selected = Selection::node(node);
+    drag_node_by(&mut harness, vec2(3.0, 100.0));
+    assert_eq!(harness.boxes()[0], geometry(103.0, 150.0, 150.0, 80.0));
+}
+
+#[test]
+fn snapping_reaches_as_far_on_screen_at_any_zoom() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_two_boxes();
+    harness.selected = Selection::node(node);
+    harness.zoom(0.5);
+    // 10 graph points left of the other box, 5 on screen.
+    let from = NODE.center().to_vec2() * 0.5;
+    harness.drag(from, from + vec2(290.0, 200.0) * 0.5);
+    assert_eq!(harness.boxes()[0], geometry(400.0, 250.0, 150.0, 80.0));
+}
+
+#[test]
+fn a_moved_selection_snaps_by_whichever_node_lines_up() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    let third = harness.add_box(pos2(700.0, 400.0), pos2(750.0, 450.0));
+    harness.selected = Selection::of([Item::Node(node), Item::Node(other)]);
+    // The other box's middle ends up 2 above the third's.
+    drag_node_by(&mut harness, vec2(5.0, 333.0));
+    let boxes = harness.boxes();
+    assert_eq!(boxes[0], geometry(105.0, 385.0, 150.0, 80.0));
+    assert_eq!(boxes[1], geometry(405.0, 385.0, 150.0, 80.0));
+    assert_eq!(boxes[2].x, 700.0, "{third} stays");
+}
+
+#[test]
+fn resized_sides_snap_into_line_with_other_nodes() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_two_boxes();
+    harness.add_box(pos2(300.0, 300.0), pos2(453.0, 400.0));
+    harness.selected = Selection::node(node);
+    // Its right side touches the other box beside it, 3 to the right.
+    harness.drag(vec2(250.0, 90.0), vec2(397.0, 90.0));
+    assert_eq!(harness.boxes()[0], geometry(100.0, 50.0, 300.0, 80.0));
+    // Its bottom touches the top of the third box, which it's above.
+    harness.drag(vec2(250.0, 130.0), vec2(254.0, 298.0));
+    assert_eq!(harness.boxes()[0], geometry(100.0, 50.0, 300.0, 250.0));
+    // Its bottom right corner lines up with the third box's both ways.
+    harness.drag(vec2(400.0, 300.0), vec2(452.0, 402.0));
+    assert_eq!(harness.boxes()[0], geometry(100.0, 50.0, 353.0, 350.0));
+}
+
+#[test]
+fn proportional_resizes_snap_by_the_side_that_moves_least() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(pos2(300.0, 300.0), pos2(400.0, 400.0));
+    let id = harness.add_selected_box();
+    // Twice as big would put its right in line with the other box's.
+    harness.holding(Modifiers::SHIFT, |harness| {
+        harness.drag(vec2(250.0, 130.0), vec2(398.0, 208.0));
+    });
+    let resized = document::graphics_of(harness.doc.graphml(), &id)
+        .unwrap()
+        .geometry;
+    assert_eq!(resized, geometry(100.0, 50.0, 300.0, 160.0));
+}
+
+#[test]
+fn drawn_nodes_snap_into_line_with_other_nodes() {
+    let mut harness = Harness::new(Tool::Box);
+    harness.add_box(OTHER.min, OTHER.max);
+    // Under the other box, 3 right of its left and 2 left of its right.
+    let held = harness.drag_and_hold(vec2(403.0, 203.0), vec2(548.0, 260.0));
+    assert_eq!(guides(&held).len(), 2);
+    harness.frame(vec![button(harness.origin + vec2(548.0, 260.0), false)]);
+    assert_eq!(harness.boxes()[1], geometry(400.0, 203.0, 150.0, 57.0));
+}
+
+#[test]
+fn drawn_circles_stay_round_while_snapping() {
+    let mut harness = Harness::new(Tool::Circle);
+    harness.add_box(OTHER.min, OTHER.max);
+    // From under the other box's left, to 3 left of its right.
+    harness.drag(vec2(400.0, 200.0), vec2(547.0, 290.0));
+    assert_eq!(harness.ellipses(), [geometry(400.0, 200.0, 150.0, 150.0)]);
+}
+
+#[test]
+fn dragged_bends_snap_into_line_with_their_neighbours_and_nodes() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[pos2(300.0, 200.0)]);
+    harness.selected = Selection::edge(0);
+    // 3 right of the port before it, at the middle of its node.
+    harness.drag(vec2(300.0, 200.0), vec2(178.0, 205.0));
+    assert_eq!(harness.bends(0), [point(175.0, 205.0)]);
+    // 2 below the other box's bottom.
+    harness.drag(vec2(175.0, 205.0), vec2(320.0, 132.0));
+    assert_eq!(harness.bends(0), [point(320.0, 130.0)]);
+}
+
+#[test]
+fn bends_added_by_dragging_a_line_snap() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[]);
+    harness.selected = Selection::edge(0);
+    // Above the middle of the other box, 4 right of it.
+    harness.drag(vec2(320.0, 90.0), vec2(479.0, 20.0));
+    assert_eq!(harness.bends(0), [point(475.0, 20.0)]);
+}
+
+#[test]
+fn bends_drawn_with_the_line_tool_snap() {
+    let mut harness = Harness::new(Tool::Line);
+    harness.add_two_boxes();
+    // From the box's middle, to 4 below it, then 3 left of the other's.
+    harness.click(vec2(175.0, 90.0));
+    let held = harness.frame(vec![Event::PointerMoved(
+        harness.origin + vec2(300.0, 94.0),
+    )]);
+    assert_eq!(guides(&held).len(), 1);
+    harness.click(vec2(300.0, 94.0));
+    harness.click(vec2(472.0, 300.0));
+    harness.click(vec2(475.0, 90.0));
+    assert_eq!(harness.bends(0), [point(300.0, 90.0), point(475.0, 300.0)]);
+}
+
+#[test]
+fn ports_snap_into_line_with_the_bend_next_to_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[pos2(230.0, 200.0)]);
+    harness.selected = Selection::edge(0);
+    // 3 right of the bend, which is under the box.
+    harness.drag(vec2(175.0, 90.0), vec2(233.0, 100.0));
+    assert_eq!(harness.edges()[0].2.path.source, point(55.0, 10.0));
+}
+
+#[test]
+fn ports_do_not_snap_off_their_node() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[pos2(253.0, 200.0)]);
+    harness.selected = Selection::edge(0);
+    // The bend is 5 right of the port, which would leave the box.
+    harness.drag(vec2(175.0, 90.0), vec2(248.0, 100.0));
+    assert_eq!(harness.edges()[0].2.path.source, point(73.0, 10.0));
+}
+
+#[test]
+fn moved_lines_snap_by_their_bends() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    let third = harness.add_box(THIRD.min, THIRD.max);
+    harness.add_edge(&node, &other, &[pos2(300.0, 200.0)]);
+    harness.add_edge(&node, &third, &[pos2(320.0, 300.0)]);
+    harness.selected = Selection::of([Item::Edge(0), Item::Edge(1)]);
+    // From halfway to the first bend, which ends up 3 right of the box's middle.
+    harness.drag(vec2(237.5, 145.0), vec2(115.5, 148.0));
+    assert_eq!(harness.bends(0), [point(175.0, 203.0)]);
+    assert_eq!(harness.bends(1), [point(195.0, 303.0)]);
 }
