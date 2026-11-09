@@ -1,30 +1,32 @@
-use egui::accesskit::{self, Role};
-use egui::{Event, Pos2, RawInput, Rect, vec2};
+use egui::accesskit::Role;
 
 use super::*;
-use crate::testing::{self, button, center, widgets};
+use crate::testing::{Drive, Driver};
 
 /// Drives a dialog in an 800×600 window, one frame at a time.
 struct Harness {
-    ctx: Context,
+    driver: Driver,
     dialog: TextDialog<&'static str>,
     /// What the dialog returned, in order.
     accepted: Vec<(&'static str, String)>,
-    time: f64,
-    /// The widgets the last frame showed.
-    widgets: Vec<accesskit::Node>,
+}
+
+impl Drive for Harness {
+    fn driver(&mut self) -> &mut Driver {
+        &mut self.driver
+    }
+
+    fn show(&mut self, ui: &mut Ui) {
+        self.accepted.extend(self.dialog.show(ui.ctx()));
+    }
 }
 
 impl Harness {
     fn new() -> Self {
-        let ctx = Context::default();
-        ctx.enable_accesskit();
         Harness {
-            ctx,
+            driver: Driver::default(),
             dialog: TextDialog::default(),
             accepted: Vec::new(),
-            time: 0.0,
-            widgets: Vec::new(),
         }
     }
 
@@ -36,48 +38,8 @@ impl Harness {
         self.frame(vec![]);
     }
 
-    fn frame(&mut self, events: Vec<Event>) {
-        self.time += 0.1;
-        let input = RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
-            time: Some(self.time),
-            events,
-            ..RawInput::default()
-        };
-        let mut output = self.ctx.run_ui(input, |ui| {
-            self.accepted.extend(self.dialog.show(ui.ctx()));
-        });
-        self.widgets = widgets(&mut output);
-        output.drop_without_applying_deltas();
-    }
-
-    fn click(&mut self, label: &str) {
-        let widget = self
-            .widgets
-            .iter()
-            .find(|widget| widget.label() == Some(label))
-            .unwrap_or_else(|| panic!("no widget is labelled {label:?}"));
-        let at = center(widget);
-        self.frame(vec![Event::PointerMoved(at)]);
-        for pressed in [true, false] {
-            self.frame(vec![button(at, pressed)]);
-        }
-        self.frame(vec![]);
-    }
-
-    fn press(&mut self, modifiers: Modifiers, key: Key) {
-        self.frame(vec![testing::key(modifiers, key)]);
-        self.frame(vec![]);
-    }
-
-    fn type_text(&mut self, text: &str) {
-        self.frame(vec![Event::Text(text.to_owned())]);
-        self.frame(vec![]);
-    }
-
     fn text(&self) -> &str {
-        self.widgets
-            .iter()
+        (self.driver.widgets.iter())
             .find(|widget| widget.role() == Role::MultilineTextInput)
             .and_then(|widget| widget.value())
             .expect("the text field is shown")
@@ -100,7 +62,7 @@ fn enter_starts_a_new_line() {
     let mut harness = Harness::new();
     harness.open("");
     harness.type_text("One");
-    harness.press(Modifiers::NONE, Key::Enter);
+    harness.press(Key::Enter);
     harness.type_text("Two");
     assert!(harness.dialog.is_open());
     harness.click("OK");
@@ -112,7 +74,7 @@ fn ctrl_enter_is_ok() {
     let mut harness = Harness::new();
     harness.open("Start");
     harness.type_text("Stop");
-    harness.press(Modifiers::COMMAND, Key::Enter);
+    harness.press_with(Modifiers::COMMAND, Key::Enter);
     assert_eq!(harness.accepted, [("label", "Stop".to_owned())]);
     assert!(!harness.dialog.is_open());
 }
@@ -127,7 +89,7 @@ fn cancel_and_escape_drop_the_text() {
 
     harness.open("Start");
     harness.type_text("Stop");
-    harness.press(Modifiers::NONE, Key::Escape);
+    harness.press(Key::Escape);
     assert!(!harness.dialog.is_open());
     assert_eq!(harness.accepted, []);
 }

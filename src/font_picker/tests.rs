@@ -1,12 +1,12 @@
 use egui::accesskit::{self, Role, Toggled};
-use egui::{Context, Event, Popup, Pos2, RawInput, Rect, UiBuilder, pos2};
+use egui::{Event, Popup, Rect, UiBuilder, pos2};
 
 use super::*;
-use crate::testing::{self, button, center, widgets};
+use crate::testing::{Drive, Driver, center};
 
 /// Drives a picker 200 points wide in an 800×600 window, one frame at a time.
 struct Harness {
-    ctx: Context,
+    driver: Driver,
     picker: FontPicker,
     current: String,
     families: Vec<String>,
@@ -14,24 +14,35 @@ struct Harness {
     picked: Vec<String>,
     /// How many times it asked for the families.
     listed: usize,
-    time: f64,
-    /// The widgets the last frame showed.
-    widgets: Vec<accesskit::Node>,
+}
+
+impl Drive for Harness {
+    fn driver(&mut self) -> &mut Driver {
+        &mut self.driver
+    }
+
+    fn show(&mut self, ui: &mut Ui) {
+        let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(200.0, 20.0));
+        ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+            let families = || {
+                self.listed += 1;
+                self.families.clone()
+            };
+            let picked = self.picker.show(ui, "font", &self.current, families);
+            self.picked.extend(picked);
+        });
+    }
 }
 
 impl Harness {
     fn new(current: &str, families: &[&str]) -> Self {
-        let ctx = Context::default();
-        ctx.enable_accesskit();
         let mut harness = Harness {
-            ctx,
+            driver: Driver::default(),
             picker: FontPicker::default(),
             current: current.to_owned(),
             families: families.iter().map(|&family| family.to_owned()).collect(),
             picked: Vec::new(),
             listed: 0,
-            time: 0.0,
-            widgets: Vec::new(),
         };
         harness.frame(vec![]);
         harness
@@ -44,64 +55,27 @@ impl Harness {
         Harness::new(current, &families)
     }
 
-    fn frame(&mut self, events: Vec<Event>) {
-        self.time += 0.1;
-        let input = RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
-            time: Some(self.time),
-            events,
-            ..RawInput::default()
-        };
-        let mut output = self.ctx.run_ui(input, |ui| {
-            let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(200.0, 20.0));
-            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
-                let families = || {
-                    self.listed += 1;
-                    self.families.clone()
-                };
-                let picked = self.picker.show(ui, "font", &self.current, families);
-                self.picked.extend(picked);
-            });
-        });
-        self.widgets = widgets(&mut output);
-        output.drop_without_applying_deltas();
-    }
-
     /// Clicks the dropdown, then waits for its list to show.
     fn open(&mut self) {
-        self.click(|widget| widget.role() == Role::ComboBox);
+        self.click_where(|widget| widget.role() == Role::ComboBox);
         // A new popup is laid out unseen first.
         self.frame(vec![]);
         self.frame(vec![]);
     }
 
     fn click_family(&mut self, family: &str) {
-        self.click(|widget| widget.role() == Role::Button && widget.label() == Some(family));
+        self.click_where(|widget| widget.role() == Role::Button && widget.label() == Some(family));
     }
 
-    fn click(&mut self, find: impl Fn(&accesskit::Node) -> bool) {
-        let widget = self.widgets.iter().find(|widget| find(widget));
+    /// Clicks the first widget `find` accepts.
+    fn click_where(&mut self, find: impl Fn(&accesskit::Node) -> bool) {
+        let widget = self.driver.widgets.iter().find(|widget| find(widget));
         let at = center(widget.expect("the widget is shown"));
-        self.frame(vec![Event::PointerMoved(at)]);
-        for pressed in [true, false] {
-            self.frame(vec![button(at, pressed)]);
-        }
-        self.frame(vec![]);
-    }
-
-    fn press(&mut self, key: Key) {
-        self.frame(vec![testing::key(Modifiers::NONE, key)]);
-        // Scrolling to the highlighted family takes another frame.
-        self.frame(vec![]);
-    }
-
-    fn type_text(&mut self, text: &str) {
-        self.frame(vec![Event::Text(text.to_owned())]);
-        self.frame(vec![]);
+        self.click_at(at, 1);
     }
 
     fn is_open(&self) -> bool {
-        Popup::is_any_open(&self.ctx)
+        Popup::is_any_open(&self.driver.ctx)
     }
 
     /// The families listed in view, top to bottom.
@@ -119,15 +93,11 @@ impl Harness {
     }
 
     fn rows(&self) -> impl Iterator<Item = &accesskit::Node> {
-        self.widgets
-            .iter()
-            .filter(|widget| widget.role() == Role::Button)
+        (self.driver.widgets.iter()).filter(|widget| widget.role() == Role::Button)
     }
 
     fn shows(&self, text: &str) -> bool {
-        self.widgets
-            .iter()
-            .any(|widget| widget.value() == Some(text))
+        (self.driver.widgets.iter()).any(|widget| widget.value() == Some(text))
     }
 }
 
@@ -148,7 +118,7 @@ fn opens_with_the_current_family_highlighted_and_the_field_focused() {
     harness.open();
     assert_eq!(harness.listed(), FAMILIES);
     assert_eq!(harness.highlighted(), Some("Noto Sans"));
-    assert!(harness.ctx.text_edit_focused());
+    assert!(harness.driver.ctx.text_edit_focused());
 }
 
 #[test]
@@ -223,7 +193,7 @@ fn clicking_a_family_picks_it() {
 fn clicking_the_field_keeps_the_list_open() {
     let mut harness = Harness::new("Noto Sans", &FAMILIES);
     harness.open();
-    harness.click(|widget| widget.role() == Role::TextInput);
+    harness.click_where(|widget| widget.role() == Role::TextInput);
     assert!(harness.is_open());
 }
 

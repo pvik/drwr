@@ -31,15 +31,15 @@ const FONT_SIZES: RangeInclusive<u32> = 1..=500;
 /// How long the line and label position samples are, in text heights.
 const SAMPLE_LENGTH: f32 = 2.0;
 /// The rows of a node's bounds, and how each reads them.
-const GEOMETRY: [(&str, Side); 4] = [
+const GEOMETRY: [(&str, Bound); 4] = [
     ("X", |rect| rect.x),
     ("Y", |rect| rect.y),
     ("Width", |rect| rect.width),
     ("Height", |rect| rect.height),
 ];
 
-/// Reads one side or corner coordinate of a node's bounds.
-type Side = fn(&yed::Rect) -> f64;
+/// Reads one of a node's bounds: its x, y, width or height.
+type Bound = fn(&yed::Rect) -> f64;
 
 /// A resizable panel right of the canvas with a toolbar and the properties of
 /// the selected nodes and edges.
@@ -147,18 +147,17 @@ impl SidePanel {
                     _ => row(ui, "Selected", Some(&count(nodes.len(), edges.len()))),
                 }
                 if edges.is_empty() {
-                    let shapes: Vec<_> = nodes.iter().map(|(_, node)| shape(node)).collect();
-                    row(ui, "Shape", same(&shapes).copied());
-                    for (name, side) in GEOMETRY {
-                        let sides: Vec<_> = nodes.iter().map(|(_, n)| side(&n.geometry)).collect();
-                        row(ui, name, same(&sides).map(|side| number(*side)).as_deref());
+                    row(ui, "Shape", same(nodes.iter().map(|(_, node)| shape(node))));
+                    for (name, bound) in GEOMETRY {
+                        let bounds = nodes.iter().map(|(_, node)| bound(&node.geometry));
+                        row(ui, name, same(bounds).map(number).as_deref());
                     }
                 }
                 if nodes.is_empty() {
-                    let sources: Vec<_> = edges.iter().map(|(e, _)| e.source.as_str()).collect();
-                    row(ui, "Source", same(&sources).copied());
-                    let targets: Vec<_> = edges.iter().map(|(e, _)| e.target.as_str()).collect();
-                    row(ui, "Target", same(&targets).copied());
+                    let sources = edges.iter().map(|(e, _)| e.source.as_str());
+                    row(ui, "Source", same(sources));
+                    let targets = edges.iter().map(|(e, _)| e.target.as_str());
+                    row(ui, "Target", same(targets));
                 }
                 // Two, when clicking a button also applies the number typed.
                 let mut actions = Vec::new();
@@ -169,9 +168,9 @@ impl SidePanel {
                     (&[ColorProperty::Line], "Line")
                 };
                 for &property in colors {
-                    let colors: Vec<_> = items.iter().map(|(_, g)| property.get(g)).collect();
                     ui.label(property.name());
-                    if color_button(ui, same(&colors).copied()).clicked() {
+                    let color = same(items.iter().map(|(_, g)| property.get(g)));
+                    if color_button(ui, color).clicked() {
                         actions.push(Action::EditColor(property));
                     }
                     ui.end_row();
@@ -183,8 +182,8 @@ impl SidePanel {
                 actions.extend(width.map(Action::SetLineWidth));
                 ui.end_row();
                 ui.label(format!("{stroke} style"));
-                let types: Vec<_> = strokes.iter().map(|stroke| &stroke.line_type).collect();
-                let line_type = line_style_box(ui, same(&types).copied());
+                let types = strokes.iter().map(|stroke| &stroke.line_type);
+                let line_type = line_style_box(ui, same(types));
                 actions.extend(line_type.map(Action::SetLineType));
                 ui.end_row();
                 let radii = nodes
@@ -204,14 +203,12 @@ impl SidePanel {
                         ("Start arrow", EdgeEnd::Source),
                         ("End arrow", EdgeEnd::Target),
                     ] {
-                        let arrows: Vec<_> = (edges.iter())
-                            .map(|(_, edge)| match end {
-                                EdgeEnd::Source => edge.arrows.source != Arrow::None,
-                                EdgeEnd::Target => edge.arrows.target != Arrow::None,
-                            })
-                            .collect();
+                        let arrows = edges.iter().map(|(_, edge)| match end {
+                            EdgeEnd::Source => edge.arrows.source != Arrow::None,
+                            EdgeEnd::Target => edge.arrows.target != Arrow::None,
+                        });
                         ui.label(name);
-                        let shown = same(&arrows).copied();
+                        let shown = same(arrows);
                         let mut on = shown.unwrap_or_default();
                         let checkbox = Checkbox::new(&mut on, "").indeterminate(shown.is_none());
                         if ui.add(checkbox).changed() {
@@ -239,10 +236,11 @@ impl SidePanel {
                 index,
             };
             let all: Vec<_> = items.iter().map(|(item, _)| label(item)).collect();
-            let texts: Vec<_> = (items.iter())
-                .map(|(_, g)| g.labels().get(index).map_or("", |label| &label.text))
-                .collect();
-            actions.extend(self.label_row(ui, &all, same(&texts).copied()));
+            let texts = items.iter().map(|(_, g)| match g.labels().get(index) {
+                Some(label) => label.text.as_str(),
+                None => "",
+            });
+            actions.extend(self.label_row(ui, &all, same(texts)));
             // Of the labels there are, as items without one have no font.
             let (at, labels): (Vec<_>, Vec<_>) = (items.iter())
                 .filter_map(|(item, g)| Some((label(item), g.labels().get(index)?)))
@@ -254,8 +252,8 @@ impl SidePanel {
             // Edge labels are placed by dragging them.
             if items.iter().all(|(item, _)| matches!(item, Item::Node(_))) {
                 ui.label("Position");
-                let positions: Vec<_> = labels.iter().map(|label| label.position()).collect();
-                let position = position_box(ui, index, same(&positions).copied());
+                let positions = labels.iter().map(|label| label.position());
+                let position = position_box(ui, index, same(positions));
                 actions.extend(position.into_iter().flat_map(|position| {
                     (at.iter()).map(move |at| Action::SetLabelPosition(at.clone(), position))
                 }));
@@ -328,20 +326,17 @@ impl SidePanel {
         };
         let mut actions = Vec::new();
         ui.label("Font");
-        let families: Vec<_> = labels
-            .iter()
-            .map(|label| label.font.family.as_str())
-            .collect();
-        let shown = same(&families).copied().unwrap_or_default();
+        let families = labels.iter().map(|label| label.font.family.as_str());
+        let shown = same(families).unwrap_or_default();
         let family = self
             .font_picker
             .show(ui, ("font", index), shown, || fonts.families());
         actions.extend(family.map(FontPart::Family).into_iter().flat_map(set));
         ui.end_row();
         ui.label("Font style");
-        let styles: Vec<_> = labels.iter().map(|label| &label.font.style).collect();
+        let styles = labels.iter().map(|label| &label.font.style);
         // Each shown in the first label's family.
-        let style = font_style_box(ui, index, families[0], same(&styles).copied());
+        let style = font_style_box(ui, index, &labels[0].font.family, same(styles));
         actions.extend(style.map(FontPart::Style).into_iter().flat_map(set));
         ui.end_row();
         ui.label("Font size");
@@ -350,8 +345,8 @@ impl SidePanel {
         actions.extend(size.map(FontPart::Size).into_iter().flat_map(set));
         ui.end_row();
         ui.label("Text color");
-        let colors: Vec<_> = labels.iter().map(|label| Some(label.text_color)).collect();
-        if color_button(ui, same(&colors).copied()).clicked() {
+        let colors = labels.iter().map(|label| Some(label.text_color));
+        if color_button(ui, same(colors)).clicked() {
             actions.push(Action::EditColor(ColorProperty::Text(index)));
         }
         ui.end_row();
@@ -406,9 +401,10 @@ impl SidePanel {
 }
 
 /// The value all `values` have, if they're the same.
-fn same<T: PartialEq>(values: &[T]) -> Option<&T> {
-    let (first, rest) = values.split_first()?;
-    rest.iter().all(|value| value == first).then_some(first)
+fn same<T: PartialEq>(values: impl IntoIterator<Item = T>) -> Option<T> {
+    let mut values = values.into_iter();
+    let first = values.next()?;
+    values.all(|value| value == first).then_some(first)
 }
 
 /// How many nodes and edges there are, e.g. "2 nodes, 1 line".
