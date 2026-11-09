@@ -3279,6 +3279,46 @@ fn the_save_button_saves_the_label_edited_on_the_canvas() {
     );
 }
 
+#[test]
+fn ctrl_s_in_a_label_field_saves_the_label_typed() {
+    let dir = ScratchDir::new("ctrl-s-label-field");
+    let file = dir.fixture();
+    let mut harness = Harness::open(&file);
+    retype_queue(&mut harness);
+    harness.press(CTRL, Key::S);
+    assert_eq!(harness.label("n2"), "Stack");
+    assert_eq!(read(&file), harness.app.graphml);
+    assert!(!harness.app.modified);
+    assert!(!harness.ctx.text_edit_focused());
+}
+
+#[test]
+fn ctrl_s_saves_the_label_edited_on_the_canvas() {
+    let dir = ScratchDir::new("ctrl-s-canvas-label");
+    let file = dir.fixture();
+    let mut harness = Harness::open(&file);
+    harness.app.selected = Selection::node("n2");
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    harness.type_text("Renamed");
+    harness.press(CTRL, Key::S);
+    assert_eq!(harness.label("n2"), "Renamed");
+    assert_eq!(read(&file), harness.app.graphml);
+}
+
+#[test]
+fn ctrl_s_in_the_border_width_field_saves_the_width_typed() {
+    let dir = ScratchDir::new("ctrl-s-border-width");
+    let file = dir.path("box.graphml");
+    let mut harness = Harness::new();
+    let id = click_border_width(&mut harness);
+    harness.app.file = Some(file.clone());
+    harness.type_text("4.5");
+    harness.press(CTRL, Key::S);
+    assert_eq!(harness.graphics(&id).border.width, 4.5);
+    assert_eq!(read(&file), harness.app.graphml);
+}
+
 impl Harness {
     /// Runs a frame with `input`, returning what it asked of the window.
     fn commands(&mut self, input: RawInput) -> Vec<egui::ViewportCommand> {

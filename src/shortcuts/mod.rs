@@ -47,18 +47,21 @@ const SHORTCUTS: [(Modifiers, Key, Action); 28] = [
 ];
 
 /// Takes this frame's presses of shortcuts, returning an action per press.
-/// `typing` is whether a text field had the focus at the end of the last frame.
+/// While typing, which `typing` says a text field was at the end of the last
+/// frame, only Save and Save As, as text fields have no use for them.
 pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
-    // Egui drops a field's focus on Escape before this frame runs, but the
-    // field still needs the Escape, to cancel what was typed.
-    if typing || blocked(ctx) {
+    if menu_or_dialog_open(ctx) {
         return Vec::new();
     }
+    // Egui drops a field's focus on Escape before this frame runs, but the
+    // field still needs the Escape, to cancel what was typed.
+    let typing = typing || ctx.text_edit_focused();
     // A widget with the focus keeps the keys that move the focus on.
     let focused = ctx.memory(|memory| memory.focused().is_some());
     ctx.input_mut(|input| {
         let mut actions: Vec<_> = SHORTCUTS
             .into_iter()
+            .filter(|(.., action)| !typing || matches!(action, Action::Save | Action::SaveAs))
             .filter(|&(modifiers, key, _)| !(focused && moves_focus(modifiers, key)))
             .flat_map(|(modifiers, key, action)| {
                 // Counted, as a slow frame can get several key repeats.
@@ -66,6 +69,9 @@ pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
                 std::iter::repeat_n(action, presses)
             })
             .collect();
+        if typing {
+            return actions;
+        }
         // egui-winit sends Ctrl+X, Ctrl+C and Ctrl+V as these, not as keys.
         input.events.retain(|event| {
             actions.push(match event {
@@ -82,7 +88,8 @@ pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
 
 /// Takes this frame's press of Alt+F, which opens the File menu.
 pub fn file_menu_pressed(ctx: &Context) -> bool {
-    !blocked(ctx) && ctx.input_mut(|input| input.consume_key(Modifiers::ALT, Key::F))
+    let blocked = menu_or_dialog_open(ctx) || ctx.text_edit_focused();
+    !blocked && ctx.input_mut(|input| input.consume_key(Modifiers::ALT, Key::F))
 }
 
 /// How `action`'s shortcut reads, e.g. "Ctrl+O", if it has one.
@@ -100,12 +107,9 @@ fn moves_focus(modifiers: Modifiers, key: Key) -> bool {
     arrow && modifiers.is_none()
 }
 
-/// An open menu or modal dialog keeps the keys, e.g. Escape to close it, and
-/// so does a text field being typed in.
-fn blocked(ctx: &Context) -> bool {
-    Popup::is_any_open(ctx)
-        || ctx.memory(|mem| mem.top_modal_layer()).is_some()
-        || ctx.text_edit_focused()
+/// An open menu or modal dialog keeps the keys, e.g. Escape to close it.
+fn menu_or_dialog_open(ctx: &Context) -> bool {
+    Popup::is_any_open(ctx) || ctx.memory(|mem| mem.top_modal_layer()).is_some()
 }
 
 #[cfg(test)]

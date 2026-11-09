@@ -99,6 +99,28 @@ fn a_field_typed_in_keeps_the_clipboard_events() {
 }
 
 #[test]
+fn a_field_typed_in_keeps_the_keys_but_save_and_save_as() {
+    let ctx = Context::default();
+    let events = vec![
+        key(CTRL, Key::S),
+        key(CTRL.plus(Modifiers::SHIFT), Key::S),
+        key(NONE, Key::B),
+        key(CTRL, Key::N),
+        Event::Copy,
+    ];
+    let (picked, left) = frame(&ctx, events, |ctx| {
+        (pressed(ctx, true), ctx.input(|i| i.events.len()))
+    });
+    assert_eq!(picked, [Action::SaveAs, Action::Save]);
+    assert_eq!(left, 3);
+
+    // Not while a menu has the keys.
+    frame(&ctx, vec![], |ctx| Popup::open_id(ctx, Id::unique("menu")));
+    let picked = frame(&ctx, vec![key(CTRL, Key::S)], |ctx| pressed(ctx, true));
+    assert!(picked.is_empty(), "{picked:?}");
+}
+
+#[test]
 fn other_keys_pick_nothing() {
     let ctx = Context::default();
     for (modifiers, k) in [(NONE, Key::O), (CTRL, Key::B), (Modifiers::ALT, Key::F)] {

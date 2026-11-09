@@ -352,10 +352,10 @@ impl DrwrApp {
         self.canvas.cancel_label_edit();
     }
 
-    /// Performs `action`, clicked in the menu or toolbar, unless it's Cut,
-    /// Copy or in the File menu. Those go on `waiting`, to wait for the side
-    /// panel and the canvas, which apply a label typed there when the click
-    /// takes away the focus.
+    /// Performs `action`, from a shortcut, the menu or the toolbar, unless
+    /// it's Cut, Copy or in the File menu. Those go on `waiting`, taking the
+    /// focus from any text field, so that the side panel and the canvas apply
+    /// what was typed there first.
     fn perform_or_wait(
         &mut self,
         action: Option<Action>,
@@ -372,7 +372,10 @@ impl DrwrApp {
                 | Action::Save
                 | Action::SaveAs
                 | Action::Quit),
-            ) => waiting.push(action),
+            ) => {
+                ctx.memory_mut(|memory| memory.stop_text_input());
+                waiting.push(action);
+            }
             Some(action) => self.perform(action, ctx, frame),
             None => {}
         }
@@ -551,16 +554,16 @@ impl eframe::App for DrwrApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let mut waiting = Vec::new();
         // Before the menu, so an Escape that closes it doesn't also select the
         // Cursor tool.
         for action in shortcuts::pressed(ui.ctx(), self.typing) {
-            self.perform(action, ui.ctx(), frame);
+            self.perform_or_wait(Some(action), &mut waiting, ui.ctx(), frame);
         }
         // Panels are laid out outside-in in the order they're added, so the
         // canvas (the central panel) must come last.
         let can_copy = self.selected.nodes().next().is_some();
         let file_dialog_open = self.file_dialog.is_open();
-        let mut waiting = Vec::new();
         let menu = menu::show(ui, file_dialog_open, can_copy);
         self.perform_or_wait(menu, &mut waiting, ui.ctx(), frame);
         let (tool, zoom) = (self.tool, self.canvas.zoom());
