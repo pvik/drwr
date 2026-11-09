@@ -19,6 +19,7 @@ struct Harness {
     tool: Tool,
     graphml: GraphMl,
     selected: Selection,
+    style: Style,
     /// What the canvas asked for, in order.
     actions: Vec<Action>,
     /// The mouse cursor the last frame asked for.
@@ -40,6 +41,7 @@ impl Harness {
             tool,
             graphml: GraphMl::default(),
             selected: Selection::default(),
+            style: Style::default(),
             actions: Vec::new(),
             cursor: CursorIcon::Default,
             repaint_delay: Duration::MAX,
@@ -61,9 +63,13 @@ impl Harness {
             ..RawInput::default()
         };
         let mut output = self.ctx.run_ui(input, |ui| {
-            let actions = self
-                .canvas
-                .show(ui, self.tool, &mut self.graphml, &mut self.selected);
+            let actions = self.canvas.show(
+                ui,
+                self.tool,
+                &mut self.graphml,
+                &mut self.selected,
+                &self.style,
+            );
             self.actions.extend(actions);
         });
         self.cursor = output.platform_output.cursor_icon;
@@ -163,7 +169,7 @@ impl Harness {
     /// one with id `target`, through `bends` in graph coordinates, returning
     /// its index.
     fn add_edge(&mut self, source: &str, target: &str, bends: &[Pos2]) -> usize {
-        let graphics = new_edge(Tool::Line.arrows().unwrap(), bends);
+        let graphics = new_edge(Tool::Line.arrows().unwrap(), bends, &Style::default());
         document::add_edge(&mut self.graphml, source, target, &graphics)
     }
 
@@ -440,6 +446,27 @@ fn the_box_shows_while_it_is_dragged_out() {
         [Rect::from_two_pos(from, to)]
     );
     assert_eq!(harness.boxes(), []);
+}
+
+#[test]
+fn the_box_shows_in_the_style_it_gets_while_it_is_dragged_out() {
+    let mut harness = Harness::new(Tool::Box);
+    // As set on a node.
+    let node = Selection::node("n0");
+    let red = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    harness
+        .style
+        .set_color(&node, document::ColorProperty::Fill, red);
+    harness.style.set_corner_radius(&node, 10.0);
+    let painted = harness.drag_and_hold(NODE.min.to_vec2(), NODE.max.to_vec2());
+
+    let stroke = Stroke::new(1.0, Color32::BLACK);
+    let points = line_type::rounded_rect_points(harness.node(), 10.0, stroke, 1.0);
+    let fill = PathShape::convex_polygon(points.clone(), Color32::RED, Stroke::NONE);
+    let border = PathShape::closed_line(points, stroke);
+    assert_eq!(paths(&painted), [&fill, &border]);
+    harness.frame(vec![button(harness.origin + NODE.max.to_vec2(), false)]);
+    assert_eq!(document::corner_radius(&harness.graphml, "n0"), Some(10.0));
 }
 
 #[test]

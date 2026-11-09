@@ -14,6 +14,7 @@ mod selection;
 mod shortcuts;
 mod side_panel;
 mod status_bar;
+mod style;
 #[cfg(test)]
 mod testing;
 mod text_dialog;
@@ -34,6 +35,7 @@ use graphml::GraphMl;
 use open_dialog::OpenDialog;
 use selection::Selection;
 use side_panel::SidePanel;
+use style::Style;
 use text_dialog::TextDialog;
 use tool::Tool;
 
@@ -83,6 +85,9 @@ struct DrwrApp {
     /// Where `graphml` is saved, as an absolute path; `None` if it isn't.
     file: Option<PathBuf>,
     selected: Selection,
+    /// What the user last set on nodes, lines and labels, for new ones. Kept
+    /// across files.
+    style: Style,
     canvas: Canvas,
     /// The fonts labels are drawn in, which egui is given too.
     fonts: Arc<Fonts>,
@@ -246,19 +251,23 @@ impl DrwrApp {
             }
             Action::SetColor(property, color) => {
                 self.edit_selected(|graphics| property.set(graphics, color));
+                self.style.set_color(&self.selected, property, color);
             }
             Action::SetLineWidth(width) => {
                 self.edit_selected(|graphics| graphics.stroke_mut().width = width);
+                self.style.set_line_width(&self.selected, width);
             }
             Action::SetLineType(line_type) => {
                 self.edit_selected(|graphics| {
                     graphics.stroke_mut().line_type = line_type.clone();
                 });
+                self.style.set_line_type(&self.selected, &line_type);
             }
             Action::SetCornerRadius(radius) => {
                 for id in self.selected.nodes() {
                     document::set_corner_radius(&mut self.graphml, id, radius);
                 }
+                self.style.set_corner_radius(&self.selected, radius);
             }
             Action::SetArrow(end, arrow) => {
                 for index in self.selected.edges() {
@@ -293,8 +302,11 @@ impl DrwrApp {
                     self.label_dialog.open(edit, "Label", text);
                 }
             }
-            Action::SetLabel(label, text) => document::set_label(&mut self.graphml, &label, &text),
+            Action::SetLabel(label, text) => {
+                document::set_label(&mut self.graphml, &label, &text, &self.style);
+            }
             Action::SetFont(label, part) => {
+                self.style.set_font(&part);
                 document::edit_label(&mut self.graphml, &label, |label| {
                     let font = &mut label.font;
                     match part {
@@ -342,9 +354,13 @@ impl eframe::App for DrwrApp {
         {
             self.perform(action, ui.ctx(), frame);
         }
-        let actions = self
-            .canvas
-            .show(ui, self.tool, &mut self.graphml, &mut self.selected);
+        let actions = self.canvas.show(
+            ui,
+            self.tool,
+            &mut self.graphml,
+            &mut self.selected,
+            &self.style,
+        );
         for action in actions.into_iter().chain(copies) {
             self.perform(action, ui.ctx(), frame);
         }

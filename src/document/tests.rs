@@ -191,7 +191,7 @@ fn label_text_reads_a_label_or_a_new_one() {
 #[test]
 fn set_label_changes_only_the_text() {
     let mut doc = GraphMl::parse(FIXTURE).unwrap();
-    set_label(&mut doc, &label("n2", 0), "Topic");
+    set_label(&mut doc, &label("n2", 0), "Topic", &Style::default());
 
     let text = doc.to_xml();
     let changed = changed_lines(&text);
@@ -204,7 +204,7 @@ fn set_label_changes_only_the_text() {
 #[test]
 fn set_label_to_the_same_text_changes_nothing() {
     let mut doc = GraphMl::parse(FIXTURE).unwrap();
-    set_label(&mut doc, &label("n2", 0), "Queue");
+    set_label(&mut doc, &label("n2", 0), "Queue", &Style::default());
     assert_eq!(doc.to_xml(), FIXTURE);
 }
 
@@ -212,10 +212,10 @@ fn set_label_to_the_same_text_changes_nothing() {
 fn set_label_adds_a_first_label() {
     let mut doc = yed::new_document();
     let id = add_node(&mut doc, &rectangle());
-    set_label(&mut doc, &label(&id, 0), "");
+    set_label(&mut doc, &label(&id, 0), "", &Style::default());
     assert_eq!(graphics_of(&doc, &id).unwrap().labels, []);
 
-    set_label(&mut doc, &label(&id, 0), "Hello\nworld");
+    set_label(&mut doc, &label(&id, 0), "Hello\nworld", &Style::default());
     let labels = graphics_of(&doc, &id).unwrap().labels;
     assert_eq!(labels.len(), 1);
     assert_eq!(labels[0].text, "Hello\nworld");
@@ -227,7 +227,7 @@ fn set_label_adds_a_first_label() {
 #[test]
 fn emptied_labels_are_kept() {
     let mut doc = GraphMl::parse(FIXTURE).unwrap();
-    set_label(&mut doc, &label("n2", 0), "");
+    set_label(&mut doc, &label("n2", 0), "", &Style::default());
     let labels = graphics_of(&doc, "n2").unwrap().labels;
     assert_eq!(labels.len(), 1);
     assert_eq!(labels[0].text, "");
@@ -237,7 +237,7 @@ fn emptied_labels_are_kept() {
 fn set_label_skips_labels_that_are_missing() {
     let mut doc = GraphMl::parse(FIXTURE).unwrap();
     for missing in [label("n2", 2), label("missing", 0)] {
-        set_label(&mut doc, &missing, "Topic");
+        set_label(&mut doc, &missing, "Topic", &Style::default());
     }
     assert_eq!(doc.to_xml(), FIXTURE);
 }
@@ -707,7 +707,7 @@ fn edges_have_labels_like_nodes() {
         index: 1,
     };
     assert_eq!(label_text(&doc, &label), Some(String::new()));
-    set_label(&mut doc, &label, "second");
+    set_label(&mut doc, &label, "second", &Style::default());
     let labels = edge_graphics_of(&doc, 0).unwrap().labels;
     assert_eq!(labels[1].text, "second");
     // In yEd's Smart model for edge labels.

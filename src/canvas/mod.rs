@@ -23,6 +23,7 @@ use crate::document::{self, EdgeEnd, Item, LabelRef};
 use crate::fonts;
 use crate::line_type;
 use crate::selection::Selection;
+use crate::style::Style;
 use crate::text_field::{self, End};
 use crate::tool::{NodeShape, Tool};
 use crate::zoom;
@@ -265,14 +266,15 @@ struct LabelEditor {
 }
 
 impl Canvas {
-    /// Shows the canvas in the space left over by the other panels. Returns
-    /// the actions asked for.
+    /// Shows the canvas in the space left over by the other panels, drawing
+    /// new nodes, edges and labels in `style`. Returns the actions asked for.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         tool: Tool,
         graphml: &mut GraphMl,
         selected: &mut Selection,
+        style: &Style,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
@@ -331,10 +333,10 @@ impl Canvas {
                     None
                 }
                 _ if tool.arrows().is_some() => {
-                    drawn_edge = self.draw_edge(&response, shown, graphml, selected, tool);
+                    drawn_edge = self.draw_edge(&response, shown, graphml, selected, tool, style);
                     None
                 }
-                _ => self.draw_node(response.clone(), to_screen, graphml, selected, tool),
+                _ => self.draw_node(response.clone(), to_screen, graphml, selected, tool, style),
             };
             let (mut resized, mut dragged_edge, mut moved, mut boxed) = (None, None, None, None);
             if tool == Tool::Cursor {
@@ -444,8 +446,8 @@ impl Canvas {
                 painter.rect_stroke(rect, 0.0, SELECTION, StrokeKind::Outside);
             }
             if let Some(graphics) = drawing {
-                // New boxes have square corners.
-                paint(&painter, to_screen, text_zoom, &graphics, None, None);
+                let radius = style.corner_radius();
+                paint(&painter, to_screen, text_zoom, &graphics, radius, None);
             }
             // Over the nodes, so one on top can't hide them.
             for outline in outlines {
@@ -467,7 +469,7 @@ impl Canvas {
 
             // Over the nodes. An edit it applies goes first, in case the
             // double click is on the same label.
-            actions.extend(self.show_editor(ui, shown));
+            actions.extend(self.show_editor(ui, shown, style));
             if double_clicked {
                 actions.push(Action::EditLabel);
             }
@@ -571,9 +573,9 @@ impl Canvas {
         self.editor = None;
     }
 
-    /// Shows the label being edited, if there is one. Returns the edit once
-    /// Enter or a click elsewhere applies it.
-    fn show_editor(&mut self, ui: &mut egui::Ui, shown: Shown) -> Option<Action> {
+    /// Shows the label being edited, if there is one, a new one in `style`'s
+    /// font. Returns the edit once Enter or a click elsewhere applies it.
+    fn show_editor(&mut self, ui: &mut egui::Ui, shown: Shown, style: &Style) -> Option<Action> {
         let item = self.editor.as_ref()?.label.item.clone();
         let to_screen = shown.to_screen;
         let scene = shown.scene;
@@ -596,10 +598,7 @@ impl Canvas {
         };
         let editor = self.editor.as_mut()?;
         let label = labels.get(editor.label.index).cloned();
-        let label = label.unwrap_or_else(|| match editor.label.item {
-            Item::Node(_) => Label::new(""),
-            Item::Edge(_) => Label::new_on_edge(""),
-        });
+        let label = label.unwrap_or_else(|| document::new_label(&editor.label.item, "", style));
         let font = label_font(&label, to_screen.scaling, ui.pixels_per_point());
         let align = Align2([halign(&label.alignment), Align::Center]);
         let text = ui
@@ -646,9 +645,9 @@ impl Canvas {
         Some(Action::SetLabel(editor.label, editor.text))
     }
 
-    /// Drags out a node with the primary button, if `tool` draws nodes,
-    /// adding it to `graphml` and selecting it on release. Returns the node
-    /// while it's being drawn.
+    /// Drags out a node in `style` with the primary button, if `tool` draws
+    /// nodes, adding it to `graphml` and selecting it on release. Returns the
+    /// node while it's being drawn.
     fn draw_node(
         &mut self,
         response: Response,
@@ -656,6 +655,7 @@ impl Canvas {
         graphml: &mut GraphMl,
         selected: &mut Selection,
         tool: Tool,
+        style: &Style,
     ) -> Option<NodeGraphics> {
         let shape = tool.node_shape()?;
         let response = response.on_hover_cursor(CursorIcon::Crosshair);
@@ -665,7 +665,7 @@ impl Canvas {
         let max_click_dist = response.ctx.options(|o| o.input_options.max_click_dist);
         let node = |(drag, end): (ShapeDrag, Pos2)| {
             let distance = drag.from.distance(end) * to_screen.scaling;
-            (distance > max_click_dist).then(|| new_node(&shape, drag.from, end))
+            (distance > max_click_dist).then(|| new_node(&shape, drag.from, end, style))
         };
         if response.drag_started_by(PointerButton::Primary) {
             let from = response.ctx.input(|i| i.pointer.press_origin());
@@ -686,15 +686,20 @@ impl Canvas {
             && graphics.geometry.width > 0.0
             && graphics.geometry.height > 0.0
         {
-            *selected = Selection::node(document::add_node(graphml, &graphics));
+            let id = document::add_node(graphml, &graphics);
+            // Boxes only: it leaves other shapes as they are.
+            if let Some(radius) = style.corner_radius() {
+                document::set_corner_radius(graphml, &id, radius);
+            }
+            *selected = Selection::node(id);
         }
         None
     }
 
-    /// Draws an edge with the primary button, if `tool` draws edges: from a
-    /// node, through bends where it's let go elsewhere, to the node it's let
-    /// go on, by a drag or by clicks. Adds it to `graphml` and selects it once
-    /// it ends on a node. Returns it while it's being drawn.
+    /// Draws an edge in `style` with the primary button, if `tool` draws
+    /// edges: from a node, through bends where it's let go elsewhere, to the
+    /// node it's let go on, by a drag or by clicks. Adds it to `graphml` and
+    /// selects it once it ends on a node. Returns it while it's being drawn.
     fn draw_edge(
         &mut self,
         response: &Response,
@@ -702,6 +707,7 @@ impl Canvas {
         graphml: &mut GraphMl,
         selected: &mut Selection,
         tool: Tool,
+        style: &Style,
     ) -> Option<EdgeLook<'static>> {
         let arrows = tool.arrows()?;
         let response = response.clone().on_hover_cursor(CursorIcon::Crosshair);
@@ -735,7 +741,7 @@ impl Canvas {
                         Some(node)
                             if scene.nodes[node].id == draw.source && draw.bends.is_empty() => {}
                         Some(node) => {
-                            let graphics = new_edge(arrows, &draw.bends);
+                            let graphics = new_edge(arrows, &draw.bends, style);
                             let target = &scene.nodes[node].id;
                             let index =
                                 document::add_edge(graphml, &draw.source, target, &graphics);
@@ -763,7 +769,7 @@ impl Canvas {
             _ => Anchor::Point(graph_point(shown.to_screen, pointer)),
         };
         Some(EdgeLook {
-            graphics: Cow::Owned(new_edge(arrows, &draw.bends)),
+            graphics: Cow::Owned(new_edge(arrows, &draw.bends, style)),
             source: Anchor::Node(source),
             target,
         })
@@ -1263,9 +1269,8 @@ fn commit_edge(
     }
 }
 
-/// A new edge with yEd's default look, with `arrows` and `bends` in graph
-/// coordinates.
-fn new_edge(arrows: Arrows, bends: &[Pos2]) -> EdgeGraphics {
+/// A new edge in `style`, with `arrows` and `bends` in graph coordinates.
+fn new_edge(arrows: Arrows, bends: &[Pos2], style: &Style) -> EdgeGraphics {
     let mut graphics = EdgeGraphics::new(EdgeKind::PolyLine);
     graphics.arrows = arrows;
     let bends = bends.iter().map(|bend| yed::Point {
@@ -1273,6 +1278,7 @@ fn new_edge(arrows: Arrows, bends: &[Pos2]) -> EdgeGraphics {
         y: bend.y.into(),
     });
     graphics.path.points = bends.collect();
+    style.apply_to_edge(&mut graphics);
     graphics
 }
 
@@ -1580,16 +1586,18 @@ fn graph_point(to_screen: TSTransform, pos: Pos2) -> Pos2 {
     (to_screen.inverse() * pos).round()
 }
 
-/// A new node of `shape`, dragged out between two corners in graph
+/// A new node of `shape` in `style`, dragged out between two corners in graph
 /// coordinates.
-fn new_node(shape: &NodeShape, corner: Pos2, opposite: Pos2) -> NodeGraphics {
+fn new_node(shape: &NodeShape, corner: Pos2, opposite: Pos2, style: &Style) -> NodeGraphics {
     let mut size = opposite - corner;
     if shape.square {
         // The longer side of the drag, so the node keeps up with the pointer.
         let side = size.abs().max_elem();
         size = vec2(side.copysign(size.x), side.copysign(size.y));
     }
-    new_shape(shape.shape.clone(), corner, corner + size)
+    let mut graphics = new_shape(shape.shape.clone(), corner, corner + size);
+    style.apply_to_node(&mut graphics);
+    graphics
 }
 
 /// A `shape` with yEd's default look but filled with [`NEW_NODE_FILL`],

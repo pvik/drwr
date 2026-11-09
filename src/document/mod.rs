@@ -7,6 +7,8 @@ use graphml::yed::{
 };
 use graphml::{AttrType, Data, Edge, Graph, GraphMl, Key, KeyDomain, Node};
 
+use crate::style::Style;
+
 mod clipboard;
 
 pub use clipboard::{copy, paste};
@@ -362,16 +364,24 @@ pub fn label_text(doc: &GraphMl, label: &LabelRef) -> Option<String> {
     labels.get(label.index).map(|label| label.text.clone())
 }
 
-/// Sets a label's text. A new label is added with yEd's defaults, unless the
-/// text is empty.
-pub fn set_label(doc: &mut GraphMl, label: &LabelRef, text: &str) {
-    if label_text(doc, label).is_none_or(|old| old == text) {
-        return;
-    }
-    let new = match label.item {
+/// A new label of `item` with yEd's defaults, but in the font and text color
+/// last set in `style`.
+pub fn new_label(item: &Item, text: &str, style: &Style) -> Label {
+    let mut label = match item {
         Item::Node(_) => Label::new(text),
         Item::Edge(_) => Label::new_on_edge(text),
     };
+    style.apply_to_label(&mut label);
+    label
+}
+
+/// Sets a label's text. A new label is added as [`new_label`] makes it,
+/// unless the text is empty.
+pub fn set_label(doc: &mut GraphMl, label: &LabelRef, text: &str, style: &Style) {
+    if label_text(doc, label).is_none_or(|old| old == text) {
+        return;
+    }
+    let new = new_label(&label.item, text, style);
     edit(doc, &label.item, |graphics| {
         let labels = graphics.labels_mut();
         match labels.get_mut(label.index) {
