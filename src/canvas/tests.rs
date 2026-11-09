@@ -9,8 +9,8 @@ use super::*;
 use crate::fonts::Fonts;
 use crate::testing::{self, CTRL, button, middle_button};
 
-/// yEd's default node fill, which new boxes get.
-const BOX_FILL: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
+/// The light blue new boxes get.
+const BOX_FILL: Color32 = Color32::from_rgb(0xAD, 0xD8, 0xE6);
 
 /// Drives a canvas filling an 800×600 window, one frame at a time.
 struct Harness {

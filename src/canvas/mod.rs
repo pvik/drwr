@@ -29,6 +29,8 @@ use crate::zoom;
 
 /// White like paper, even in the dark theme.
 const BACKGROUND: Color32 = Color32::WHITE;
+/// New nodes' fill, CSS's `lightblue`.
+const NEW_NODE_FILL: yed::Color = yed::Color::rgb(0xAD, 0xD8, 0xE6);
 
 const SELECTION: Stroke = Stroke {
     width: 2.0,
@@ -1578,8 +1580,8 @@ fn graph_point(to_screen: TSTransform, pos: Pos2) -> Pos2 {
     (to_screen.inverse() * pos).round()
 }
 
-/// A node of `shape` with yEd's default look, dragged out between two
-/// corners in graph coordinates.
+/// A new node of `shape`, dragged out between two corners in graph
+/// coordinates.
 fn new_node(shape: &NodeShape, corner: Pos2, opposite: Pos2) -> NodeGraphics {
     let mut size = opposite - corner;
     if shape.square {
@@ -1590,11 +1592,12 @@ fn new_node(shape: &NodeShape, corner: Pos2, opposite: Pos2) -> NodeGraphics {
     new_shape(shape.shape.clone(), corner, corner + size)
 }
 
-/// A `shape` with yEd's default look, spanning two corners in graph
-/// coordinates.
+/// A `shape` with yEd's default look but filled with [`NEW_NODE_FILL`],
+/// spanning two corners in graph coordinates.
 fn new_shape(shape: ShapeType, corner: Pos2, opposite: Pos2) -> NodeGraphics {
     let mut graphics = NodeGraphics::new(NodeKind::Shape(shape));
     graphics.geometry = yed_rect(Rect::from_two_pos(corner, opposite));
+    graphics.fill.color = Some(NEW_NODE_FILL);
     graphics
 }
 
