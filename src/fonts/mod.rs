@@ -1,13 +1,14 @@
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 
-use egui::epaint::text::VariationCoords;
+use egui::epaint::text::{Blob, VariationCoords};
 use egui::{FontData, FontDefinitions, FontFamily, FontInsert, FontProvider, FontTweak};
 use fontique::{
     Collection, CollectionOptions, FamilyInfo, FontStyle, FontWeight, FontWidth, GenericFamily,
     SourceCache,
 };
 use graphml::yed;
+use skrifa::{MetadataProvider as _, Tag};
 
 /// The styles the side panel offers, in its order.
 pub const STYLES: [yed::FontStyle; 4] = [
@@ -29,6 +30,15 @@ const LOGICAL: [(&str, GenericFamily); 5] = [
 
 /// Starts the names of the egui families that labels are drawn in.
 const PREFIX: &str = "label:";
+
+/// Searched in order for a glyph a label's font lacks.
+const FALLBACK: [GenericFamily; 5] = [
+    GenericFamily::SansSerif,
+    GenericFamily::Serif,
+    GenericFamily::Monospace,
+    GenericFamily::Emoji,
+    GenericFamily::Math,
+];
 
 /// How a style reads in the side panel. Unknown ones read as written.
 pub fn style_name(style: &yed::FontStyle) -> &str {
@@ -54,13 +64,50 @@ pub fn family(family: &str, style: &yed::FontStyle) -> FontFamily {
 /// The yEd family and the style of an egui family from [`family`].
 fn parse(name: &str) -> Option<(&str, FontStyle, FontWeight)> {
     let (style, family) = name.strip_prefix(PREFIX)?.split_once(':')?;
-    let (style, weight) = match yed::FontStyle::from(style) {
+    let (style, weight) = style_and_weight(&yed::FontStyle::from(style));
+    Some((family, style, weight))
+}
+
+/// What fontique calls a yEd style.
+fn style_and_weight(style: &yed::FontStyle) -> (FontStyle, FontWeight) {
+    match style {
         yed::FontStyle::Bold => (FontStyle::Normal, FontWeight::BOLD),
         yed::FontStyle::Italic => (FontStyle::Italic, FontWeight::NORMAL),
         yed::FontStyle::BoldItalic => (FontStyle::Italic, FontWeight::BOLD),
         _ => (FontStyle::Normal, FontWeight::NORMAL),
-    };
-    Some((family, style, weight))
+    }
+}
+
+/// A face of a font file that label text is drawn in.
+#[derive(Clone)]
+pub struct Face {
+    /// The name of its family, e.g. "Noto Sans".
+    pub family: String,
+    pub data: Blob,
+    pub index: u32,
+    /// The axis values that give a variable font its style.
+    pub variations: Vec<(Tag, f32)>,
+}
+
+impl Face {
+    /// The face as egui is given it, under `name`.
+    fn insert(self, name: String) -> FontInsert {
+        let tweak = FontTweak {
+            coords: VariationCoords::new(self.variations.iter().copied()),
+            ..FontTweak::default()
+        };
+        FontInsert {
+            name,
+            data: FontData::from_blob(self.data, self.index).tweak(tweak),
+            families: Vec::new(),
+        }
+    }
+
+    /// Whether it has a glyph for `c`.
+    pub fn has(&self, c: char) -> bool {
+        let font = skrifa::FontRef::from_index((*self.data).as_ref(), self.index);
+        font.is_ok_and(|font| font.charmap().map(c).is_some())
+    }
 }
 
 /// The fonts labels are drawn in, found by the family names yEd writes: the
@@ -133,18 +180,51 @@ impl FontProvider for Fonts {
         let Some((family, style, weight)) = parse(name) else {
             return Vec::new();
         };
-        let logical = logical(family);
-        let generic = logical.unwrap_or_else(|| guess_generic(family));
-        let mut library = self.library();
-        let installed = match logical {
-            Some(_) => None,
-            None => library.collection.family_by_name(family),
-        };
-        let found = installed.or_else(|| library.generic(generic));
-        match found.and_then(|found| library.load(&found, style, weight)) {
-            Some(font) => vec![font],
-            None => builtin(generic),
+        match self.library().find(family, style, weight) {
+            Ok((face, name)) => vec![face.insert(name)],
+            Err(generic) => builtin(generic),
         }
+    }
+}
+
+impl Fonts {
+    /// The face that text in the yEd font `family` and `style` is drawn in.
+    pub fn face(&self, family: &str, style: &yed::FontStyle) -> Face {
+        let (style, weight) = style_and_weight(style);
+        match self.library().find(family, style, weight) {
+            Ok((face, _)) => face,
+            Err(generic) => (builtin(generic).into_iter())
+                .find_map(|font| builtin_face(font.data))
+                .expect("egui has fonts"),
+        }
+    }
+
+    /// A face, of the system's or egui's own, with a glyph for `c` that
+    /// `usable` accepts, for text in `style` whose font lacks it.
+    pub fn fallback(
+        &self,
+        c: char,
+        style: &yed::FontStyle,
+        mut usable: impl FnMut(&Face) -> bool,
+    ) -> Option<Face> {
+        let (style, weight) = style_and_weight(style);
+        let mut library = self.library();
+        let families: Vec<_> = (FALLBACK.iter())
+            .flat_map(|&generic| {
+                library
+                    .collection
+                    .generic_families(generic)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let system = families.into_iter().filter_map(|id| {
+            let family = library.collection.family(id)?;
+            Some(library.load(&family, style, weight)?.0)
+        });
+        let builtin = FontDefinitions::default().font_data.into_values();
+        let builtin = builtin.filter_map(|data| builtin_face(data.as_ref().clone()));
+        let mut faces = system.chain(builtin);
+        faces.find(|face| face.has(c) && usable(face))
     }
 }
 
@@ -176,21 +256,43 @@ impl Library {
         ids.into_iter().find_map(|id| self.collection.family(id))
     }
 
-    /// The font of `family` closest to a style and weight.
+    /// The face of the yEd font `family` closest to a style and weight, and
+    /// the name egui knows it by. Or else the generic family to draw `family`
+    /// in, of which the system has no font.
+    fn find(
+        &mut self,
+        family: &str,
+        style: FontStyle,
+        weight: FontWeight,
+    ) -> Result<(Face, String), GenericFamily> {
+        let logical = logical(family);
+        let generic = logical.unwrap_or_else(|| guess_generic(family));
+        let installed = match logical {
+            Some(_) => None,
+            None => self.collection.family_by_name(family),
+        };
+        let found = installed.or_else(|| self.generic(generic));
+        found
+            .and_then(|found| self.load(&found, style, weight))
+            .ok_or(generic)
+    }
+
+    /// The face of `family` closest to a style and weight, and the name egui
+    /// knows it by.
     fn load(
         &mut self,
         family: &FamilyInfo,
         style: FontStyle,
         weight: FontWeight,
-    ) -> Option<FontInsert> {
+    ) -> Option<(Face, String)> {
         let font = family.match_font(FontWidth::NORMAL, style, weight, false)?;
         let blob = font.load(Some(&mut self.sources))?;
         // Sets a variable font's weight. epaint can't fake a missing bold or
         // italic.
         let synthesis = font.synthesis(FontWidth::NORMAL, style, weight);
-        let settings = synthesis.variation_settings();
+        let variations = synthesis.variation_settings().to_vec();
         // egui keeps one face per name.
-        let coords: String = settings
+        let coords: String = variations
             .iter()
             .map(|(tag, value)| format!(":{tag}={value}"))
             .collect();
@@ -199,16 +301,28 @@ impl Library {
             font.source().id().to_u64(),
             font.index()
         );
-        let tweak = FontTweak {
-            coords: VariationCoords::new(settings.iter().copied()),
-            ..FontTweak::default()
+        let (data, _) = blob.into_raw_parts();
+        let face = Face {
+            family: family.name().to_owned(),
+            data,
+            index: font.index(),
+            variations,
         };
-        let (blob, _) = blob.into_raw_parts();
-        Some(FontInsert {
-            name,
-            data: FontData::from_blob(blob, font.index()).tweak(tweak),
-            families: Vec::new(),
-        })
+        Some((face, name))
+    }
+}
+
+/// Whether `family` is one of Java's logical fonts, which aren't installed.
+pub fn is_logical(family: &str) -> bool {
+    logical(family).is_some()
+}
+
+/// The CSS generic family that stands in for the yEd font `family`.
+pub fn css_generic(family: &str) -> &'static str {
+    match logical(family).unwrap_or_else(|| guess_generic(family)) {
+        GenericFamily::Monospace => "monospace",
+        GenericFamily::Serif => "serif",
+        _ => "sans-serif",
     }
 }
 
@@ -240,6 +354,22 @@ fn builtin(generic: GenericFamily) -> Vec<FontInsert> {
         _ => FontFamily::Proportional,
     };
     FontDefinitions::default().fonts_for_family(&family)
+}
+
+/// One of egui's own fonts as a face.
+fn builtin_face(font: FontData) -> Option<Face> {
+    let FontData {
+        font: data, index, ..
+    } = font;
+    let face = skrifa::FontRef::from_index((*data).as_ref(), index).ok()?;
+    let names = face.localized_strings(skrifa::string::StringId::FAMILY_NAME);
+    let family = names.english_or_first()?.to_string();
+    Some(Face {
+        family,
+        data,
+        index,
+        variations: Vec::new(),
+    })
 }
 
 fn without_system_fonts() -> Collection {

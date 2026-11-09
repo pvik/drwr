@@ -20,7 +20,10 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled) -> Option<Action> {
                     ],
                 );
                 ui.separator();
-                clicked = file.or(items(ui, [("Quit", Action::Quit, true)]));
+                let export = items(ui, [("Export…", Action::Export, enabled.file)]);
+                ui.separator();
+                let quit = items(ui, [("Quit", Action::Quit, true)]);
+                clicked = file.or(export).or(quit);
             });
             if shortcuts::file_menu_pressed(ui.ctx()) {
                 Popup::open_id(ui.ctx(), Popup::default_response_id(&file.response));

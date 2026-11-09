@@ -8,6 +8,7 @@ use crate::zoom;
 const NEW_ICON: ImageSource<'static> = include_image!("../assets/icons/new.svg");
 const OPEN_ICON: ImageSource<'static> = include_image!("../assets/icons/open.svg");
 const SAVE_ICON: ImageSource<'static> = include_image!("../assets/icons/save.svg");
+const EXPORT_ICON: ImageSource<'static> = include_image!("../assets/icons/export.svg");
 const CUT_ICON: ImageSource<'static> = include_image!("../assets/icons/cut.svg");
 const COPY_ICON: ImageSource<'static> = include_image!("../assets/icons/copy.svg");
 const PASTE_ICON: ImageSource<'static> = include_image!("../assets/icons/paste.svg");
@@ -36,10 +37,10 @@ const BUTTON_PADDING: Vec2 = Vec2::splat(4.0);
 /// Wide enough for "400%", so the zoom dropdown keeps its width.
 const ZOOM_BOX_WIDTH: f32 = 64.0;
 
-/// Shows the New, Open and Save buttons, the Cut, Copy and Paste buttons, the
-/// Undo and Redo buttons, each as `enabled` says, a button per tool with the
-/// `selected` one highlighted, then the zoom buttons and a dropdown showing
-/// `zoom`. Returns the action clicked.
+/// Shows the New, Open, Save and Export buttons, the Cut, Copy and Paste
+/// buttons, the Undo and Redo buttons, each as `enabled` says, a button per
+/// tool with the `selected` one highlighted, then the zoom buttons and a
+/// dropdown showing `zoom`. Returns the action clicked.
 pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> Option<Action> {
     let toolbar = egui::Panel::top("toolbar").show(ui, |ui| {
         button_row(ui, |ui| {
@@ -52,6 +53,7 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> O
                     (Action::New, "New", NEW_ICON, enabled.file),
                     (Action::Open, "Open", OPEN_ICON, enabled.file),
                     (Action::Save, "Save", SAVE_ICON, enabled.file),
+                    (Action::Export, "Export", EXPORT_ICON, enabled.file),
                 ],
             );
 

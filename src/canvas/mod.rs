@@ -1,3 +1,4 @@
+mod drawing;
 mod edge;
 mod paint;
 mod shown;
@@ -25,7 +26,9 @@ use crate::text_field::{self, End};
 use crate::tool::{NodeShape, Tool};
 use crate::zoom;
 
+pub use drawing::{Drawing, Mark, Pen, Text};
 use paint::{halign, label_font, label_rect};
+pub use shown::Outline;
 use shown::{Anchor, EdgeLook, Shown, egui_pos, yed_point, yed_rect};
 
 /// White like paper, even in the dark theme.

@@ -218,8 +218,9 @@ pub fn paint_hline(painter: &Painter, x: Rangef, y: f32, stroke: Stroke, line_ty
 }
 
 /// The lengths of a line type's dashes and the gaps after them, in line
-/// widths. `None` for solid lines, which unknown types are drawn as.
-fn pattern(line_type: &LineType) -> Option<&'static [[f32; 2]]> {
+/// widths, or points for lines thinner than that. `None` for solid lines,
+/// which unknown types are drawn as.
+pub fn pattern(line_type: &LineType) -> Option<&'static [[f32; 2]]> {
     match line_type {
         LineType::Line | LineType::Other(_) => None,
         LineType::Dashed => Some(&[[4.0, 2.0]]),

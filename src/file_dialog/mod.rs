@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-/// A native dialog asking for a GraphML file to open, or where to save one,
-/// for a target of type `T`, which tells the caller what the file is for. It
-/// runs on its own thread, because a Wayland compositor may disconnect an app
-/// whose UI thread stops reading events.
+use crate::export::Format;
+
+/// A native dialog asking for a GraphML file to open, or where to save one or
+/// export to, for a target of type `T`, which tells the caller what the file
+/// is for. It runs on its own thread, because a Wayland compositor may
+/// disconnect an app whose UI thread stops reading events.
 pub struct FileDialog<T> {
     asked: Option<Asked<T>>,
 }
@@ -15,6 +17,13 @@ pub enum Request {
     Open,
     /// Where to save, suggesting the file name `name` in `folder`.
     Save {
+        name: String,
+        folder: Option<PathBuf>,
+    },
+    /// Where to export to as `format`, suggesting the file name `name` in
+    /// `folder`.
+    Export {
+        format: Format,
         name: String,
         folder: Option<PathBuf>,
     },
@@ -41,8 +50,8 @@ impl<T> FileDialog<T> {
         self.asked.is_some()
     }
 
-    /// Opens the dialog over `parent`, showing only GraphML files, unless it's
-    /// open already.
+    /// Opens the dialog over `parent`, showing only the files of the format
+    /// asked for, unless it's open already.
     pub fn open(
         &mut self,
         target: T,
@@ -105,20 +114,31 @@ fn show(
     ctx: &egui::Context,
     parent: &eframe::Frame,
 ) {
-    let dialog = rfd::FileDialog::new()
-        .add_filter("GraphML", &["graphml"])
-        .set_parent(parent);
-    let dialog = match request {
-        Request::Open => dialog.set_title("Open"),
-        Request::Save { name, folder } => {
-            let dialog = dialog.set_title("Save As").set_file_name(name);
-            match folder {
-                Some(folder) => dialog.set_directory(folder),
-                None => dialog,
-            }
-        }
+    let (title, filter, extension, saved) = match request {
+        Request::Open => ("Open", "GraphML", "graphml", None),
+        Request::Save { name, folder } => ("Save As", "GraphML", "graphml", Some((name, folder))),
+        Request::Export {
+            format,
+            name,
+            folder,
+        } => (
+            "Export",
+            format.name(),
+            format.extension(),
+            Some((name, folder)),
+        ),
     };
-    let save = matches!(request, Request::Save { .. });
+    let mut dialog = rfd::FileDialog::new()
+        .set_title(title)
+        .add_filter(filter, &[extension])
+        .set_parent(parent);
+    if let Some((name, folder)) = saved {
+        dialog = dialog.set_file_name(name);
+        if let Some(folder) = folder {
+            dialog = dialog.set_directory(folder);
+        }
+    }
+    let save = saved.is_some();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         let picked = if save {

@@ -6,4 +6,4 @@ A simple GraphML based diagraming tool
 
 - Lightweight 
 - Good keyboard support
-- Export to PNG
+- Export to PNG and SVG

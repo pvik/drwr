@@ -787,7 +787,10 @@ dependencies = [
  "egui_extras",
  "fontique",
  "graphml",
+ "harfrust",
+ "resvg",
  "rfd",
+ "skrifa",
 ]
 
 [[package]]

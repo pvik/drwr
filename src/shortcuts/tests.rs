@@ -26,6 +26,7 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::O, Action::Open),
         (CTRL, Key::S, Action::Save),
         (CTRL.plus(Modifiers::SHIFT), Key::S, Action::SaveAs),
+        (CTRL, Key::E, Action::Export),
         (CTRL, Key::Q, Action::Quit),
         (CTRL, Key::X, Action::Cut),
         (CTRL, Key::C, Action::Copy),

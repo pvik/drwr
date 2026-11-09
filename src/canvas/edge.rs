@@ -83,24 +83,35 @@ pub fn paint(
         return;
     }
     snap(&mut path, stroke, painter.pixels_per_point());
+    let (line, heads) = with_arrows(path, stroke.width, arrows);
+    if line.len() >= 2 {
+        line_type::paint_polyline(painter, &line, stroke, line_type);
+    }
+    for head in heads {
+        painter.add(PathShape::convex_polygon(head, stroke.color, Stroke::NONE));
+    }
+}
+
+/// `path`, a line `width` wide, cut back to the notches of the arrowheads
+/// `arrows` puts on its ends, and the outlines of those, the target's first.
+pub fn with_arrows(
+    mut path: Vec<Pos2>,
+    width: f32,
+    arrows: &Arrows,
+) -> (Vec<Pos2>, Vec<Vec<Pos2>>) {
     // Both are placed before the line is cut back to their notches, which can
     // leave nothing of a short line.
-    let target = arrowhead(&path, &arrows.target, stroke.width);
+    let target = arrowhead(&path, &arrows.target, width);
     path.reverse();
-    let source = arrowhead(&path, &arrows.source, stroke.width);
+    let source = arrowhead(&path, &arrows.source, width);
     if source.is_some() {
-        cut_end(&mut path, ARROW_NOTCH * stroke.width);
+        cut_end(&mut path, ARROW_NOTCH * width);
     }
     path.reverse();
     if target.is_some() {
-        cut_end(&mut path, ARROW_NOTCH * stroke.width);
+        cut_end(&mut path, ARROW_NOTCH * width);
     }
-    if path.len() >= 2 {
-        line_type::paint_polyline(painter, &path, stroke, line_type);
-    }
-    for head in [target, source].into_iter().flatten() {
-        painter.add(PathShape::convex_polygon(head, stroke.color, Stroke::NONE));
-    }
+    (path, [target, source].into_iter().flatten().collect())
 }
 
 /// The outline of `arrow` at the end of `path`, a line `width` wide, from

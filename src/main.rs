@@ -6,6 +6,8 @@ mod color_picker;
 mod dialog;
 mod document;
 mod error_dialog;
+mod export;
+mod export_dialog;
 mod file_dialog;
 mod font_picker;
 mod fonts;
@@ -31,13 +33,16 @@ mod unsaved_dialog;
 mod zoom;
 
 use std::borrow::Cow;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use action::{Action, Enabled, FontPart};
-use canvas::Canvas;
+use canvas::{Canvas, Drawing};
 use color_picker::ColorPicker;
 use document::{ColorProperty, Graphics, Item, LabelRef};
+use export_dialog::{Accepted, ExportDialog};
 use file_dialog::{FileDialog, Request};
 use fonts::Fonts;
 use graphml::{GraphMl, yed};
@@ -111,6 +116,8 @@ struct DrwrApp {
     /// What the user last set on nodes, lines and labels, for new ones. Kept
     /// across files.
     style: Style,
+    /// How the drawing was last exported. Kept across files.
+    export_settings: export::Settings,
     canvas: Canvas,
     /// The fonts labels are drawn in, which egui is given too.
     fonts: Arc<Fonts>,
@@ -119,6 +126,9 @@ struct DrwrApp {
     /// Picks the colors of the selected nodes and edges.
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelEdit>,
+    export_dialog: ExportDialog,
+    /// The exports writing their files in the background.
+    exports: Vec<Writing>,
     /// The question waiting for an answer.
     prompt: Option<Prompt>,
     /// Whether the window was asked to close, which the end of the frame
@@ -145,6 +155,20 @@ enum FilePurpose {
     Open,
     /// Saving the graph, then closing it for this, if anything.
     Save(Option<CloseFor>),
+    Export(Arc<ExportJob>),
+}
+
+/// A drawing to export, as it was when the export dialog was accepted.
+struct ExportJob {
+    drawing: Drawing,
+    settings: export::Settings,
+}
+
+/// An export writing the file at `path` on its own thread, which returns why
+/// it couldn't.
+struct Writing {
+    path: PathBuf,
+    thread: JoinHandle<Result<(), String>>,
 }
 
 /// What closes the graph, once its changes are saved or dropped.
@@ -163,6 +187,8 @@ enum Prompt {
     /// Whether to save over the file at this path, then close the graph for
     /// this, if anything.
     Replace(PathBuf, Option<CloseFor>),
+    /// Whether to export over the file at this path.
+    ReplaceExport(PathBuf, Arc<ExportJob>),
 }
 
 impl DrwrApp {
@@ -209,6 +235,7 @@ impl DrwrApp {
         self.side_panel = SidePanel::default();
         self.color_picker.close();
         self.label_dialog.close();
+        self.export_dialog.close();
     }
 
     /// Updates whether the graph is modified, returning whether it is.
@@ -368,6 +395,96 @@ impl DrwrApp {
         }
     }
 
+    /// Opens the export dialog on what the canvas draws, and on what of that
+    /// is selected.
+    fn open_export_dialog(&mut self, ctx: &egui::Context) {
+        let scene = self.doc.scene();
+        let everything = Drawing::of(ctx, scene, None).bounds;
+        let selected = (!self.selected.is_empty())
+            .then(|| Drawing::of(ctx, scene, Some(&self.selected)).bounds);
+        (self.export_dialog).open(self.export_settings.clone(), everything, selected);
+    }
+
+    /// Asks where to export the drawing as the export dialog was `accepted`,
+    /// suggesting the graph's name and folder, then exports it there.
+    fn ask_where_to_export(
+        &mut self,
+        accepted: Accepted,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
+        let Accepted {
+            settings,
+            selected_only,
+        } = accepted;
+        self.export_settings = settings.clone();
+        let only = selected_only.then_some(&self.selected);
+        let drawing = Drawing::of(ctx, self.doc.scene(), only);
+        let format = settings.format;
+        let file = self.file.as_deref();
+        let stem = file.and_then(Path::file_stem);
+        let stem = stem.map_or("untitled".into(), |stem| stem.to_string_lossy());
+        let request = Request::Export {
+            format,
+            name: format!("{stem}.{}", format.extension()),
+            folder: file.and_then(Path::parent).map(Path::to_path_buf),
+        };
+        let job = Arc::new(ExportJob { drawing, settings });
+        (self.file_dialog).open(FilePurpose::Export(job), request, ctx, frame);
+    }
+
+    /// Exports `job` where the file dialog picked. A name without an
+    /// extension gets the format's, asking first if that file exists, as the
+    /// dialog only checked the name.
+    fn export_picked(&mut self, mut path: PathBuf, job: Arc<ExportJob>, ctx: &egui::Context) {
+        if path.extension().is_none() {
+            path.set_extension(job.settings.format.extension());
+            if path.exists() {
+                self.prompt = Some(Prompt::ReplaceExport(path, job));
+                return;
+            }
+        }
+        self.export_to(path, job, ctx);
+    }
+
+    /// Writes the file of `job` to `path` in the background, as a big PNG
+    /// takes a while, then repaints `ctx`.
+    fn export_to(&mut self, path: PathBuf, job: Arc<ExportJob>, ctx: &egui::Context) {
+        let (fonts, ctx, to) = (self.fonts.clone(), ctx.clone(), path.clone());
+        let thread = std::thread::Builder::new()
+            .name("export".to_owned())
+            .spawn(move || {
+                let written = export::export(&job.drawing, &job.settings, &fonts)
+                    .map_err(|err| err.to_string())
+                    .and_then(|bytes| {
+                        atomic_file::write(&to, |file| file.write_all(&bytes))
+                            .map_err(|err| err.to_string())
+                    });
+                ctx.request_repaint();
+                written
+            });
+        match thread {
+            Ok(thread) => self.exports.push(Writing { path, thread }),
+            Err(err) => self.error = Some(export_error(&path, &err.to_string())),
+        }
+    }
+
+    /// Shows why the exports that have finished, or all of them once done if
+    /// `wait`, couldn't write their files.
+    fn finish_exports(&mut self, wait: bool) {
+        let (done, writing) = std::mem::take(&mut self.exports)
+            .into_iter()
+            .partition(|export| wait || export.thread.is_finished());
+        self.exports = writing;
+        for Writing { path, thread } in done {
+            let stopped = || Err("The export stopped unexpectedly.".to_owned());
+            let written = thread.join().unwrap_or_else(|_| stopped());
+            if let Err(err) = written {
+                self.error = Some(export_error(&path, &err));
+            }
+        }
+    }
+
     /// Asks the question waiting for an answer, if any, then does what the
     /// answer says.
     fn show_prompt(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -384,15 +501,21 @@ impl DrwrApp {
                 }
             }
             Some(Prompt::Replace(path, then)) => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let question = format!("{name} already exists. Replace it?");
-                let answers = [("Replace", true), ("Cancel", false)];
-                let Some(replace) = prompt::ask(ctx, &question, &answers) else {
+                let Some(replace) = ask_to_replace(ctx, &path) else {
                     return;
                 };
                 self.prompt = None;
                 if replace {
                     self.save_to(path, then, ctx, frame);
+                }
+            }
+            Some(Prompt::ReplaceExport(path, job)) => {
+                let Some(replace) = ask_to_replace(ctx, &path) else {
+                    return;
+                };
+                self.prompt = None;
+                if replace {
+                    self.export_to(path, job, ctx);
                 }
             }
             None => {}
@@ -455,6 +578,7 @@ impl DrwrApp {
                 | Action::Open
                 | Action::Save
                 | Action::SaveAs
+                | Action::Export
                 | Action::Quit),
             ) => {
                 ctx.memory_mut(|memory| memory.stop_text_input());
@@ -474,12 +598,13 @@ impl DrwrApp {
         };
         match action {
             // Disabled, as the open file dialog is for the graph as it is.
-            Action::New | Action::Open | Action::Save | Action::SaveAs
+            Action::New | Action::Open | Action::Save | Action::SaveAs | Action::Export
                 if self.file_dialog.is_open() => {}
             Action::New => self.close_graph(CloseFor::New, ctx, frame),
             Action::Open => self.close_graph(CloseFor::Open, ctx, frame),
             Action::Save => self.save(None, ctx, frame),
             Action::SaveAs => self.ask_where_to_save(None, ctx, frame),
+            Action::Export => self.open_export_dialog(ctx),
             Action::Quit => self.close_graph(CloseFor::Quit, ctx, frame),
             Action::Undo => self.step(Document::undo),
             Action::Redo => self.step(Document::redo),
@@ -626,6 +751,18 @@ impl DrwrApp {
     }
 }
 
+/// Why exporting to `path` failed.
+fn export_error(path: &Path, err: &str) -> String {
+    format!("Couldn't export {}:\n{err}", path.display())
+}
+
+/// Asks whether to replace the file at `path`. Returns the answer once given.
+fn ask_to_replace(ctx: &egui::Context, path: &Path) -> Option<bool> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let question = format!("{name} already exists. Replace it?");
+    prompt::ask(ctx, &question, &[("Replace", true), ("Cancel", false)])
+}
+
 impl eframe::App for DrwrApp {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         match self.file_dialog.picked() {
@@ -635,8 +772,10 @@ impl eframe::App for DrwrApp {
                 }
             }
             Some((FilePurpose::Save(then), path)) => self.save_picked(path, then, ctx, frame),
+            Some((FilePurpose::Export(job), path)) => self.export_picked(path, job, ctx),
             None => {}
         }
+        self.finish_exports(false);
         // Here, as `ui` doesn't run while the window is hidden, and it closes
         // after this frame unless cancelled.
         let close = ctx.input(|input| input.viewport().close_requested());
@@ -645,6 +784,9 @@ impl eframe::App for DrwrApp {
             // Applies a label being typed, which then counts as a change.
             ctx.memory_mut(|memory| memory.stop_text_input());
             self.close_requested = true;
+        } else if close {
+            // Rather than leave a file half written.
+            self.finish_exports(true);
         }
     }
 
@@ -678,7 +820,14 @@ impl eframe::App for DrwrApp {
         let (tool, zoom) = (self.tool, self.canvas.zoom());
         let toolbar = toolbar::show(ui, enabled, tool, zoom);
         self.perform_or_wait(toolbar, &mut waiting, ui.ctx(), frame);
-        status_bar::show(ui, self.tool, self.file.as_deref(), self.modified);
+        let exporting = !self.exports.is_empty();
+        status_bar::show(
+            ui,
+            self.tool,
+            exporting,
+            self.file.as_deref(),
+            self.modified,
+        );
         let side =
             (self.side_panel).show(ui, enabled, self.doc.read(), &self.selected, &self.fonts);
         self.merge_with = self.side_panel.dragged();
@@ -711,6 +860,9 @@ impl eframe::App for DrwrApp {
             for label in edit.labels {
                 self.perform(Action::SetLabel(label, text.clone()), ui.ctx(), frame);
             }
+        }
+        if let Some(accepted) = self.export_dialog.show(ui.ctx()) {
+            self.ask_where_to_export(accepted, ui.ctx(), frame);
         }
         self.record();
         self.update_modified();

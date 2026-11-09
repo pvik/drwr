@@ -10,6 +10,8 @@ pub enum Action {
     Open,
     Save,
     SaveAs,
+    /// Opens the export dialog, which exports the drawing as PNG or SVG.
+    Export,
     Quit,
     /// Undoes the last change to the graph, selecting what was selected
     /// before it.
@@ -79,7 +81,8 @@ pub enum FontPart {
 /// Which commands the menu and the toolbars offer now.
 #[derive(Clone, Copy, Debug)]
 pub struct Enabled {
-    /// New, Open, Save and Save As, unavailable while a file dialog is open.
+    /// New, Open, Save, Save As and Export, unavailable while a file dialog
+    /// is open.
     pub file: bool,
     /// Cut and Copy, which need nodes selected.
     pub copy: bool,

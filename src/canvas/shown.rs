@@ -214,7 +214,7 @@ impl Shown<'_> {
 }
 
 /// The shapes the canvas can draw nodes as.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Outline {
     /// A box, with its corners rounded to this radius in graph points.
     Rect(f32),

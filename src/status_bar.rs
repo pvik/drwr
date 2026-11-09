@@ -7,12 +7,17 @@ use crate::tool::Tool;
 /// What stands in for the file of a graph that isn't saved.
 pub const NOT_SAVED: &str = "<Not Saved>";
 
-/// Shows the status bar along the bottom of the window, with a '*' after the
-/// file if the graph is `modified`.
-pub fn show(ui: &mut egui::Ui, tool: Tool, file: Option<&Path>, modified: bool) {
+/// Shows the status bar along the bottom of the window: what `tool` does,
+/// unless the drawing is `exporting`, and the file, with a '*' after it if
+/// the graph is `modified`.
+pub fn show(ui: &mut egui::Ui, tool: Tool, exporting: bool, file: Option<&Path>, modified: bool) {
     egui::Panel::bottom("status_bar").show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(status(tool));
+            ui.label(if exporting {
+                "Exporting…"
+            } else {
+                status(tool)
+            });
             ui.separator();
             let file = file.map_or(NOT_SAVED.into(), Path::to_string_lossy);
             let marker = WidgetText::from(if modified { "*" } else { "" }).into_galley(
