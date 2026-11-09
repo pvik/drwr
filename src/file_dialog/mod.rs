@@ -3,9 +3,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::export::Format;
 
-/// A native dialog asking for a GraphML file to open, or where to save one or
-/// export to, for a target of type `T`, which tells the caller what the file
-/// is for. It runs on its own thread, because a Wayland compositor may
+/// A native dialog asking for a GraphML file to open, an SVG file to insert,
+/// or where to save or export to, for a target of type `T`, which tells the
+/// caller what the file is for. It runs on its own thread, because a Wayland compositor may
 /// disconnect an app whose UI thread stops reading events.
 pub struct FileDialog<T> {
     asked: Option<Asked<T>>,
@@ -15,6 +15,7 @@ pub struct FileDialog<T> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     Open,
+    InsertSvg,
     /// Where to save, suggesting the file name `name` in `folder`.
     Save {
         name: String,
@@ -116,6 +117,7 @@ fn show(
 ) {
     let (title, filter, extension, saved) = match request {
         Request::Open => ("Open", "GraphML", "graphml", None),
+        Request::InsertSvg => ("Insert SVG", "SVG", "svg", None),
         Request::Save { name, folder } => ("Save As", "GraphML", "graphml", Some((name, folder))),
         Request::Export {
             format,

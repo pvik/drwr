@@ -289,7 +289,8 @@ fn delete_removes_everything_selected() {
 }
 
 /// Drags a box round the fixture's n0 and n1 and the bends of e0 between
-/// them, and round n2 and n3, which the canvas doesn't draw.
+/// them, round the SVG node n3, and round n2, which the canvas doesn't draw,
+/// so that e1 between n2 and n3 isn't selected.
 fn drag_box_round_e0(harness: &mut Harness) {
     harness.drag(vec2(50.0, 5.0), vec2(400.0, 300.0));
 }
@@ -298,13 +299,13 @@ fn drag_box_round_e0(harness: &mut Harness) {
 fn boxed_edges_are_counted_and_nudged_with_their_nodes() {
     let mut harness = fixture_harness();
     drag_box_round_e0(&mut harness);
-    let boxed = Selection::of([node("n0"), node("n1"), Item::Edge(0)]);
+    let boxed = Selection::of([node("n0"), node("n1"), node("n3"), Item::Edge(0)]);
     assert_eq!(harness.app.selected, boxed);
-    assert_eq!(rows(&harness.side_panel(), "Selected"), ["2 nodes, 1 line"]);
+    assert_eq!(rows(&harness.side_panel(), "Selected"), ["3 nodes, 1 line"]);
 
     harness.press(CTRL, Key::ArrowRight);
     let x = |id: &str| harness.graphics(id).geometry.x;
-    assert_eq!([x("n0"), x("n1")], [101.0, 301.0]);
+    assert_eq!([x("n0"), x("n1"), x("n3")], [101.0, 301.0, 301.0]);
     // Once, though e0 is selected and joins two moved nodes.
     assert_eq!(
         harness.edge(0).path.points,
@@ -317,10 +318,11 @@ fn delete_removes_the_boxed_nodes_and_edges() {
     let mut harness = fixture_harness();
     drag_box_round_e0(&mut harness);
     harness.press(Modifiers::NONE, Key::Delete);
-    for id in ["n0", "n1"] {
+    for id in ["n0", "n1", "n3"] {
         assert_eq!(document::graphics_of(harness.app.doc.graphml(), id), None);
     }
-    assert_eq!(harness.edge_ids(), ["e1"]);
+    // With e1, as it ended on n3.
+    assert_eq!(harness.edge_ids(), [""; 0]);
     assert!(harness.app.selected.is_empty());
 }
 
@@ -331,7 +333,7 @@ fn boxed_edges_are_copied_and_pasted_with_their_nodes() {
     let (copied, _) = harness.clipboard(vec![Event::Copy]);
     assert_eq!(parse_copied(copied.clone()).graphs[0].edges.len(), 1);
     harness.run(vec![Event::Paste(copied[0].clone())]);
-    let pasted = Selection::of([node("n6"), node("n7"), Item::Edge(2)]);
+    let pasted = Selection::of([node("n6"), node("n7"), node("n8"), Item::Edge(2)]);
     assert_eq!(harness.app.selected, pasted);
     assert_eq!(harness.edge_ids(), ["e0", "e1", "e2"]);
 }

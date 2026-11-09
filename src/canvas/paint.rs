@@ -6,7 +6,7 @@ use std::sync::Arc;
 use egui::emath::TSTransform;
 use egui::epaint::{CircleShape, PathShape, TextShape};
 use egui::text::LayoutJob;
-use egui::{Align, Align2, Color32, FontId, Galley, Rect, Stroke, StrokeKind, Vec2, pos2};
+use egui::{Align, Align2, Color32, FontId, Galley, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
 use graphml::yed::{self, Alignment, Label, NodeGraphics, Route};
 
 use crate::color_picker::color32;
@@ -15,8 +15,10 @@ use crate::fonts;
 use crate::line_type;
 use crate::selection::Selection;
 use crate::style::Style;
+use crate::svg_image::SvgImage;
 
 use super::shown::{Anchor, EdgeLook, Outline, Shown, egui_rect, shape};
+use super::textures::Textures;
 use super::{
     BACKGROUND, Canvas, EdgeDrag, EdgePart, HALO, HANDLE_SIZE, LABEL_PADDING, MAX_TEXT_PIXELS,
     Owner, Preview, SELECTION, SELECTION_BOX_FILL, SELECTION_GAP, edge,
@@ -57,7 +59,14 @@ impl Canvas {
             if boxed || kept && selected.contains(&item) {
                 outlines.push(shown.node_rect(index).expand(SELECTION_GAP));
             }
-            shown.paint_node(&node.graphics, node.radius, hidden(&item));
+            let image = node.image.as_deref();
+            shown.paint_node(
+                &node.graphics,
+                node.radius,
+                image,
+                &self.textures,
+                hidden(&item),
+            );
         }
         let selected_edge = match selected.single() {
             Some(&Item::Edge(index)) => Some(index),
@@ -94,7 +103,7 @@ impl Canvas {
             painter.rect_stroke(rect, 0.0, SELECTION, StrokeKind::Outside);
         }
         if let Some(graphics) = drawing {
-            shown.paint_node(&graphics, style.corner_radius(), None);
+            shown.paint_node(&graphics, style.corner_radius(), None, &self.textures, None);
         }
         // Over the nodes, so one on top can't hide them.
         for outline in outlines {
@@ -123,11 +132,13 @@ impl Canvas {
 impl Shown<'_> {
     /// Paints a node with its labels, except the one at index `hidden`, unless
     /// it's a kind the canvas can't draw yet. `corner_radius` rounds the
-    /// corners of a box.
+    /// corners of a box, and an SVG node shows `image` from `textures`.
     fn paint_node(
         &self,
         graphics: &NodeGraphics,
         corner_radius: Option<f64>,
+        image: Option<&SvgImage>,
+        textures: &Textures,
         hidden: Option<usize>,
     ) {
         let Some(outline) = shape(graphics, corner_radius) else {
@@ -160,6 +171,22 @@ impl Shown<'_> {
                 let points = line_type::ellipse_points(rect, painter.pixels_per_point());
                 painter.add(PathShape::convex_polygon(points, fill, Stroke::NONE));
                 line_type::paint_ellipse_outline(painter, rect, stroke, &border.line_type);
+            }
+            // Drawn without its fill and border, as yEd draws it.
+            Outline::Svg => {
+                if let Some(image) = image
+                    && rect.intersects(painter.clip_rect())
+                {
+                    // At the zoom labels are laid out at, so it isn't drawn
+                    // anew every frame while the zoom changes.
+                    let scale = self.text_zoom * painter.pixels_per_point();
+                    let geometry = graphics.geometry;
+                    let pixels = vec2(geometry.width as f32, geometry.height as f32) * scale;
+                    if let Some(texture) = textures.get(painter.ctx(), image, pixels) {
+                        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                        painter.image(texture, rect, uv, Color32::WHITE);
+                    }
+                }
             }
         }
 

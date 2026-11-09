@@ -225,7 +225,9 @@ pub(crate) fn write_part<T: Part>(
     part.write(child_or_insert(parent, local_name, after));
 }
 
-fn child_or_insert<'a>(
+/// `parent`'s child `local_name`, added after those named in `after` if
+/// missing.
+pub(crate) fn child_or_insert<'a>(
     parent: &'a mut Element,
     local_name: &str,
     after: &[&str],

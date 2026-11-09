@@ -23,6 +23,7 @@ mod side_panel;
 mod stacking;
 mod status_bar;
 mod style;
+mod svg_image;
 #[cfg(test)]
 mod testing;
 mod text_dialog;
@@ -51,12 +52,16 @@ use scene::Scene;
 use selection::Selection;
 use side_panel::SidePanel;
 use style::Style;
+use svg_image::SvgImage;
 use text_dialog::TextDialog;
 use tool::Tool;
 use unsaved_dialog::Answer;
 
 /// The app's name, which is also the Wayland app id.
 const NAME: &str = "drwr";
+/// How wide or high an inserted SVG is at most, in points, as some are
+/// drawn thousands of points across.
+const MAX_SVG_SIZE: f32 = 100.0;
 
 fn main() -> eframe::Result {
     match cli::parse(std::env::args_os().skip(1)) {
@@ -153,6 +158,7 @@ struct LabelEdit {
 /// What the file dialog picks a file for.
 enum FilePurpose {
     Open,
+    InsertSvg,
     /// Saving the graph, then closing it for this, if anything.
     Save(Option<CloseFor>),
     Export(Arc<ExportJob>),
@@ -216,6 +222,28 @@ impl DrwrApp {
         let path = std::path::absolute(path)?;
         let graphml = GraphMl::read_file(&path)?;
         self.replace_graph(graphml, Some(path));
+        Ok(())
+    }
+
+    /// Adds the SVG file at `path` as a node in the middle of the view, at
+    /// the size yEd gives it but no bigger than [`MAX_SVG_SIZE`], and selects
+    /// it.
+    fn insert_svg(&mut self, path: &Path) -> Result<(), String> {
+        let svg = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+        let size = SvgImage::parse(&svg)?.bounds().size();
+        let size = size * (MAX_SVG_SIZE / size.max_elem()).min(1.0);
+        let center = self.canvas.view_center() - size / 2.0;
+        // To a thousandth of a point, so the file gets 39.2, not 39.199997.
+        let points = |value: f32| (f64::from(value) * 1000.0).round() / 1000.0;
+        let geometry = yed::Rect {
+            x: center.x.round().into(),
+            y: center.y.round().into(),
+            width: points(size.x),
+            height: points(size.y),
+        };
+        let id = document::add_svg_node(self.doc.graphml_mut(), &svg, geometry);
+        self.selected = Selection::node(id);
+        self.edited(None);
         Ok(())
     }
 
@@ -598,13 +626,23 @@ impl DrwrApp {
         };
         match action {
             // Disabled, as the open file dialog is for the graph as it is.
-            Action::New | Action::Open | Action::Save | Action::SaveAs | Action::Export
+            Action::New
+            | Action::Open
+            | Action::Save
+            | Action::SaveAs
+            | Action::Export
+            | Action::InsertSvg
                 if self.file_dialog.is_open() => {}
             Action::New => self.close_graph(CloseFor::New, ctx, frame),
             Action::Open => self.close_graph(CloseFor::Open, ctx, frame),
             Action::Save => self.save(None, ctx, frame),
             Action::SaveAs => self.ask_where_to_save(None, ctx, frame),
             Action::Export => self.open_export_dialog(ctx),
+            Action::InsertSvg => {
+                let purpose = FilePurpose::InsertSvg;
+                self.file_dialog
+                    .open(purpose, Request::InsertSvg, ctx, frame);
+            }
             Action::Quit => self.close_graph(CloseFor::Quit, ctx, frame),
             Action::Undo => self.step(Document::undo),
             Action::Redo => self.step(Document::redo),
@@ -769,6 +807,11 @@ impl eframe::App for DrwrApp {
             Some((FilePurpose::Open, path)) => {
                 if let Err(err) = self.open(&path) {
                     self.error = Some(format!("Couldn't open {}:\n{err}", path.display()));
+                }
+            }
+            Some((FilePurpose::InsertSvg, path)) => {
+                if let Err(err) = self.insert_svg(&path) {
+                    self.error = Some(format!("Couldn't insert {}:\n{err}", path.display()));
                 }
             }
             Some((FilePurpose::Save(then), path)) => self.save_picked(path, then, ctx, frame),

@@ -19,6 +19,7 @@ const ZOOM_OUT_ICON: ImageSource<'static> = include_image!("../assets/icons/zoom
 const DELETE_ICON: ImageSource<'static> = include_image!("../assets/icons/delete.svg");
 const RAISE_ICON: ImageSource<'static> = include_image!("../assets/icons/raise.svg");
 const LOWER_ICON: ImageSource<'static> = include_image!("../assets/icons/lower.svg");
+const INSERT_SVG_ICON: ImageSource<'static> = include_image!("../assets/icons/insert_svg.svg");
 
 #[rustfmt::skip]
 const TOOLS: [(Tool, &str, ImageSource<'static>); 6] = [
@@ -38,8 +39,8 @@ const ZOOM_BOX_WIDTH: f32 = 64.0;
 
 /// Shows the New, Open, Save and Export buttons, the Cut, Copy and Paste
 /// buttons, the Undo and Redo buttons, each as `enabled` says, a button per
-/// tool with the `selected` one highlighted, then the zoom buttons and a
-/// dropdown showing `zoom`. Returns the action clicked.
+/// tool with the `selected` one highlighted and the Insert SVG button, then
+/// the zoom buttons and a dropdown showing `zoom`. Returns the action clicked.
 pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> Option<Action> {
     let toolbar = egui::Panel::top("toolbar").show(ui, |ui| {
         button_row(ui, |ui| {
@@ -87,6 +88,15 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> O
                     picked = Some(action);
                 }
             }
+            let insert = action_buttons(
+                ui,
+                [(
+                    Action::InsertSvg,
+                    "Insert SVG",
+                    INSERT_SVG_ICON,
+                    enabled.file,
+                )],
+            );
 
             ui.separator();
 
@@ -102,6 +112,7 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> O
             let preset = zoom_box(ui, zoom).map(Action::SetZoom);
             (file.or(clipboard).or(history))
                 .or(picked)
+                .or(insert)
                 .or(zoom_step)
                 .or(preset)
         })

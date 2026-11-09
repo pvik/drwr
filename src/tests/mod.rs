@@ -8,6 +8,7 @@ mod multi_selection;
 mod nodes;
 mod remembered_style;
 mod stacking;
+mod svg_nodes;
 mod undo;
 mod view;
 

@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use egui::Vec2;
 use graphml::GraphMl;
-use graphml::yed::{EdgeGraphics, NodeGraphics};
+use graphml::yed::{self, EdgeGraphics, NodeGraphics, NodeKind};
 
 use crate::document::{self, GraphicsRef, Item, Reader};
 use crate::selection::Selection;
+use crate::svg_image::SvgImage;
 
 /// The top-level graph's nodes and edges, as the canvas shows them. Clones
 /// share the graphics until they're changed.
@@ -30,6 +31,8 @@ pub struct SceneNode {
     pub graphics: NodeGraphics,
     /// The corner radius of a box.
     pub radius: Option<f64>,
+    /// The drawing of an SVG node, unless it has none or it isn't SVG.
+    pub image: Option<Arc<SvgImage>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,9 +106,35 @@ pub struct Cache {
     nodes: Vec<Option<Arc<SceneNode>>>,
     /// Per edge of the top-level graph: its graphics, if it has any.
     edges: Vec<Option<Arc<EdgeGraphics>>>,
+    /// The drawing parsed from each SVG text, if it could be.
+    images: HashMap<String, Option<Arc<SvgImage>>>,
     /// How many nodes and edges it has read.
     #[cfg(test)]
     pub reads: usize,
+}
+
+/// Reads the drawings of a document's SVG nodes, each resource once.
+struct Images<'a> {
+    doc: &'a GraphMl,
+    /// By their text, as parsed in any update.
+    parsed: &'a mut HashMap<String, Option<Arc<SvgImage>>>,
+    /// By resource id, as found in this update.
+    resources: HashMap<String, Option<Arc<SvgImage>>>,
+}
+
+impl Images<'_> {
+    /// The drawing in the resource with id `resource`, if it can be drawn.
+    fn get(&mut self, resource: &str) -> Option<Arc<SvgImage>> {
+        if let Some(image) = self.resources.get(resource) {
+            return image.clone();
+        }
+        let image = yed::resource_text(self.doc, resource).and_then(|text| {
+            let parse = |text: &String| SvgImage::parse(text).ok().map(Arc::new);
+            self.parsed.entry(text).or_insert_with_key(parse).clone()
+        });
+        self.resources.insert(resource.to_owned(), image.clone());
+        image
+    }
 }
 
 /// What changed in a document, for the [`Cache`] to read again.
@@ -146,19 +175,31 @@ impl Cache {
     pub fn update(&mut self, graphml: &GraphMl, changed: &Changed) {
         let reader = Reader::new(graphml);
         let (nodes, edges) = (document::top_nodes(graphml), document::top_edges(graphml));
-        let read_node = |node: &graphml::Node| {
+        let mut images = Images {
+            doc: graphml,
+            parsed: &mut self.images,
+            resources: HashMap::new(),
+        };
+        let mut read_node = |node: &graphml::Node| {
             let (graphics, radius) = reader.node(node)?;
+            let image = match &graphics.kind {
+                NodeKind::Svg {
+                    resource: Some(resource),
+                } => images.get(resource),
+                _ => None,
+            };
             let id = node.id.clone();
             Some(Arc::new(SceneNode {
                 id,
                 graphics,
                 radius,
+                image,
             }))
         };
         let read_edge = |edge| reader.edge(edge).map(Arc::new);
         match changed {
             Changed::All => {
-                self.nodes = nodes.iter().map(read_node).collect();
+                self.nodes = nodes.iter().map(&mut read_node).collect();
                 self.edges = edges.iter().map(read_edge).collect();
                 #[cfg(test)]
                 {
@@ -170,7 +211,7 @@ impl Cache {
                 edges: edge_runs,
             } => {
                 for run in node_runs {
-                    let read = nodes[run.at..run.at + run.added].iter().map(read_node);
+                    let read = nodes[run.at..run.at + run.added].iter().map(&mut read_node);
                     self.nodes.splice(run.at..run.at + run.removed, read);
                     #[cfg(test)]
                     {

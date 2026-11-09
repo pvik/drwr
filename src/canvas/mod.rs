@@ -2,6 +2,7 @@ mod drawing;
 mod edge;
 mod paint;
 mod shown;
+mod textures;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ pub use drawing::{Drawing, Mark, Pen, Text};
 use paint::{halign, label_font, label_rect};
 pub use shown::Outline;
 use shown::{Anchor, EdgeLook, Shown, egui_pos, yed_point, yed_rect};
+use textures::Textures;
 
 /// White like paper, even in the dark theme.
 const BACKGROUND: Color32 = Color32::WHITE;
@@ -101,6 +103,7 @@ pub struct Canvas {
     edge_draw: Option<EdgeDraw>,
     edge_drag: Option<EdgeDrag>,
     editor: Option<LabelEditor>,
+    textures: Textures,
 }
 
 /// Where the graph shows on the canvas.
@@ -354,6 +357,7 @@ impl Canvas {
                 boxed,
             };
             self.paint_scene(ui, rect, shown, selected, style, preview);
+            self.textures.sweep();
 
             // Over the nodes. An edit it applies goes first, in case the
             // double click is on the same label.
@@ -377,6 +381,11 @@ impl Canvas {
     /// Zooms to `zoom`, within limits, about the middle of the canvas.
     pub fn set_zoom(&mut self, zoom: f32) {
         self.view.zoom_to(zoom, self.size / 2.0);
+    }
+
+    /// The point of the graph in the middle of the canvas.
+    pub fn view_center(&self) -> Pos2 {
+        ((self.size / 2.0 - self.view.offset) / self.view.zoom).to_pos2()
     }
 
     /// Moves the view right and down over the graph by `delta`, in screen
@@ -497,8 +506,10 @@ impl Canvas {
             return None;
         };
         let editor = self.editor.as_mut()?;
-        let label = labels.get(editor.label.index).cloned();
-        let label = label.unwrap_or_else(|| document::new_label(&editor.label.item, "", style));
+        let label = match labels.get(editor.label.index) {
+            Some(label) => label.clone(),
+            None => document::new_label(scene.graphics(&item)?, "", style),
+        };
         let font = label_font(&label, to_screen.scaling, ui.pixels_per_point());
         let align = Align2([halign(&label.alignment), Align::Center]);
         let text = ui
@@ -988,14 +999,16 @@ impl Canvas {
             let Some(drag) = self.resize.filter(|drag| drag.handle == handle) else {
                 continue;
             };
+            // Like yEd, which keeps the proportions while Shift is held.
+            let keep = ui.input(|input| input.modifiers.shift);
             if !response.drag_stopped() {
                 let to = response.interact_pointer_pos().map(to_graph);
-                resized = to.map(|to| drag.geometry(geometry, to));
+                resized = to.map(|to| drag.geometry(geometry, to, keep));
                 continue;
             }
             self.resize = None;
             if let Some(to) = ui.input(primary_release).map(to_graph) {
-                let new = drag.geometry(geometry, to);
+                let new = drag.geometry(geometry, to, keep);
                 if new != geometry {
                     document::edit_graphics(doc.graphml_mut(), id, |graphics| {
                         document::resize(graphics, new);
@@ -1009,14 +1022,33 @@ impl Canvas {
 
 impl Resize {
     /// The bounds `old` would have with the handle dragged to `to`, in graph
-    /// coordinates.
-    fn geometry(&self, old: yed::Rect, to: Pos2) -> yed::Rect {
+    /// coordinates, kept in proportion by a corner if `keep` says so.
+    fn geometry(&self, old: yed::Rect, to: Pos2, keep: bool) -> yed::Rect {
         let delta = to - self.from;
-        let (x, width) = drag_side(old.x, old.width, self.handle.x(), delta.x.into());
-        let (y, height) = drag_side(old.y, old.height, self.handle.y(), delta.y.into());
+        let [x_side, y_side] = self.handle.0;
+        let (x, width) = drag_side(old.x, old.width, x_side, delta.x.into());
+        let (y, height) = drag_side(old.y, old.height, y_side, delta.y.into());
+        let corner = x_side != Align::Center && y_side != Align::Center;
+        if !(keep && corner && old.width > 0.0 && old.height > 0.0) {
+            return yed::Rect {
+                x,
+                y,
+                width,
+                height,
+            };
+        }
+        // As far as the side dragged further, so it keeps up with the pointer.
+        let scale = (width / old.width).max(height / old.height);
+        let scale = scale.max(MIN_SIZE / old.width.min(old.height));
+        let (width, height) = (old.width * scale, old.height * scale);
+        // From the opposite corner, which stays put.
+        let start = |start: f64, old: f64, new: f64, side: Align| match side {
+            Align::Min => start + old - new,
+            _ => start,
+        };
         yed::Rect {
-            x,
-            y,
+            x: start(old.x, old.width, width, x_side),
+            y: start(old.y, old.height, height, y_side),
             width,
             height,
         }

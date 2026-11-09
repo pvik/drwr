@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
-use graphml::xml::XmlNode;
+use graphml::xml::{Element, XmlNode};
 use graphml::yed::{
-    Arrow, Color, EdgeGraphics, Keys, Label, LabelPosition, NodeGraphics, NodeKind, Point, Rect,
-    Route, ShapeType, Stroke,
+    self, Arrow, Color, EdgeGraphics, Keys, Label, LabelPosition, NodeGraphics, NodeKind, Point,
+    Rect, Route, ShapeType, Stroke,
 };
-use graphml::{AttrType, Data, Edge, Graph, GraphMl, Key, KeyDomain, Node};
+use graphml::{AttrType, Data, Edge, Graph, GraphMl, Key, KeyDomain, Node, Port};
 
 use crate::style::Style;
 
@@ -193,6 +193,16 @@ pub fn add_node(doc: &mut GraphMl, graphics: &NodeGraphics) -> String {
     id
 }
 
+/// Adds an SVG node drawing `svg` within `geometry` to the top-level graph.
+/// Like yEd, the document keeps the SVG once, however many nodes draw it.
+/// Returns the node's id.
+pub fn add_svg_node(doc: &mut GraphMl, svg: &str, geometry: Rect) -> String {
+    let resource = Some(yed::add_resource(doc, svg));
+    let mut graphics = NodeGraphics::new(NodeKind::Svg { resource });
+    graphics.geometry = geometry;
+    add_node(doc, &graphics)
+}
+
 /// The top-level graph, added if missing.
 fn top_graph_mut(doc: &mut GraphMl) -> &mut Graph {
     if doc.graphs.is_empty() {
@@ -372,7 +382,7 @@ fn ensure_radius_key(doc: &mut GraphMl) -> String {
 
 /// The first of yEd's key ids d0, d1, … that no key in the document has.
 fn unused_key_id(doc: &GraphMl) -> String {
-    first_free("d", 0, |id| doc.keys.iter().any(|key| key.id == id))
+    first_free("d", |id| doc.keys.iter().any(|key| key.id == id))
 }
 
 /// The top-level graph's node with id `id`.
@@ -423,12 +433,18 @@ pub fn label_text(doc: &GraphMl, label: &LabelRef) -> Option<String> {
     labels.get(label.index).map(|label| label.text.clone())
 }
 
-/// A new label of `item` with yEd's defaults, but in the font and text color
-/// last set in `style`.
-pub fn new_label(item: &Item, text: &str, style: &Style) -> Label {
-    let mut label = match item {
-        Item::Node(_) => Label::new(text),
-        Item::Edge(_) => Label::new_on_edge(text),
+/// A new label for `graphics` with yEd's defaults, but in the font and text
+/// color last set in `style`. Like yEd's, an SVG node's goes below it.
+pub fn new_label(graphics: GraphicsRef, text: &str, style: &Style) -> Label {
+    let mut label = match graphics {
+        GraphicsRef::Node(node) => {
+            let mut label = Label::new(text);
+            if matches!(node.kind, NodeKind::Svg { .. }) {
+                label.set_position(LabelPosition::South);
+            }
+            label
+        }
+        GraphicsRef::Edge(_) => Label::new_on_edge(text),
     };
     style.apply_to_label(&mut label);
     label
@@ -440,8 +456,8 @@ pub fn set_label(doc: &mut GraphMl, label: &LabelRef, text: &str, style: &Style)
     if label_text(doc, label).is_none_or(|old| old == text) {
         return;
     }
-    let new = new_label(&label.item, text, style);
     edit(doc, &label.item, |graphics| {
+        let new = new_label(graphics.as_ref(), text, style);
         let labels = graphics.labels_mut();
         match labels.get_mut(label.index) {
             Some(existing) => existing.text = text.to_owned(),
@@ -584,20 +600,19 @@ pub fn remove_items(doc: &mut GraphMl, items: &[Item]) {
     for index in edges.into_iter().rev() {
         remove_edge(doc, index);
     }
+    let mut removed = Graph::default();
     for id in items.iter().filter_map(Item::node_id) {
-        remove_node(doc, id);
+        removed.nodes.extend(remove_node(doc, id));
     }
+    // Or the SVG of the last node drawing it would stay in the file.
+    drop_unused_resources(doc, resource_refs(&mut removed));
 }
 
 /// Removes the top-level node with id `id`, with the edges of it and of the
-/// nodes nested in it.
-fn remove_node(doc: &mut GraphMl, id: &str) {
-    let Some(graph) = doc.graphs.first_mut() else {
-        return;
-    };
-    let Some(index) = graph.nodes.iter().position(|node| node.id == id) else {
-        return;
-    };
+/// nodes nested in it. Returns the node.
+fn remove_node(doc: &mut GraphMl, id: &str) -> Option<Node> {
+    let graph = doc.graphs.first_mut()?;
+    let index = graph.nodes.iter().position(|node| node.id == id)?;
     let node = graph.nodes.remove(index);
     let mut gone = HashSet::from([node.id.clone()]);
     if let Some(nested) = &node.graph {
@@ -613,6 +628,28 @@ fn remove_node(doc: &mut GraphMl, id: &str) {
     }
     // Or it would stay in the file after the last box keeping a radius.
     drop_unused_radius_key(doc);
+    Some(node)
+}
+
+/// Removes the resources with ids in `ids` that nothing refers to any more.
+fn drop_unused_resources(doc: &mut GraphMl, mut ids: HashSet<String>) {
+    if ids.is_empty() {
+        return;
+    }
+    for graph in &mut doc.graphs {
+        for used in resource_refs(graph) {
+            ids.remove(&used);
+        }
+    }
+    if ids.is_empty() || yed::resources(doc).is_none() {
+        return;
+    }
+    yed::resources_mut(doc).children.retain(|resource| {
+        let id = resource
+            .as_element()
+            .and_then(|resource| resource.attr("id"));
+        id.is_none_or(|id| !ids.contains(id))
+    });
 }
 
 /// Puts the top-level graph's nodes in `order`, which has each index once.
@@ -745,17 +782,65 @@ fn taken_ids(doc: &GraphMl) -> HashSet<String> {
 
 /// The first of `prefix`0, `prefix`1, … not `taken`, which it's added to.
 fn fresh(taken: &mut HashSet<String>, prefix: &str) -> String {
-    let id = first_free(prefix, 0, |id| taken.contains(id));
+    let id = first_free(prefix, |id| taken.contains(id));
     taken.insert(id.clone());
     id
 }
 
-/// The first id of `prefix` and a number from `start` up that isn't `taken`.
-fn first_free(prefix: &str, start: u32, taken: impl Fn(&str) -> bool) -> String {
-    (start..)
+/// The first of `prefix`0, `prefix`1, … that isn't `taken`.
+fn first_free(prefix: &str, taken: impl Fn(&str) -> bool) -> String {
+    (0..)
         .map(|n| format!("{prefix}{n}"))
         .find(|id| !taken(id))
         .expect("the ids are endless")
+}
+
+/// Calls `visit` with each data in `graph`, at any depth.
+fn visit_data(graph: &mut Graph, visit: &mut impl FnMut(&mut Data)) {
+    visit_graphs_mut(graph, &mut |graph| {
+        graph.data.iter_mut().for_each(&mut *visit);
+        for node in &mut graph.nodes {
+            node.data.iter_mut().for_each(&mut *visit);
+            visit_port_data(&mut node.ports, visit);
+        }
+        for edge in &mut graph.edges {
+            edge.data.iter_mut().for_each(&mut *visit);
+        }
+        for hyperedge in &mut graph.hyperedges {
+            hyperedge.data.iter_mut().for_each(&mut *visit);
+        }
+    });
+}
+
+fn visit_port_data(ports: &mut [Port], visit: &mut impl FnMut(&mut Data)) {
+    for port in ports {
+        port.data.iter_mut().for_each(&mut *visit);
+        visit_port_data(&mut port.ports, visit);
+    }
+}
+
+/// Calls `visit` with each XML element in the data in `graph`.
+fn visit_elements(graph: &mut Graph, visit: &mut impl FnMut(&mut Element)) {
+    visit_data(graph, &mut |data| visit_xml(&mut data.content, visit));
+}
+
+fn visit_xml(nodes: &mut [XmlNode], visit: &mut impl FnMut(&mut Element)) {
+    for node in nodes {
+        if let XmlNode::Element(element) = node {
+            visit(element);
+            visit_xml(&mut element.children, visit);
+        }
+    }
+}
+
+/// The ids of the resources, such as SVG drawings, that the data in `graph`
+/// refers to.
+fn resource_refs(graph: &mut Graph) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    visit_elements(graph, &mut |element| {
+        ids.extend(element.attr("refid").map(str::to_owned));
+    });
+    ids
 }
 
 /// Calls `visit` with each node of `graph` and of the graphs nested in it.

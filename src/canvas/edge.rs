@@ -13,14 +13,26 @@ const ARROW_LENGTH: f32 = 10.0;
 const ARROW_HALF_WIDTH: f32 = 4.0;
 const ARROW_NOTCH: f32 = 7.0;
 
-/// `points` cut where they leave the outlines `source` and `target` tell the
-/// inside of. Nodes that overlap leave no line between them, so then it's
-/// left whole.
-pub fn clip(
-    points: Vec<Pos2>,
-    source: impl Fn(Pos2) -> bool,
-    target: impl Fn(Pos2) -> bool,
-) -> Vec<Pos2> {
+/// What cuts a line where it leaves a node.
+pub trait Cut {
+    /// Whether `pos` is inside, where the line isn't drawn.
+    fn inside(&self, pos: Pos2) -> bool;
+
+    /// Where a line from `from`, inside, to `to`, outside, leaves.
+    fn exit(&self, from: Pos2, to: Pos2) -> Pos2 {
+        bisect(|pos| self.inside(pos), from, to)
+    }
+}
+
+impl<F: Fn(Pos2) -> bool> Cut for F {
+    fn inside(&self, pos: Pos2) -> bool {
+        self(pos)
+    }
+}
+
+/// `points` cut where they leave the nodes `source` and `target`. Nodes that
+/// overlap leave no line between them, so then it's left whole.
+pub fn clip(points: Vec<Pos2>, source: impl Cut, target: impl Cut) -> Vec<Pos2> {
     let clipped = clip_start(&points, source).and_then(|points| {
         let reversed: Vec<Pos2> = points.into_iter().rev().collect();
         let mut clipped = clip_start(&reversed, target)?;
@@ -30,15 +42,21 @@ pub fn clip(
     clipped.unwrap_or(points)
 }
 
-/// `points` from where they leave the outline `inside` tells the inside of,
-/// as they are if they start outside it, or `None` if they never leave it.
-fn clip_start(points: &[Pos2], inside: impl Fn(Pos2) -> bool) -> Option<Vec<Pos2>> {
-    if !inside(points[0]) {
+/// `points` from where they leave `node`, as they are if they start outside
+/// it, or `None` if they never leave it.
+fn clip_start(points: &[Pos2], node: impl Cut) -> Option<Vec<Pos2>> {
+    if !node.inside(points[0]) {
         return Some(points.to_vec());
     }
-    let out = (1..points.len()).find(|&i| !inside(points[i]))?;
-    let (mut from, mut to) = (points[out - 1], points[out]);
-    // Bisected, as the outline can be any shape.
+    let out = (1..points.len()).find(|&i| !node.inside(points[i]))?;
+    let mut clipped = vec![node.exit(points[out - 1], points[out])];
+    clipped.extend_from_slice(&points[out..]);
+    Some(clipped)
+}
+
+/// Where the line from `from`, inside an outline `inside` tells the inside
+/// of, to `to`, outside it, leaves it. Bisected, as it can be any shape.
+pub fn bisect(inside: impl Fn(Pos2) -> bool, mut from: Pos2, mut to: Pos2) -> Pos2 {
     for _ in 0..20 {
         let middle = from.lerp(to, 0.5);
         if inside(middle) {
@@ -47,9 +65,7 @@ fn clip_start(points: &[Pos2], inside: impl Fn(Pos2) -> bool) -> Option<Vec<Pos2
             to = middle;
         }
     }
-    let mut clipped = vec![to];
-    clipped.extend_from_slice(&points[out..]);
-    Some(clipped)
+    to
 }
 
 /// The index of the segment of `path` nearest `pos`, and how far it is.

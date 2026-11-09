@@ -151,7 +151,12 @@ impl Harness {
 
     /// Does `act` with Ctrl held, returning what it returns.
     fn with_ctrl<R>(&mut self, act: impl FnOnce(&mut Self) -> R) -> R {
-        self.frame(vec![Event::ModifiersChanged(CTRL)]);
+        self.holding(CTRL, act)
+    }
+
+    /// Does `act` with `modifiers` held, returning what it returns.
+    fn holding<R>(&mut self, modifiers: Modifiers, act: impl FnOnce(&mut Self) -> R) -> R {
+        self.frame(vec![Event::ModifiersChanged(modifiers)]);
         let done = act(self);
         self.frame(vec![Event::ModifiersChanged(Modifiers::NONE)]);
         done
@@ -217,6 +222,12 @@ impl Harness {
         let id = self.add_box(NODE.min, NODE.max);
         document::set_corner_radius(self.doc.graphml_mut(), &id, radius);
         id
+    }
+
+    /// Adds an SVG node drawing `svg` in `rect`, in graph coordinates,
+    /// returning its id.
+    fn add_svg(&mut self, svg: &str, rect: Rect) -> String {
+        document::add_svg_node(self.doc.graphml_mut(), svg, yed_rect(rect))
     }
 
     /// Adds the box in [`NODE`] with `labels`, returning its id.
@@ -325,6 +336,20 @@ fn tessellated(harness: &Harness, shapes: Vec<Shape>) -> Vec<Vertex> {
         .flat_map(|primitive| match primitive.primitive {
             Primitive::Mesh(mesh) => mesh.vertices,
             Primitive::Callback(_) => Vec::new(),
+        })
+        .collect()
+}
+
+/// Where textures are painted.
+fn textured_rects(shapes: &[Shape]) -> Vec<Rect> {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                let points: Vec<_> = mesh.vertices.iter().map(|vertex| vertex.pos).collect();
+                Some(Rect::from_points(&points))
+            }
+            _ => None,
         })
         .collect()
 }
@@ -721,9 +746,9 @@ fn ellipses_are_resized_by_the_handles_on_their_bounds() {
 #[test]
 fn nodes_the_canvas_cannot_draw_cannot_be_clicked() {
     let mut harness = Harness::new(Tool::Cursor);
-    let mut svg = NodeGraphics::new(NodeKind::Other("SVGNode".to_owned()));
-    svg.geometry = geometry(100.0, 50.0, 150.0, 80.0);
-    document::add_node(harness.doc.graphml_mut(), &svg);
+    let mut uml = NodeGraphics::new(NodeKind::Other("UMLClassNode".to_owned()));
+    uml.geometry = geometry(100.0, 50.0, 150.0, 80.0);
+    document::add_node(harness.doc.graphml_mut(), &uml);
     harness.click(vec2(150.0, 100.0));
     assert!(harness.selected.is_empty());
 }
@@ -2784,12 +2809,12 @@ fn dragging_from_the_empty_canvas_selects_the_nodes_and_edges_inside_the_box() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     let third = harness.add_box(THIRD.min, THIRD.max);
-    let mut svg = NodeGraphics::new(NodeKind::Other("SVGNode".to_owned()));
-    svg.geometry = geometry(300.0, 150.0, 20.0, 20.0);
-    let svg = document::add_node(harness.doc.graphml_mut(), &svg);
+    let mut uml = NodeGraphics::new(NodeKind::Other("UMLClassNode".to_owned()));
+    uml.geometry = geometry(300.0, 150.0, 20.0, 20.0);
+    let uml = document::add_node(harness.doc.graphml_mut(), &uml);
     harness.add_edge(&node, &other, &[]);
     harness.add_edge(&other, &third, &[]);
-    harness.add_edge(&node, &svg, &[]);
+    harness.add_edge(&node, &uml, &[]);
     harness.selected = Selection::edge(1);
     // Round the first two and the edge between them, but only across the
     // third. Nodes the canvas can't draw, and their edges, aren't selected.
@@ -3094,4 +3119,149 @@ fn ctrl_double_clicks_edit_no_labels() {
     harness.with_ctrl(|harness| harness.double_click(vec2(475.0, 90.0)));
     assert_eq!(harness.selected, Selection::node(node));
     assert_eq!(harness.actions, []);
+}
+
+/// A ring that fills its bounds, 100 points across, with a margin round it.
+const RING: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><circle cx="60" cy="60" r="45" fill="none" stroke="black" stroke-width="10"/></svg>"#;
+
+#[test]
+fn svg_nodes_show_their_drawing_stretched_to_fill_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_svg(RING, NODE);
+    let painted = harness.frame(vec![]);
+    assert_eq!(textured_rects(&painted), [harness.node()]);
+    assert_eq!(textures::sizes(&harness.canvas.textures), [[150, 80]]);
+    // yEd draws neither its fill nor its border.
+    let fill = crate::color_picker::color32(yed::Color::rgb(0xCC, 0xCC, 0xFF));
+    assert_eq!(filled_rects(&painted, fill), []);
+    assert_eq!(paths(&painted), [] as [&PathShape; 0]);
+
+    // Drawn anew at a new size, and only once the zoom settles.
+    harness.zoom(2.0);
+    harness.frame(vec![]);
+    assert_eq!(textures::sizes(&harness.canvas.textures), [[300, 160]]);
+    let painted = harness.frame(vec![]);
+    assert_eq!(textured_rects(&painted), [harness.zoomed_node(2.0)]);
+}
+
+#[test]
+fn svg_nodes_without_a_drawing_paint_only_their_labels() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_svg("<svg/>", NODE);
+    document::set_label(
+        harness.doc.graphml_mut(),
+        &first_label(&id),
+        "Gone",
+        &Style::default(),
+    );
+    let painted = harness.frame(vec![]);
+    assert_eq!(textured_rects(&painted), []);
+    let texts = painted
+        .iter()
+        .filter(|shape| matches!(shape, Shape::Text(_)));
+    assert_eq!(texts.count(), 1);
+}
+
+#[test]
+fn new_labels_are_edited_below_svg_nodes() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_svg(RING, NODE);
+    harness.edit(&id);
+    let shapes = harness.type_text("Ring");
+    let text = painted(&shapes, "Ring").unwrap();
+    let editor = frame_around(&shapes, text);
+    assert!(editor.min.y > harness.node().max.y, "{editor:?}");
+    let action = harness.actions.last();
+    assert_eq!(action, None);
+    harness.press(Modifiers::NONE, Key::Enter);
+    let set = Action::SetLabel(first_label(&id), "Ring".to_owned());
+    assert_eq!(harness.actions, [set]);
+}
+
+#[test]
+fn clicks_anywhere_in_an_svg_nodes_bounds_select_it() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_svg(RING, NODE);
+    // In the ring's empty middle, then in a corner it leaves empty.
+    harness.click(vec2(175.0, 90.0));
+    assert_eq!(harness.selected_node(), Some(id.as_str()));
+    harness.click(vec2(330.0, 300.0));
+    assert!(harness.selected.is_empty());
+    harness.click(vec2(102.0, 52.0));
+    assert_eq!(harness.selected_node(), Some(id.as_str()));
+}
+
+#[test]
+fn lines_end_where_an_svg_nodes_drawing_begins() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let ring = Rect::from_min_size(pos2(100.0, 100.0), vec2(100.0, 100.0));
+    let ring = harness.add_svg(RING, ring);
+    let other = harness.add_box(pos2(300.0, 300.0), pos2(340.0, 340.0));
+    harness.add_edge(&other, &ring, &[]);
+    let painted = harness.frame(vec![]);
+    let line = paths(&painted)[0];
+    // Diagonally past the corner its bounds leave empty, to the ring.
+    let ring_edge = 150.0 + 50.0 / 2f32.sqrt();
+    let end = *line.points.last().unwrap() - harness.origin.to_vec2();
+    assert!(end.distance(pos2(ring_edge, ring_edge)) < 0.5, "{end:?}");
+    // The same in export.
+    let drawing = Drawing::of(&harness.ctx, harness.doc.scene(), None);
+    let ends = drawing.marks.iter().find_map(|mark| match mark {
+        Mark::Line { points, .. } => points.last().copied(),
+        _ => None,
+    });
+    assert!(ends.unwrap().distance(pos2(ring_edge, ring_edge)) < 0.5);
+}
+
+#[test]
+fn svg_nodes_stretch_freely_unless_shift_is_held_on_a_corner() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_svg(RING, NODE);
+    harness.selected = Selection::node(id.clone());
+    let geometry_of = |harness: &Harness| {
+        document::graphics_of(harness.doc.graphml(), &id)
+            .unwrap()
+            .geometry
+    };
+    harness.drag(vec2(250.0, 130.0), vec2(280.0, 150.0));
+    assert_eq!(geometry_of(&harness), geometry(100.0, 50.0, 180.0, 100.0));
+
+    // As far as the side dragged further, from the opposite corner.
+    harness.holding(Modifiers::SHIFT, |harness| {
+        harness.drag(vec2(100.0, 50.0), vec2(136.0, 60.0));
+    });
+    assert_eq!(geometry_of(&harness), geometry(118.0, 60.0, 162.0, 90.0));
+    let painted = harness.frame(vec![]);
+    let resized = Rect::from_min_size(pos2(118.0, 60.0), vec2(162.0, 90.0));
+    assert_eq!(
+        textured_rects(&painted),
+        [resized.translate(harness.origin.to_vec2())]
+    );
+
+    // A side stretches it either way.
+    harness.holding(Modifiers::SHIFT, |harness| {
+        harness.drag(vec2(280.0, 105.0), vec2(300.0, 105.0));
+    });
+    assert_eq!(geometry_of(&harness), geometry(118.0, 60.0, 182.0, 90.0));
+}
+
+#[test]
+fn shift_keeps_boxes_in_proportion_too_and_while_dragging() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_box();
+    harness.holding(Modifiers::SHIFT, |harness| {
+        let held = harness.drag_and_hold(vec2(250.0, 130.0), vec2(280.0, 150.0));
+        let preview = Rect::from_min_size(pos2(100.0, 50.0), vec2(187.5, 100.0));
+        assert_eq!(
+            filled_rects(&held, BOX_FILL),
+            [preview.translate(harness.origin.to_vec2())]
+        );
+        harness.frame(vec![button(harness.origin + vec2(280.0, 150.0), false)]);
+    });
+    assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 187.5, 100.0)]);
+    // Down to the smallest size, in proportion.
+    harness.holding(Modifiers::SHIFT, |harness| {
+        harness.drag(vec2(287.5, 150.0), vec2(0.0, 0.0));
+    });
+    assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 1.875, 1.0)]);
 }

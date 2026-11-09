@@ -1,12 +1,15 @@
 //! What the canvas draws of the scene, as marks in graph coordinates, so that
 //! export draws the same.
 
+use std::sync::Arc;
+
 use egui::emath::TSTransform;
 use egui::{Align, Align2, LayerId, Painter, Pos2, Rect};
-use graphml::yed::{self, Color, Label, LineType, NodeGraphics, Stroke};
+use graphml::yed::{self, Color, Label, LineType, Stroke};
 
-use crate::scene::Scene;
+use crate::scene::{Scene, SceneNode};
 use crate::selection::Selection;
+use crate::svg_image::SvgImage;
 
 use super::shown::{EdgeLook, Outline, Shown, egui_rect, shape};
 use super::{Owner, edge};
@@ -40,6 +43,11 @@ pub enum Mark {
     Polygon {
         points: Vec<Pos2>,
         color: Color,
+    },
+    /// An SVG node's drawing, stretched to fill `rect`.
+    Image {
+        rect: Rect,
+        image: Arc<SvgImage>,
     },
     Text(Text),
 }
@@ -86,7 +94,7 @@ impl Drawing {
         };
         for node in &scene.nodes {
             if only.is_none_or(|only| only.contains_node(&node.id)) {
-                drawing.add_node(shown, &node.graphics, node.radius);
+                drawing.add_node(shown, node);
             }
         }
         for edge in &scene.edges {
@@ -98,12 +106,21 @@ impl Drawing {
     }
 
     /// Adds a node and its labels, as the canvas paints them.
-    fn add_node(&mut self, shown: Shown, graphics: &NodeGraphics, corner_radius: Option<f64>) {
-        let Some(outline) = shape(graphics, corner_radius) else {
+    fn add_node(&mut self, shown: Shown, node: &SceneNode) {
+        let graphics = &node.graphics;
+        let Some(outline) = shape(graphics, node.radius) else {
             return;
         };
         let rect = egui_rect(graphics.geometry, TSTransform::IDENTITY);
-        if rect.is_finite() && rect.width() >= 0.0 && rect.height() >= 0.0 {
+        if outline == Outline::Svg {
+            if let Some(image) = node.image.clone()
+                && rect.is_positive()
+                && rect.is_finite()
+            {
+                self.cover(rect);
+                self.marks.push(Mark::Image { rect, image });
+            }
+        } else if rect.is_finite() && rect.width() >= 0.0 && rect.height() >= 0.0 {
             let border = pen(&graphics.border);
             self.cover(rect.expand(border.as_ref().map_or(0.0, |pen| pen.width / 2.0)));
             self.marks.push(Mark::Node {

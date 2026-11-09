@@ -153,7 +153,8 @@ fn pastes_into_another_document_bring_their_keys_and_resources() {
     let pasted = paste(&mut doc, copied);
     assert_eq!(pasted, [node("n0"), node("n1"), Item::Edge(0)]);
     let kind = graphics_of(&doc, "n1").unwrap().kind;
-    assert_eq!(kind, NodeKind::Other("SVGNode".to_owned()));
+    let resource = Some("1".to_owned());
+    assert_eq!(kind, NodeKind::Svg { resource });
     assert_eq!(refids(&doc, "n1"), ["1"]);
     assert_eq!(resource_ids(&doc), ["1"]);
     assert_eq!(

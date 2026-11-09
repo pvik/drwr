@@ -9,6 +9,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Embeds SVG nodes' drawings in exports. usvg uses it, so it builds nothing new.
+base64 = "0.22.1"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_extras = { version = "0.37.0", features = ["svg"] }

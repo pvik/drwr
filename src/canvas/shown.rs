@@ -9,8 +9,10 @@ use graphml::yed::{self, EdgeGraphics, NodeGraphics, NodeKind, Route, ShapeType}
 use crate::document::{EdgeEnd, Item};
 use crate::scene::{Scene, SceneEdge, SceneNode};
 use crate::selection::Selection;
+use crate::svg_image::SvgImage;
 
-use super::{EdgePart, GRAB, Owner, edge};
+use super::edge::{self, Cut};
+use super::{EdgePart, GRAB, Owner};
 
 /// Where an end of an edge is: on a node of the scene, by its index, or at a
 /// point in graph coordinates.
@@ -177,21 +179,25 @@ impl Shown<'_> {
 
     /// Where `look` is painted on screen: cut where it leaves its nodes.
     pub fn path(&self, look: &EdgeLook) -> Vec<Pos2> {
-        let zoom = self.to_screen.scaling;
-        let inside = |anchor: Anchor| {
-            let node = match anchor {
-                Anchor::Node(node) => {
-                    Some((outline(&self.scene.nodes[node]), self.node_rect(node)))
-                }
-                Anchor::Point(_) => None,
-            };
-            move |pos| node.is_some_and(|(outline, rect)| inside(outline, rect, zoom, pos))
+        let (source, target) = (self.cut(look.source), self.cut(look.target));
+        edge::clip(self.unclipped(look), source, target)
+    }
+
+    /// What cuts the lines ending at `anchor`.
+    fn cut(&self, anchor: Anchor) -> NodeCut<'_> {
+        let Anchor::Node(index) = anchor else {
+            return NodeCut::Free;
         };
-        edge::clip(
-            self.unclipped(look),
-            inside(look.source),
-            inside(look.target),
-        )
+        let node = &self.scene.nodes[index];
+        let rect = self.node_rect(index);
+        match (outline(node), &node.image) {
+            (Some(Outline::Svg), Some(image)) => NodeCut::Image { rect, image },
+            (outline, _) => NodeCut::Outline {
+                outline,
+                rect,
+                zoom: self.to_screen.scaling,
+            },
+        }
     }
 
     /// The route yEd places the labels of `look` along.
@@ -213,12 +219,55 @@ impl Shown<'_> {
     }
 }
 
+/// What cuts lines where they leave a node on screen.
+enum NodeCut<'a> {
+    /// None, as the end isn't on a node.
+    Free,
+    /// Its outline filling `rect`, at `zoom` screen points a graph point.
+    Outline {
+        outline: Option<Outline>,
+        rect: Rect,
+        zoom: f32,
+    },
+    /// What an SVG node filling `rect` draws, which lines from outside go up
+    /// to, like yEd's.
+    Image { rect: Rect, image: &'a SvgImage },
+}
+
+impl Cut for NodeCut<'_> {
+    fn inside(&self, pos: Pos2) -> bool {
+        match *self {
+            NodeCut::Free => false,
+            NodeCut::Outline {
+                outline,
+                rect,
+                zoom,
+            } => inside(outline, rect, zoom, pos),
+            NodeCut::Image { rect, .. } => rect.contains(pos),
+        }
+    }
+
+    fn exit(&self, from: Pos2, to: Pos2) -> Pos2 {
+        let bounds = edge::bisect(|pos| self.inside(pos), from, to);
+        let NodeCut::Image { rect, image } = *self else {
+            return bounds;
+        };
+        // Going in from where it crosses the bounds, so that holes don't
+        // cut it short.
+        let fraction = |pos: Pos2| (pos - rect.min) / rect.size();
+        let drawn = image.first_drawn(fraction(bounds), fraction(from));
+        drawn.map_or(bounds, |at| rect.min + at * rect.size())
+    }
+}
+
 /// The shapes the canvas can draw nodes as.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Outline {
     /// A box, with its corners rounded to this radius in graph points.
     Rect(f32),
     Ellipse,
+    /// The drawing of an SVG node, which has no fill or border.
+    Svg,
 }
 
 /// The shape the canvas draws a node as, if it's a kind it can draw yet.
@@ -230,17 +279,19 @@ pub fn shape(graphics: &NodeGraphics, corner_radius: Option<f64>) -> Option<Outl
             Some(Outline::Rect(corner_radius.unwrap_or_default() as f32))
         }
         NodeKind::Shape(ShapeType::Ellipse) => Some(Outline::Ellipse),
+        NodeKind::Svg { .. } => Some(Outline::Svg),
         _ => None,
     }
 }
 
 /// Whether a point is inside `outline` filling `rect`, or in `rect` for a
-/// node the canvas can't draw, at `zoom` screen points a graph point.
+/// node the canvas can't draw, at `zoom` screen points a graph point. An SVG
+/// node's drawing counts as all of `rect`, so clicks on its gaps hit it.
 fn inside(outline: Option<Outline>, rect: Rect, zoom: f32, pos: Pos2) -> bool {
     match outline {
         Some(Outline::Rect(radius)) => in_rounded_rect(rect, radius * zoom, pos),
         Some(Outline::Ellipse) => in_ellipse(rect, pos),
-        None => rect.contains(pos),
+        Some(Outline::Svg) | None => rect.contains(pos),
     }
 }
 

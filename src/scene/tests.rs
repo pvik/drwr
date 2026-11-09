@@ -124,3 +124,41 @@ fn graphics_are_found_for_items_in_the_scene() {
     // Nested nodes aren't in the scene.
     assert!(scene.graphics(&node("n5::n0")).is_none());
 }
+
+/// The drawing of the node with id `id` in `scene`.
+fn image(scene: &Scene, id: &str) -> Option<Arc<SvgImage>> {
+    scene.nodes[scene.node(id).unwrap()].image.clone()
+}
+
+#[test]
+fn svg_nodes_share_their_drawing_parsed_once() {
+    let mut doc = fixture();
+    let circle = yed::resource_text(&doc, "1").unwrap();
+    let geometry = yed::Rect::default();
+    let copy = document::add_svg_node(&mut doc, &circle, geometry);
+    let mut cache = Cache::read(&doc);
+    let n3 = image(cache.scene(), "n3").unwrap();
+    assert!(Arc::ptr_eq(&n3, &image(cache.scene(), &copy).unwrap()));
+    assert_eq!(n3.bounds().size(), vec2(8.0, 8.0));
+    assert_eq!(image(cache.scene(), "n0"), None);
+
+    // Read again, as when the document's resources change.
+    document::move_items(&mut doc, &[node("n3")], 1.0, 0.0);
+    cache.update(&doc, &Changed::All);
+    assert!(Arc::ptr_eq(&n3, &image(cache.scene(), "n3").unwrap()));
+}
+
+#[test]
+fn svg_nodes_have_no_drawing_if_theirs_cannot_be_read() {
+    let mut doc = fixture();
+    let broken = document::add_svg_node(&mut doc, "not svg", yed::Rect::default());
+    let missing = document::add_svg_node(&mut doc, "", yed::Rect::default());
+    document::edit_graphics(&mut doc, &missing, |graphics| {
+        let resource = Some("9".to_owned());
+        graphics.kind = NodeKind::Svg { resource };
+    });
+    let scene = Scene::read(&doc);
+    assert_eq!(image(&scene, &broken), None);
+    assert_eq!(image(&scene, &missing), None);
+    assert!(image(&scene, "n3").is_some());
+}

@@ -1,6 +1,6 @@
 use super::codec::{
-    Part, get, get_color, get_or, keyword_enum, qualified, read_part, replace_children, set,
-    set_color, write_part,
+    Part, child_or_insert, get, get_color, get_or, keyword_enum, qualified, read_part,
+    replace_children, set, set_color, write_part,
 };
 use super::{Color, Label, Rect, Stroke};
 use crate::{Error, xml::Element};
@@ -26,8 +26,11 @@ pub enum NodeKind {
     /// A `y:GenericNode`, by its `configuration`, e.g.
     /// `com.yworks.flowchart.process`.
     Generic(String),
-    /// Any other type, by element name, e.g. `SVGNode`. New nodes of these
-    /// kinds get none of their type-specific content.
+    /// A `y:SVGNode`, drawing the SVG in the resource with id `resource`; see
+    /// [`super::resource_text`].
+    Svg { resource: Option<String> },
+    /// Any other type, by element name, e.g. `UMLClassNode`. New nodes of
+    /// these kinds get none of their type-specific content.
     Other(String),
 }
 
@@ -36,6 +39,7 @@ impl NodeKind {
         match self {
             NodeKind::Shape(_) => "ShapeNode",
             NodeKind::Generic(_) => "GenericNode",
+            NodeKind::Svg { .. } => "SVGNode",
             NodeKind::Other(name) => name,
         }
     }
@@ -97,10 +101,22 @@ impl Part for Fill {
 
 const BEFORE_LABELS: &[&str] = &["Geometry", "Fill", "BorderStyle"];
 const BEFORE_SHAPE: &[&str] = &["Geometry", "Fill", "BorderStyle", "NodeLabel"];
+const BEFORE_SVG_MODEL: &[&str] = &[
+    "Geometry",
+    "Fill",
+    "BorderStyle",
+    "NodeLabel",
+    "SVGNodeProperties",
+];
 
 impl NodeGraphics {
     /// A node like the ones yEd creates.
     pub fn new(kind: NodeKind) -> Self {
+        // yEd's, though it draws no fill on SVG nodes.
+        let color = match kind {
+            NodeKind::Svg { .. } => Color::rgb(0xCC, 0xCC, 0xFF),
+            _ => Color::rgb(0xFF, 0xCC, 0x00),
+        };
         NodeGraphics {
             kind,
             geometry: Rect {
@@ -109,7 +125,7 @@ impl NodeGraphics {
                 ..Rect::default()
             },
             fill: Fill {
-                color: Some(Color::rgb(0xFF, 0xCC, 0x00)),
+                color: Some(color),
                 gradient: None,
             },
             border: Stroke::default(),
@@ -123,6 +139,11 @@ impl NodeGraphics {
         let kind = match realizer.local_name() {
             "ShapeNode" => NodeKind::Shape(read_part(realizer, "Shape")?),
             "GenericNode" => NodeKind::Generic(get_or(realizer, "configuration", String::new())?),
+            "SVGNode" => NodeKind::Svg {
+                resource: svg_content(realizer)
+                    .and_then(|content| content.attr("refid"))
+                    .map(str::to_owned),
+            },
             name => NodeKind::Other(name.to_owned()),
         };
         Ok(NodeGraphics {
@@ -163,20 +184,47 @@ impl NodeGraphics {
         if let NodeKind::Shape(shape) = &self.kind {
             write_part(realizer, "Shape", BEFORE_SHAPE, shape);
         }
+        if let NodeKind::Svg { resource } = &self.kind {
+            let model = child_or_insert(realizer, "SVGModel", BEFORE_SVG_MODEL);
+            let content = child_or_insert(model, "SVGContent", &[]);
+            match resource {
+                Some(id) => set(content, "refid", id),
+                None => {
+                    content.attributes.remove("refid");
+                }
+            }
+        }
         element
     }
 }
 
+/// The `y:SVGContent` of an SVG node's realizer.
+fn svg_content(realizer: &Element) -> Option<&Element> {
+    realizer.child("SVGModel")?.child("SVGContent")
+}
+
 /// A new node element with the parts yEd always writes.
 fn template(name: &str) -> Element {
+    let border = Element::new("y:BorderStyle");
+    // yEd leaves it out on SVG nodes.
+    let border = match name {
+        "SVGNode" => border,
+        _ => border.with_attr("raised", "false"),
+    };
     let element = Element::new(format!("y:{name}"))
         .with_child(Element::new("y:Geometry"))
         .with_child(Element::new("y:Fill").with_attr("transparent", "false"))
-        .with_child(Element::new("y:BorderStyle").with_attr("raised", "false"));
-    if name == "ShapeNode" {
-        element.with_child(Element::new("y:Shape"))
-    } else {
-        element
+        .with_child(border);
+    match name {
+        "ShapeNode" => element.with_child(Element::new("y:Shape")),
+        "SVGNode" => element
+            .with_child(Element::new("y:SVGNodeProperties").with_attr("usingVisualBounds", "true"))
+            .with_child(
+                Element::new("y:SVGModel")
+                    .with_attr("svgBoundsPolicy", "0")
+                    .with_child(Element::new("y:SVGContent")),
+            ),
+        _ => element,
     }
 }
 

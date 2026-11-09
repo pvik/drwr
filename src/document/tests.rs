@@ -794,3 +794,84 @@ fn removing_items_removes_edges_by_their_indexes_and_nodes_with_theirs() {
     assert_eq!(edge_ids(&doc), [""; 0]);
     assert_eq!(graphics_of(&doc, "n2"), None);
 }
+
+const CIRCLE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>"#;
+const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#;
+
+fn resource_ids(doc: &GraphMl) -> Vec<&str> {
+    let resources = yed::resources(doc).into_iter().flat_map(Element::elements);
+    resources
+        .filter_map(|resource| resource.attr("id"))
+        .collect()
+}
+
+/// The resource the SVG node with id `id` draws.
+fn resource(doc: &GraphMl, id: &str) -> Option<String> {
+    match kind(doc, id) {
+        NodeKind::Svg { resource } => resource,
+        other => panic!("{id} is a {other:?}"),
+    }
+}
+
+#[test]
+fn svg_nodes_share_the_resource_of_the_same_svg() {
+    let mut doc = yed::new_document();
+    let geometry = bounds(10.0, 20.0, 30.0, 40.0);
+    let first = add_svg_node(&mut doc, CIRCLE, geometry);
+    let second = add_svg_node(&mut doc, CIRCLE, geometry);
+    let third = add_svg_node(&mut doc, SQUARE, geometry);
+    let resources = [&first, &second, &third].map(|id| resource(&doc, id));
+    assert_eq!(resources, ["1", "1", "2"].map(|id| Some(id.to_owned())));
+    assert_eq!(resource_ids(&doc), ["1", "2"]);
+    assert_eq!(yed::resource_text(&doc, "1").as_deref(), Some(CIRCLE));
+    assert_eq!(graphics_of(&doc, &first).unwrap().geometry, geometry);
+}
+
+#[test]
+fn the_svg_goes_with_the_last_node_drawing_it() {
+    let mut doc = yed::new_document();
+    let geometry = bounds(0.0, 0.0, 10.0, 10.0);
+    let first = add_svg_node(&mut doc, CIRCLE, geometry);
+    let second = add_svg_node(&mut doc, CIRCLE, geometry);
+    let square = add_svg_node(&mut doc, SQUARE, geometry);
+    remove_items(&mut doc, &[Item::Node(first)]);
+    assert_eq!(resource_ids(&doc), ["1", "2"]);
+    remove_items(&mut doc, &[Item::Node(second), Item::Node(square)]);
+    assert_eq!(resource_ids(&doc), [""; 0]);
+    // Which yEd writes when there are none.
+    assert!(doc.to_xml().contains("<y:Resources/>"));
+}
+
+#[test]
+fn removing_nodes_drops_only_the_resources_they_drew() {
+    let mut doc = fixture();
+    // One no node draws, as a file may have.
+    let unused = yed::add_resource(&mut doc, CIRCLE);
+    // And one a node in the group n5 draws.
+    let nested = yed::add_resource(&mut doc, SQUARE);
+    let mut node = Node::new("n5::n1");
+    let resource = Some(nested.clone());
+    Keys::find(&doc).set_node_graphics(&mut node, &NodeGraphics::new(NodeKind::Svg { resource }));
+    let group = doc.graphs[0].nodes.iter_mut().find(|node| node.id == "n5");
+    group.unwrap().graph.as_mut().unwrap().nodes.push(node);
+
+    remove_items(&mut doc, &[Item::Node("n0".to_owned())]);
+    assert_eq!(resource_ids(&doc), ["1", unused.as_str(), nested.as_str()]);
+    remove_items(&mut doc, &[Item::Node("n5".to_owned())]);
+    assert_eq!(resource_ids(&doc), ["1", unused.as_str()]);
+    remove_items(&mut doc, &[Item::Node("n3".to_owned())]);
+    assert_eq!(resource_ids(&doc), [unused.as_str()]);
+}
+
+#[test]
+fn new_labels_go_below_svg_nodes_like_yeds() {
+    let mut doc = yed::new_document();
+    let svg = add_svg_node(&mut doc, CIRCLE, bounds(0.0, 0.0, 10.0, 10.0));
+    let rect = add_node(&mut doc, &rectangle());
+    for id in [&svg, &rect] {
+        set_label(&mut doc, &label(id, 0), "Text", &Style::default());
+    }
+    let position = |id: &str| graphics_of(&doc, id).unwrap().labels[0].position();
+    assert_eq!(position(&svg), Some(LabelPosition::South));
+    assert_eq!(position(&rect), Some(LabelPosition::Center));
+}

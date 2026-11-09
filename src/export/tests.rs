@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use egui::{Pos2, RawInput, pos2};
 use graphml::GraphMl;
 use graphml::yed::{self, EdgeGraphics, EdgeKind, LineType, NodeGraphics, NodeKind, ShapeType};
@@ -446,4 +448,68 @@ fn pngs_over_the_limit_are_refused() {
         ..Settings::default()
     };
     assert!(export(&drawing, &svg, &Fonts::default()).is_ok());
+}
+
+/// A red disc 20 across on a 40 by 30 canvas, which an SVG node at (100, 50)
+/// stretches to 80×40. Returns the document.
+fn red_disc() -> GraphMl {
+    let mut graphml = yed::new_document();
+    let disc = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><circle cx="15" cy="12" r="10" fill="red"/></svg>"#;
+    let geometry = yed::Rect {
+        x: 100.0,
+        y: 50.0,
+        width: 80.0,
+        height: 40.0,
+    };
+    let id = document::add_svg_node(&mut graphml, disc, geometry);
+    document::set_label(
+        &mut graphml,
+        &document::LabelRef {
+            item: Item::Node(id),
+            index: 0,
+        },
+        "Disc",
+        &crate::style::Style::default(),
+    );
+    graphml
+}
+
+#[test]
+fn svg_nodes_embed_their_drawing_showing_what_it_draws() {
+    let graphml = red_disc();
+    let svg = svg(&drawing(&graphml, None), Settings::default());
+    let viewport = r#"<svg x="100" y="50" width="80" height="40" viewBox="5 2 20 20" preserveAspectRatio="none">"#;
+    // After the page's own.
+    assert_eq!(elements(&svg, "svg")[1..], [viewport]);
+    let [image] = elements(&svg, "image").try_into().unwrap();
+    let data = image
+        .strip_prefix(r#"<image width="40" height="30" href="data:image/svg+xml;base64,"#)
+        .and_then(|image| image.strip_suffix(r#""/>"#))
+        .unwrap();
+    let embedded = STANDARD.decode(data).unwrap();
+    let text = yed::resource_text(&graphml, "1").unwrap();
+    assert_eq!(String::from_utf8(embedded).unwrap(), text);
+    // Without its fill or border, but with its label.
+    assert_eq!(elements(&svg, "rect").len(), 1);
+    assert_eq!(elements(&svg, "text").len(), 1);
+    usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("the SVG is valid");
+}
+
+#[test]
+fn pngs_draw_svg_nodes_stretched_as_on_the_canvas() {
+    let graphml = red_disc();
+    let transparent = Settings {
+        transparent: true,
+        margin: 0,
+        ..Settings::default()
+    };
+    let pixmap = png(&drawing(&graphml, None), transparent);
+    // The page starts at the node's corner, and the label is below it.
+    let at = |x: f32, y: f32| pos2(x - 100.0, y - 50.0);
+    assert_eq!(pixel(&pixmap, at(140.0, 70.0)), [0xFF, 0, 0, 0xFF]);
+    // The disc is an ellipse touching the node's sides.
+    assert_eq!(pixel(&pixmap, at(102.0, 70.0)), [0xFF, 0, 0, 0xFF]);
+    assert_eq!(pixel(&pixmap, at(140.0, 51.0)), [0xFF, 0, 0, 0xFF]);
+    assert_eq!(pixel(&pixmap, at(103.0, 53.0))[3], 0);
+    assert_eq!(pixel(&pixmap, at(177.0, 87.0))[3], 0);
 }

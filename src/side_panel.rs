@@ -180,13 +180,17 @@ impl SidePanel {
                 }
                 // Two, when clicking a button also applies the number typed.
                 let mut actions = Vec::new();
+                // yEd draws no fill or border on SVG nodes.
+                let svg =
+                    |(_, node): &(_, &NodeGraphics)| matches!(node.kind, NodeKind::Svg { .. });
+                let painted = !edges.is_empty() || !nodes.iter().all(svg);
                 // A node's border counts as a line.
                 let (colors, stroke): (&[_], _) = if edges.is_empty() {
                     (&ColorProperty::NODE, "Border")
                 } else {
                     (&[ColorProperty::Line], "Line")
                 };
-                for &property in colors {
+                for &property in colors.iter().filter(|_| painted) {
                     ui.label(property.name());
                     let color = same(items.iter().map(|(_, g)| property.get(*g)));
                     if color_button(ui, color).clicked() {
@@ -194,17 +198,19 @@ impl SidePanel {
                     }
                     ui.end_row();
                 }
-                let strokes: Vec<_> = items.iter().map(|(_, g)| g.stroke()).collect();
-                ui.label(format!("{stroke} width"));
-                let widths: Vec<_> = strokes.iter().map(|stroke| stroke.width).collect();
-                let width = self.number_field(ui, &widths, LINE_WIDTHS, 0.1);
-                actions.extend(width.map(Action::SetLineWidth));
-                ui.end_row();
-                ui.label(format!("{stroke} style"));
-                let types = strokes.iter().map(|stroke| &stroke.line_type);
-                let line_type = line_style_box(ui, same(types));
-                actions.extend(line_type.map(Action::SetLineType));
-                ui.end_row();
+                if painted {
+                    let strokes: Vec<_> = items.iter().map(|(_, g)| g.stroke()).collect();
+                    ui.label(format!("{stroke} width"));
+                    let widths: Vec<_> = strokes.iter().map(|stroke| stroke.width).collect();
+                    let width = self.number_field(ui, &widths, LINE_WIDTHS, 0.1);
+                    actions.extend(width.map(Action::SetLineWidth));
+                    ui.end_row();
+                    ui.label(format!("{stroke} style"));
+                    let types = strokes.iter().map(|stroke| &stroke.line_type);
+                    let line_type = line_style_box(ui, same(types));
+                    actions.extend(line_type.map(Action::SetLineType));
+                    ui.end_row();
+                }
                 let radii = (nodes.iter()).map(|(id, _)| scene.nodes[scene.node(id)?].radius);
                 // Only boxes have one.
                 if edges.is_empty()
@@ -447,6 +453,7 @@ fn shape(node: &NodeGraphics) -> &str {
     match &node.kind {
         NodeKind::Shape(shape) => shape.as_str(),
         NodeKind::Generic(configuration) => configuration,
+        NodeKind::Svg { .. } => "SVGNode",
         NodeKind::Other(name) => name,
     }
 }

@@ -108,6 +108,38 @@ pub fn resources_mut(doc: &mut GraphMl) -> &mut Element {
     data.element_mut().expect("added if missing")
 }
 
+/// The text of the resource with id `id`, such as an SVG drawing.
+pub fn resource_text(doc: &GraphMl, id: &str) -> Option<String> {
+    let mut resources = resources(doc)?.elements();
+    let resource = resources.find(|resource| resource.attr("id") == Some(id))?;
+    Some(resource.text())
+}
+
+/// Adds a resource holding `text`, unless one does already, as yEd shares
+/// them. Returns its id.
+pub fn add_resource(doc: &mut GraphMl, text: &str) -> String {
+    let resources = resources_mut(doc);
+    let same =
+        |resource: &&Element| resource.elements().next().is_none() && resource.text() == text;
+    let had = resources.elements().find(same);
+    if let Some(id) = had.and_then(|resource| resource.attr("id")) {
+        return id.to_owned();
+    }
+    let id = unused_resource_id(resources);
+    let mut resource = Element::new(codec::qualified(resources, "Resource")).with_attr("id", &id);
+    resource.children.push(XmlNode::Text(text.to_owned()));
+    resources.children.push(XmlNode::Element(resource));
+    id
+}
+
+/// The first of yEd's resource ids 1, 2, … that none of `resources` has.
+pub fn unused_resource_id(resources: &Element) -> String {
+    (1..)
+        .map(|n: u32| n.to_string())
+        .find(|id| resources.elements().all(|had| had.attr("id") != Some(id)))
+        .expect("the ids are endless")
+}
+
 /// Declares the GraphML and `y` namespaces yEd needs, if missing.
 fn ensure_namespaces(doc: &mut GraphMl) {
     // A prefixed document has GraphML's namespace on its prefix.

@@ -3,12 +3,15 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use egui::{Align, Pos2, Rect};
 use graphml::yed::{self, Color, FontStyle};
 
 use crate::canvas::{Drawing, Mark, Outline, Pen, Text};
 use crate::fonts::{self, Fonts};
 use crate::line_type;
+use crate::svg_image::SvgImage;
 
 use super::outline::Outliner;
 
@@ -74,8 +77,30 @@ impl Svg<'_> {
                 let d = path_data(points, true);
                 let _ = writeln!(self.out, r#"<path d="{d}"{}/>"#, paint("fill", *color));
             }
+            Mark::Image { rect, image } => self.image(*rect, image),
             Mark::Text(text) => self.text(text),
         }
+    }
+
+    /// The drawing `image` stretched to fill `rect`: embedded whole, so that
+    /// its ids and styles can't clash with others', in a viewport that shows
+    /// only what it draws.
+    fn image(&mut self, rect: Rect, image: &SvgImage) {
+        let [x, y, width, height] = [rect.min.x, rect.min.y, rect.width(), rect.height()].map(num);
+        let bounds = image.bounds();
+        let view = [bounds.min.x, bounds.min.y, bounds.width(), bounds.height()].map(num);
+        let [view_x, view_y, view_width, view_height] = view;
+        let [canvas_width, canvas_height] = [image.canvas_size().x, image.canvas_size().y].map(num);
+        let data = STANDARD.encode(image.text());
+        let _ = writeln!(
+            self.out,
+            r#"<svg x="{x}" y="{y}" width="{width}" height="{height}" viewBox="{view_x} {view_y} {view_width} {view_height}" preserveAspectRatio="none">"#
+        );
+        let _ = writeln!(
+            self.out,
+            r#"<image width="{canvas_width}" height="{canvas_height}" href="data:image/svg+xml;base64,{data}"/>"#
+        );
+        self.out.push_str("</svg>\n");
     }
 
     fn node(&mut self, rect: Rect, outline: Outline, fill: Option<Color>, border: Option<&Pen>) {
@@ -112,6 +137,8 @@ impl Svg<'_> {
                     r#"<ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}"{fill}{stroke}/>"#
                 )
             }
+            // Drawn as `Mark::Image`.
+            Outline::Svg => Ok(()),
         };
     }
 

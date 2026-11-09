@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 
 use graphml::xml::{Element, XmlNode};
 use graphml::yed::{self, Keys};
-use graphml::{Data, Edge, Graph, GraphMl, Key, Port};
+use graphml::{Edge, Graph, GraphMl, Key};
 
 use super::{
-    Item, first_free, fresh, node_graphics, taken_ids, top_graph_mut, unused_key_id,
-    visit_graphs_mut, visit_nodes,
+    Item, fresh, node_graphics, resource_refs, taken_ids, top_graph_mut, unused_key_id, visit_data,
+    visit_elements, visit_graphs_mut, visit_nodes,
 };
 
 /// How far right and down a paste goes for each copy already in its place.
@@ -38,10 +38,7 @@ pub fn copy(doc: &GraphMl, items: &[Item]) -> Option<GraphMl> {
         .filter(|(index, edge)| edges.contains(index) && joins(edge, &ids))
         .map(|(_, edge)| edge.clone())
         .collect();
-    let mut used = HashSet::new();
-    visit_elements(&mut copied, &mut |element| {
-        used.extend(element.attr("refid").map(str::to_owned));
-    });
+    let used = resource_refs(&mut copied);
     let mut clip = GraphMl {
         keys: doc.keys.clone(),
         graphs: vec![copied],
@@ -199,10 +196,7 @@ fn same_key(a: &Key, b: &Key) -> bool {
 /// Adds the resources of `copied` that `graph` refers to to `doc`, unless it
 /// has them already, and points `graph` at them.
 fn merge_resources(doc: &mut GraphMl, copied: &GraphMl, graph: &mut Graph) {
-    let mut used = HashSet::new();
-    visit_elements(graph, &mut |element| {
-        used.extend(element.attr("refid").map(str::to_owned));
-    });
+    let used = resource_refs(graph);
     let Some(resources) = yed::resources(copied) else {
         return;
     };
@@ -218,7 +212,7 @@ fn merge_resources(doc: &mut GraphMl, copied: &GraphMl, graph: &mut Graph) {
             None => {
                 let mut resource = resource.clone();
                 if merged.elements().any(|had| had.attr("id") == Some(id)) {
-                    resource.set_attr("id", unused_resource_id(merged));
+                    resource.set_attr("id", yed::unused_resource_id(merged));
                 }
                 let new_id = resource.attr("id").unwrap_or_default().to_owned();
                 merged.children.push(XmlNode::Element(resource));
@@ -242,13 +236,6 @@ fn same_resource(a: &Element, b: &Element) -> bool {
         attributes
     };
     a.children == b.children && attributes(a) == attributes(b)
-}
-
-/// The first of yEd's resource ids 1, 2, … that no resource has.
-fn unused_resource_id(resources: &Element) -> String {
-    first_free("", 1, |id| {
-        resources.elements().any(|had| had.attr("id") == Some(id))
-    })
 }
 
 /// Gives the nodes and edges of `graph` new ids, numbered as yEd numbers
@@ -309,44 +296,6 @@ fn node_ids(graph: &Graph) -> HashSet<String> {
 /// Whether `edge` joins two of the nodes with ids in `ids`.
 fn joins(edge: &Edge, ids: &HashSet<String>) -> bool {
     ids.contains(&edge.source) && ids.contains(&edge.target)
-}
-
-/// Calls `visit` with each data in `graph`, at any depth.
-fn visit_data(graph: &mut Graph, visit: &mut impl FnMut(&mut Data)) {
-    visit_graphs_mut(graph, &mut |graph| {
-        graph.data.iter_mut().for_each(&mut *visit);
-        for node in &mut graph.nodes {
-            node.data.iter_mut().for_each(&mut *visit);
-            visit_port_data(&mut node.ports, visit);
-        }
-        for edge in &mut graph.edges {
-            edge.data.iter_mut().for_each(&mut *visit);
-        }
-        for hyperedge in &mut graph.hyperedges {
-            hyperedge.data.iter_mut().for_each(&mut *visit);
-        }
-    });
-}
-
-fn visit_port_data(ports: &mut [Port], visit: &mut impl FnMut(&mut Data)) {
-    for port in ports {
-        port.data.iter_mut().for_each(&mut *visit);
-        visit_port_data(&mut port.ports, visit);
-    }
-}
-
-/// Calls `visit` with each XML element in the data in `graph`.
-fn visit_elements(graph: &mut Graph, visit: &mut impl FnMut(&mut Element)) {
-    visit_data(graph, &mut |data| visit_xml(&mut data.content, visit));
-}
-
-fn visit_xml(nodes: &mut [XmlNode], visit: &mut impl FnMut(&mut Element)) {
-    for node in nodes {
-        if let XmlNode::Element(element) = node {
-            visit(element);
-            visit_xml(&mut element.children, visit);
-        }
-    }
 }
 
 #[cfg(test)]

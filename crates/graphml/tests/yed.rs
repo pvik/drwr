@@ -4,7 +4,8 @@ use graphml::{
     yed::{
         Alignment, Arrow, Arrows, Color, EdgeGraphics, EdgeKind, Fill, Font, FontStyle, Keys,
         Label, LabelPosition, LineType, NAMESPACE, NodeGraphics, NodeKind, Path, Point, Rect,
-        Route, ShapeType, Stroke, new_document, resources, resources_mut,
+        Route, ShapeType, Stroke, add_resource, new_document, resource_text, resources,
+        resources_mut,
     },
 };
 
@@ -127,7 +128,12 @@ fn reads_other_node_kinds() {
     );
     assert_eq!(n2.fill.gradient, Some(Color::rgb(0xB7, 0xC9, 0xE3)));
     let n3 = node_graphics(&mut doc, &keys, "n3");
-    assert_eq!(n3.kind, NodeKind::Other("SVGNode".into()));
+    assert_eq!(
+        n3.kind,
+        NodeKind::Svg {
+            resource: Some("1".into())
+        }
+    );
     assert_eq!(n3.labels[0].text, "");
     let n4 = node_graphics(&mut doc, &keys, "n4");
     assert_eq!(n4.kind, NodeKind::Other("UMLClassNode".into()));
@@ -800,6 +806,89 @@ fn new_graphics_look_like_yeds() {
 </graphml>
 "##;
     assert_eq!(doc.to_xml(), expected);
+}
+
+#[test]
+fn new_svg_nodes_look_like_yeds() {
+    let mut doc = new_document();
+    let keys = Keys::ensure(&mut doc);
+    let resource = add_resource(&mut doc, "<svg/>");
+    let mut node = Node::new("n0");
+    let mut graphics = NodeGraphics::new(NodeKind::Svg {
+        resource: Some(resource),
+    });
+    let mut label = Label::new("Icon");
+    label.set_position(LabelPosition::South);
+    graphics.labels.push(label);
+    keys.set_node_graphics(&mut node, &graphics);
+    doc.graphs[0].nodes.push(node);
+
+    let text = doc.to_xml();
+    let expected = r##"
+        <y:SVGNode>
+          <y:Geometry height="30.0" width="30.0" x="0.0" y="0.0"/>
+          <y:Fill color="#CCCCFF" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="0.0" horizontalTextPosition="center" iconTextGap="4" modelName="custom" textColor="#000000" verticalTextPosition="bottom" visible="true" width="0.0" x="0.0" y="0.0">Icon<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="-0.5" nodeRatioX="0.0" nodeRatioY="0.5" offsetX="0.0" offsetY="4.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:SVGNodeProperties usingVisualBounds="true"/>
+          <y:SVGModel svgBoundsPolicy="0">
+            <y:SVGContent refid="1"/>
+          </y:SVGModel>
+        </y:SVGNode>
+"##;
+    assert!(text.contains(expected), "{text}");
+    assert!(text.contains(
+        r#"
+    <y:Resources>
+      <y:Resource id="1">&lt;svg/&gt;</y:Resource>
+    </y:Resources>"#
+    ));
+}
+
+#[test]
+fn svg_nodes_change_only_the_resource_they_draw() {
+    let (mut doc, keys) = fixture();
+    let mut n3 = node_graphics(&mut doc, &keys, "n3");
+    n3.kind = NodeKind::Svg {
+        resource: Some("2".into()),
+    };
+    keys.set_node_graphics(node(&mut doc, "n3"), &n3);
+    assert_eq!(
+        changed_lines(YED, &doc.to_xml()),
+        pairs(&[(
+            r#"<y:SVGContent refid="1"/>"#,
+            r#"<y:SVGContent refid="2"/>"#
+        )])
+    );
+}
+
+#[test]
+fn resources_are_shared_by_their_text() {
+    let (mut doc, _) = fixture();
+    let circle = resource_text(&doc, "1").unwrap();
+    assert!(circle.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<svg "));
+    assert_eq!(add_resource(&mut doc, &circle), "1");
+    assert_eq!(doc.to_xml(), YED);
+
+    let square = "<svg>\r\n  <rect/>\r\n</svg>";
+    assert_eq!(add_resource(&mut doc, square), "2");
+    assert_eq!(add_resource(&mut doc, square), "2");
+    assert_eq!(resource_text(&doc, "2").as_deref(), Some(square));
+    assert_eq!(resource_text(&doc, "3"), None);
+    // Escaped as yEd escapes them, so the line ends stay as they were.
+    assert!(doc.to_xml().contains(
+        r#"<y:Resource id="2">&lt;svg&gt;&#13;
+  &lt;rect/&gt;&#13;
+&lt;/svg&gt;</y:Resource>"#
+    ));
+    let doc = GraphMl::parse(&doc.to_xml()).unwrap();
+    assert_eq!(resource_text(&doc, "2").as_deref(), Some(square));
 }
 
 #[test]
