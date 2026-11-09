@@ -13,12 +13,13 @@ const SHIFT_COMMAND: Modifiers = Modifiers::SHIFT.plus(Modifiers::COMMAND);
 
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 28] = [
+const SHORTCUTS: [(Modifiers, Key, Action); 29] = [
     (Modifiers::COMMAND, Key::N,          Action::New),
     (Modifiers::COMMAND, Key::O,          Action::Open),
     // Before Ctrl+S, which egui also matches with Shift held.
     (SHIFT_COMMAND,      Key::S,          Action::SaveAs),
     (Modifiers::COMMAND, Key::S,          Action::Save),
+    (Modifiers::COMMAND, Key::Q,          Action::Quit),
     (Modifiers::COMMAND, Key::X,          Action::Cut),
     (Modifiers::COMMAND, Key::C,          Action::Copy),
     (Modifiers::COMMAND, Key::V,          Action::Paste),
@@ -48,7 +49,7 @@ const SHORTCUTS: [(Modifiers, Key, Action); 28] = [
 
 /// Takes this frame's presses of shortcuts, returning an action per press.
 /// While typing, which `typing` says a text field was at the end of the last
-/// frame, only Save and Save As, as text fields have no use for them.
+/// frame, only Save, Save As and Quit, as text fields have no use for them.
 pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
     if menu_or_dialog_open(ctx) {
         return Vec::new();
@@ -61,7 +62,9 @@ pub fn pressed(ctx: &Context, typing: bool) -> Vec<Action> {
     ctx.input_mut(|input| {
         let mut actions: Vec<_> = SHORTCUTS
             .into_iter()
-            .filter(|(.., action)| !typing || matches!(action, Action::Save | Action::SaveAs))
+            .filter(|(.., action)| {
+                !typing || matches!(action, Action::Save | Action::SaveAs | Action::Quit)
+            })
             .filter(|&(modifiers, key, _)| !(focused && moves_focus(modifiers, key)))
             .flat_map(|(modifiers, key, action)| {
                 // Counted, as a slow frame can get several key repeats.

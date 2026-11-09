@@ -388,9 +388,19 @@ impl Harness {
     /// Clicks File > Quit, returning whether the app asked to close.
     fn quit(&mut self) -> bool {
         self.click_widget("File");
-        let quit = testing::center(&self.widget("Quit"));
+        let shortcut = shortcuts::text(&self.ctx, &Action::Quit).unwrap();
+        let quit = testing::center(&self.widget(&format!("Quit {shortcut}")));
         let commands = self.click_for_commands(quit);
         commands.contains(&egui::ViewportCommand::Close)
+    }
+
+    /// Presses Ctrl+Q, returning whether the app asked to close.
+    fn press_ctrl_q(&mut self) -> bool {
+        let input = RawInput {
+            events: vec![testing::key(CTRL, Key::Q)],
+            ..RawInput::default()
+        };
+        self.commands(input).contains(&egui::ViewportCommand::Close)
     }
 
     /// Asks to close the window, as its close button does, returning whether

@@ -26,6 +26,7 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::O, Action::Open),
         (CTRL, Key::S, Action::Save),
         (CTRL.plus(Modifiers::SHIFT), Key::S, Action::SaveAs),
+        (CTRL, Key::Q, Action::Quit),
         (CTRL, Key::X, Action::Cut),
         (CTRL, Key::C, Action::Copy),
         (CTRL, Key::V, Action::Paste),
@@ -99,11 +100,12 @@ fn a_field_typed_in_keeps_the_clipboard_events() {
 }
 
 #[test]
-fn a_field_typed_in_keeps_the_keys_but_save_and_save_as() {
+fn a_field_typed_in_keeps_the_keys_but_save_save_as_and_quit() {
     let ctx = Context::default();
     let events = vec![
         key(CTRL, Key::S),
         key(CTRL.plus(Modifiers::SHIFT), Key::S),
+        key(CTRL, Key::Q),
         key(NONE, Key::B),
         key(CTRL, Key::N),
         Event::Copy,
@@ -111,7 +113,7 @@ fn a_field_typed_in_keeps_the_keys_but_save_and_save_as() {
     let (picked, left) = frame(&ctx, events, |ctx| {
         (pressed(ctx, true), ctx.input(|i| i.events.len()))
     });
-    assert_eq!(picked, [Action::SaveAs, Action::Save]);
+    assert_eq!(picked, [Action::SaveAs, Action::Save, Action::Quit]);
     assert_eq!(left, 3);
 
     // Not while a menu has the keys.
@@ -200,6 +202,7 @@ fn text_reads_like_the_shortcut() {
     assert_eq!(text(&ctx, &Action::Open).as_deref(), Some("Ctrl+O"));
     assert_eq!(text(&ctx, &Action::Save).as_deref(), Some("Ctrl+S"));
     assert_eq!(text(&ctx, &Action::SaveAs).as_deref(), Some("Ctrl+Shift+S"));
+    assert_eq!(text(&ctx, &Action::Quit).as_deref(), Some("Ctrl+Q"));
     assert_eq!(text(&ctx, &Action::Paste).as_deref(), Some("Ctrl+V"));
     let cursor = text(&ctx, &Action::SelectTool(Tool::Cursor));
     assert_eq!(cursor.as_deref(), Some("Escape"));

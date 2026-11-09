@@ -188,15 +188,20 @@ fn read(path: &Path) -> GraphMl {
 fn the_file_menu_has_save_as_after_save() {
     let mut harness = Harness::new();
     harness.click_widget("File");
-    let actions = [Action::New, Action::Open, Action::Save, Action::SaveAs];
-    let names = ["New", "Open…", "Save", "Save As…"];
-    let mut items: Vec<_> = (actions.iter().zip(names))
+    let actions = [
+        Action::New,
+        Action::Open,
+        Action::Save,
+        Action::SaveAs,
+        Action::Quit,
+    ];
+    let names = ["New", "Open…", "Save", "Save As…", "Quit"];
+    let items: Vec<_> = (actions.iter().zip(names))
         .map(|(action, name)| {
             let shortcut = shortcuts::text(&harness.ctx, action).unwrap();
             testing::center(&harness.widget(&format!("{name} {shortcut}"))).y
         })
         .collect();
-    items.push(testing::center(&harness.widget("Quit")).y);
     assert!(items.is_sorted(), "{items:?}");
     assert_eq!(
         shortcuts::text(&harness.ctx, &Action::SaveAs).as_deref(),
@@ -644,6 +649,36 @@ fn quit_without_saving_leaves_the_file_and_lets_the_window_close() {
     assert!(harness.app.modified);
     assert!(!harness.close_window());
     assert_eq!(read(&file), read(Path::new(FIXTURE)));
+}
+
+#[test]
+fn ctrl_q_closes_a_graph_without_changes() {
+    let mut harness = fixture_harness();
+    assert!(harness.press_ctrl_q());
+    assert!(!harness.asks_to_save());
+}
+
+#[test]
+fn ctrl_q_asks_to_save_changes_first() {
+    let dir = ScratchDir::new("ctrl-q");
+    let (mut harness, file) = modified_fixture(&dir);
+    assert!(!harness.press_ctrl_q());
+    assert!(harness.painted("Save changes to yed.graphml?"));
+
+    let commands = harness.answer_prompt("Save");
+    assert!(commands.contains(&egui::ViewportCommand::Close));
+    assert_eq!(read(&file), harness.app.graphml);
+    assert!(!harness.close_window());
+}
+
+#[test]
+fn ctrl_q_in_a_label_field_applies_the_label_typed_then_asks() {
+    let mut harness = fixture_harness();
+    retype_queue(&mut harness);
+    assert!(!harness.app.modified);
+    assert!(!harness.press_ctrl_q());
+    assert_eq!(harness.label("n2"), "Stack");
+    assert!(harness.asks_to_save());
 }
 
 #[test]
