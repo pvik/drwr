@@ -1,5 +1,7 @@
+use std::sync::{Arc, Mutex};
+
 use egui::accesskit::{self, Toggled};
-use egui::{Event, Modifiers, Pos2, RawInput, vec2};
+use egui::{Event, FallbackRequest, FontInsert, Modifiers, Pos2, RawInput, vec2};
 
 use super::*;
 use crate::testing::{self, button, center, widgets};
@@ -71,6 +73,16 @@ impl Harness {
     /// Clicks the widget labelled `label` `clicks` times in a row.
     fn click(&mut self, label: &str, clicks: usize) {
         let at = center(self.widget(label));
+        self.click_at(at, clicks);
+    }
+
+    /// Clicks the `index`th recent color `clicks` times in a row.
+    fn click_recent(&mut self, index: usize, clicks: usize) {
+        let at = center(self.recent_swatches()[index]);
+        self.click_at(at, clicks);
+    }
+
+    fn click_at(&mut self, at: Pos2, clicks: usize) {
         // Too long since any earlier click to make this a double click.
         self.time += 1.0;
         self.frame(vec![Event::PointerMoved(at)]);
@@ -101,9 +113,15 @@ impl Harness {
     fn hex(&self) -> &str {
         self.widgets
             .iter()
-            .find(|widget| widget.role() == Role::TextInput)
+            // A number field being typed in is one too, labelled.
+            .find(|widget| widget.role() == Role::TextInput && widget.label().is_none())
             .and_then(|widget| widget.value())
             .expect("the hex field is shown")
+    }
+
+    /// The value of the number field labelled `label`, e.g. "R".
+    fn number(&self, label: &str) -> Option<f64> {
+        self.widget(label).numeric_value()
     }
 
     fn no_color(&self) -> bool {
@@ -112,14 +130,33 @@ impl Harness {
 
     /// The hex codes of the recent colors offered, in reading order.
     fn recent(&self) -> Vec<&str> {
+        let swatches = self.recent_swatches().into_iter();
+        swatches.map(|swatch| swatch.label().unwrap()).collect()
+    }
+
+    /// The swatches of the recent colors, in reading order: those below
+    /// their heading, unlike the palette's.
+    fn recent_swatches(&self) -> Vec<&accesskit::Node> {
+        let heading = self
+            .widgets
+            .iter()
+            .find(|widget| widget.value() == Some("Recent colors"))
+            .and_then(|widget| widget.bounds())
+            .expect("the recent colors are shown");
         let mut swatches: Vec<_> = self
             .widgets
             .iter()
             .filter(|widget| widget.label().is_some_and(|label| label.starts_with('#')))
-            .map(|widget| (widget.bounds().unwrap(), widget.label().unwrap()))
+            .filter(|widget| {
+                let bounds = widget.bounds().unwrap();
+                bounds.x0 >= heading.x0 && bounds.y0 >= heading.y1
+            })
             .collect();
-        swatches.sort_by(|(a, _), (b, _)| (a.y0, a.x0).partial_cmp(&(b.y0, b.x0)).unwrap());
-        swatches.into_iter().map(|(_, label)| label).collect()
+        swatches.sort_by(|a, b| {
+            let (a, b) = (a.bounds().unwrap(), b.bounds().unwrap());
+            (a.y0, a.x0).partial_cmp(&(b.y0, b.x0)).unwrap()
+        });
+        swatches
     }
 }
 
@@ -299,7 +336,7 @@ fn clicking_a_recent_color_picks_it() {
     let mut harness = Harness::new();
     harness.pick("#FF0000");
     harness.open(None);
-    harness.click("#FF0000", 1);
+    harness.click_recent(0, 1);
     assert!(!harness.no_color());
     assert_eq!(harness.hex(), "#FF0000");
     assert!(harness.picker.is_open());
@@ -313,32 +350,136 @@ fn double_clicking_a_recent_color_accepts_it() {
     let mut harness = Harness::new();
     harness.pick("#FF0000");
     harness.open(Some(ORANGE));
-    harness.click("#FF0000", 2);
+    harness.click_recent(0, 2);
     assert_eq!(harness.picked.last(), Some(&("fill", Some(RED))));
     assert!(!harness.picker.is_open());
 }
 
 #[test]
-fn colors_survive_the_trip_through_the_picker() {
-    for value in 0..=255 {
-        let colors = [
-            Color::rgb(value, value, value),
-            Color::rgb(value, 0x80, 0x40),
-            Color::rgb(0x20, value, 0xC0),
-            Color::rgb(0xFF, 0xEE, value),
-            Color {
-                a: value,
-                ..Color::rgb(0x10, 0x20, 0x30)
-            },
-            Color {
-                a: 0,
-                ..Color::rgb(value, 0xA0, 0x05)
-            },
-        ];
-        for original in colors {
-            assert_eq!(color(hsva(original)), original);
-        }
+fn clicking_a_palette_color_picks_it() {
+    let mut harness = Harness::new();
+    harness.open(None);
+    harness.click("#FF0000", 1);
+    assert!(!harness.no_color());
+    assert_eq!(harness.hex(), "#FF0000");
+    assert!(harness.picker.is_open());
+
+    harness.click("OK", 1);
+    assert_eq!(harness.picked, [("fill", Some(RED))]);
+}
+
+#[test]
+fn double_clicking_a_palette_color_accepts_it() {
+    let mut harness = Harness::new();
+    harness.open(Some(ORANGE));
+    harness.click("#FF0000", 2);
+    assert_eq!(harness.picked, [("fill", Some(RED))]);
+    assert!(!harness.picker.is_open());
+}
+
+#[test]
+fn the_color_picked_is_marked_in_the_palette() {
+    let marked = |harness: &Harness| -> Vec<String> {
+        (harness.widgets.iter())
+            .filter(|widget| widget.toggled() == Some(Toggled::True))
+            .filter_map(|widget| widget.label().map(str::to_owned))
+            .collect()
+    };
+    let mut harness = Harness::new();
+    harness.open(Some(ORANGE));
+    assert_eq!(marked(&harness), ["#FFCC00"]);
+    harness.type_text("ff0000");
+    assert_eq!(marked(&harness), ["#FF0000"]);
+    harness.press(Key::Escape);
+    harness.open(Some(Color::rgb(0xFF, 0x00, 0x01)));
+    assert_eq!(marked(&harness), Vec::<String>::new());
+}
+
+#[test]
+fn typing_red_green_blue_and_alpha_sets_them() {
+    let mut harness = Harness::new();
+    harness.open(Some(ORANGE));
+    for (field, value) in [("R", "18"), ("G", "52"), ("B", "86"), ("A", "120")] {
+        harness.click(field, 1);
+        harness.type_text(value);
     }
+    harness.press(Key::Enter);
+    let color = Color {
+        r: 0x12,
+        g: 0x34,
+        b: 0x56,
+        a: 0x78,
+    };
+    assert_eq!(harness.picked, [("fill", Some(color))]);
+}
+
+#[test]
+fn the_number_fields_follow_the_hex_code() {
+    let mut harness = Harness::new();
+    harness.open(Some(ORANGE));
+    let rgba = |harness: &Harness| ["R", "G", "B", "A"].map(|field| harness.number(field));
+    assert_eq!(rgba(&harness), [255.0, 204.0, 0.0, 255.0].map(Some));
+    harness.type_text("#12345678");
+    assert_eq!(rgba(&harness), [18.0, 52.0, 86.0, 120.0].map(Some));
+}
+
+#[test]
+fn the_number_fields_are_disabled_for_no_color() {
+    let mut harness = Harness::new();
+    harness.open(None);
+    assert!(harness.widget("R").is_disabled());
+    harness.click("No color", 1);
+    assert!(!harness.widget("R").is_disabled());
+}
+
+#[test]
+fn transparent_colors_keep_their_red_green_and_blue() {
+    let clear = Color {
+        a: 0,
+        ..Color::rgb(0x12, 0x34, 0x56)
+    };
+    let mut harness = Harness::new();
+    harness.open(Some(clear));
+    assert_eq!(harness.hex(), "#12345600");
+    harness.click("OK", 1);
+
+    harness.open(Some(ORANGE));
+    harness.click("A", 1);
+    harness.type_text("0");
+    harness.press(Key::Enter);
+    let clear_orange = Color { a: 0, ..ORANGE };
+    assert_eq!(
+        harness.picked,
+        [("fill", Some(clear)), ("fill", Some(clear_orange))]
+    );
+}
+
+/// Finding a glyph among the system's fonts can take most of a second.
+#[test]
+fn the_dialog_needs_no_system_fonts() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = Harness::new();
+    let record = asked.clone();
+    harness.ctx.add_font_provider(Arc::new(
+        move |request: &FallbackRequest<'_>| -> Option<FontInsert> {
+            record.lock().unwrap().push(request.cluster.to_owned());
+            None
+        },
+    ));
+    harness.pick("#12345678");
+    harness.open(None);
+    assert_eq!(*asked.lock().unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn the_palette_is_offered_without_recent_colors() {
+    let mut harness = Harness::new();
+    harness.open(Some(ORANGE));
+    let swatches = (harness.widgets.iter())
+        .filter(|widget| widget.label().is_some_and(|label| label.starts_with('#')))
+        .count();
+    assert_eq!(swatches, PALETTE.len());
+    assert!(harness.recent().is_empty());
 }
 
 #[test]
@@ -356,9 +497,10 @@ fn enter_on_a_focused_button_presses_only_that_button() {
     let mut harness = Harness::new();
     harness.open(Some(ORANGE));
     harness.type_text("ff0000");
-    // From the hex field to OK, then Cancel.
-    harness.press(Key::Tab);
-    harness.press(Key::Tab);
+    // From the hex field through R, G, B, A and OK to Cancel.
+    for _ in 0..6 {
+        harness.press(Key::Tab);
+    }
     harness.press(Key::Enter);
     assert!(!harness.picker.is_open());
     assert_eq!(harness.picked, []);
@@ -366,7 +508,8 @@ fn enter_on_a_focused_button_presses_only_that_button() {
 
 #[test]
 fn the_dialog_keeps_still() {
-    let layout = |harness: &Harness| ["OK", "No color"].map(|label| harness.widget(label).bounds());
+    let layout =
+        |harness: &Harness| ["OK", "No color", "A"].map(|label| harness.widget(label).bounds());
     let mut harness = Harness::new();
     // Black has the narrowest R, G and B values.
     harness.open(Some(Color::BLACK));
