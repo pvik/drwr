@@ -46,6 +46,5 @@ fn status(tool: Tool) -> &'static str {
         Tool::Ellipse => "Drawing an ellipse",
         Tool::Line => "Drawing a line",
         Tool::Arrow => "Drawing an arrow",
-        Tool::TextBox => "Drawing a text box",
     }
 }

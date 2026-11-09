@@ -52,7 +52,6 @@ fn shortcuts_pick_their_actions() {
         (NONE, Key::E, Action::SelectTool(Tool::Ellipse)),
         (NONE, Key::L, Action::SelectTool(Tool::Line)),
         (NONE, Key::A, Action::SelectTool(Tool::Arrow)),
-        (NONE, Key::T, Action::SelectTool(Tool::TextBox)),
     ] {
         let picked = frame(&ctx, vec![key(modifiers, k)], |ctx| pressed(ctx, false));
         assert_eq!(picked, [action], "{modifiers:?} {k:?}");

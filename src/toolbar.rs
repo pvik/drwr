@@ -21,14 +21,13 @@ const RAISE_ICON: ImageSource<'static> = include_image!("../assets/icons/raise.s
 const LOWER_ICON: ImageSource<'static> = include_image!("../assets/icons/lower.svg");
 
 #[rustfmt::skip]
-const TOOLS: [(Tool, &str, ImageSource<'static>); 7] = [
-    (Tool::Cursor,  "Cursor",   include_image!("../assets/icons/cursor.svg")),
-    (Tool::Box,     "Box",      include_image!("../assets/icons/box.svg")),
-    (Tool::Circle,  "Circle",   include_image!("../assets/icons/circle.svg")),
-    (Tool::Ellipse, "Ellipse",  include_image!("../assets/icons/ellipse.svg")),
-    (Tool::Line,    "Line",     include_image!("../assets/icons/line.svg")),
-    (Tool::Arrow,   "Arrow",    include_image!("../assets/icons/arrow.svg")),
-    (Tool::TextBox, "Text Box", include_image!("../assets/icons/text_box.svg")),
+const TOOLS: [(Tool, &str, ImageSource<'static>); 6] = [
+    (Tool::Cursor,  "Cursor",  include_image!("../assets/icons/cursor.svg")),
+    (Tool::Box,     "Box",     include_image!("../assets/icons/box.svg")),
+    (Tool::Circle,  "Circle",  include_image!("../assets/icons/circle.svg")),
+    (Tool::Ellipse, "Ellipse", include_image!("../assets/icons/ellipse.svg")),
+    (Tool::Line,    "Line",    include_image!("../assets/icons/line.svg")),
+    (Tool::Arrow,   "Arrow",   include_image!("../assets/icons/arrow.svg")),
 ];
 
 const ICON_SIZE: Vec2 = Vec2::splat(20.0);

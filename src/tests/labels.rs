@@ -158,7 +158,6 @@ fn ctrl_enter_edits_the_label_whatever_the_tool() {
         (Key::E, Tool::Ellipse),
         (Key::L, Tool::Line),
         (Key::A, Tool::Arrow),
-        (Key::T, Tool::TextBox),
         (Key::Escape, Tool::Cursor),
     ] {
         harness.press(Modifiers::NONE, key);

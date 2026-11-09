@@ -250,8 +250,7 @@ impl Canvas {
                 Tool::Cursor => Sense::click_and_drag(),
                 _ if tool.node_shape().is_some() => Sense::drag(),
                 // Edges are drawn by clicks as well as drags.
-                _ if tool.arrows().is_some() => Sense::click_and_drag(),
-                _ => Sense::hover(),
+                _ => Sense::click_and_drag(),
             };
             let (response, painter) = ui.allocate_painter(ui.available_size(), sense);
             // Unlike a click, a drag leaves the focus in a label being typed,

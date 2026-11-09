@@ -10,7 +10,6 @@ pub enum Tool {
     Ellipse,
     Line,
     Arrow,
-    TextBox,
 }
 
 /// The shape of the nodes a tool draws by dragging them out.
@@ -28,7 +27,7 @@ impl Tool {
             Tool::Box => (ShapeType::Rectangle, false),
             Tool::Circle => (ShapeType::Ellipse, true),
             Tool::Ellipse => (ShapeType::Ellipse, false),
-            Tool::Cursor | Tool::Line | Tool::Arrow | Tool::TextBox => return None,
+            Tool::Cursor | Tool::Line | Tool::Arrow => return None,
         };
         Some(NodeShape { shape, square })
     }
