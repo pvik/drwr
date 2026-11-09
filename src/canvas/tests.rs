@@ -433,18 +433,11 @@ fn boxes_can_be_dragged_out_in_any_direction() {
 #[test]
 fn the_box_shows_while_it_is_dragged_out() {
     let mut harness = Harness::new(Tool::Box);
-    let (from, to) = (
-        harness.origin + vec2(100.0, 50.0),
-        harness.origin + vec2(250.0, 130.0),
-    );
-    harness.frame(vec![Event::PointerMoved(from)]);
-    harness.frame(vec![button(from, true)]);
-    let painted = harness.frame(vec![Event::PointerMoved(to)]);
+    let (from, to) = (vec2(100.0, 50.0), vec2(250.0, 130.0));
+    let painted = harness.drag_and_hold(from, to);
 
-    assert_eq!(
-        filled_rects(&painted, BOX_FILL),
-        [Rect::from_two_pos(from, to)]
-    );
+    let on_screen = Rect::from_two_pos(harness.origin + from, harness.origin + to);
+    assert_eq!(filled_rects(&painted, BOX_FILL), [on_screen]);
     assert_eq!(harness.boxes(), []);
 }
 
@@ -472,16 +465,10 @@ fn the_box_shows_in_the_style_it_gets_while_it_is_dragged_out() {
 #[test]
 fn escape_cancels_the_box() {
     let mut harness = Harness::new(Tool::Box);
-    let (from, to) = (
-        harness.origin + vec2(100.0, 50.0),
-        harness.origin + vec2(250.0, 130.0),
-    );
-    harness.frame(vec![Event::PointerMoved(from)]);
-    harness.frame(vec![button(from, true)]);
-    harness.frame(vec![Event::PointerMoved(to)]);
-    let escape = testing::key(Modifiers::NONE, Key::Escape);
-    let painted = harness.frame(vec![escape]);
-    harness.frame(vec![button(to, false)]);
+    let to = vec2(250.0, 130.0);
+    harness.drag_and_hold(vec2(100.0, 50.0), to);
+    let painted = harness.press(Modifiers::NONE, Key::Escape);
+    harness.frame(vec![button(harness.origin + to, false)]);
 
     assert_eq!(filled_rects(&painted, BOX_FILL), []);
     assert_eq!(harness.boxes(), []);
@@ -496,18 +483,13 @@ fn switching_tools_mid_drag_drops_the_shape() {
         (Tool::Ellipse, Tool::Line),
     ] {
         let mut harness = Harness::new(tool);
-        let (from, to) = (
-            harness.origin + vec2(100.0, 50.0),
-            harness.origin + vec2(250.0, 130.0),
-        );
-        harness.frame(vec![Event::PointerMoved(from)]);
-        harness.frame(vec![button(from, true)]);
-        harness.frame(vec![Event::PointerMoved(to)]);
+        let to = vec2(250.0, 130.0);
+        harness.drag_and_hold(vec2(100.0, 50.0), to);
         harness.tool = other;
         harness.frame(vec![]);
         harness.tool = tool;
         let painted = harness.frame(vec![]);
-        harness.frame(vec![button(to, false)]);
+        harness.frame(vec![button(harness.origin + to, false)]);
 
         assert_eq!(filled_rects(&painted, BOX_FILL), [], "{tool:?}");
         assert_eq!(filled_ellipses(&painted, BOX_FILL), [], "{tool:?}");

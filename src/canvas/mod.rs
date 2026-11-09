@@ -228,7 +228,7 @@ struct SceneEdge {
 
 /// Where an end of an edge is: on a node of the scene, by its index, or at a
 /// point in graph coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 enum Anchor {
     Node(usize),
     Point(Pos2),
@@ -247,7 +247,10 @@ struct EdgeLook<'a> {
 #[derive(Clone, Copy)]
 struct Shown<'a> {
     scene: &'a Scene,
+    painter: &'a Painter,
     to_screen: TSTransform,
+    /// The zoom labels are laid out at.
+    text_zoom: f32,
 }
 
 /// What a label is placed on: a node, by its bounds, or an edge, along its
@@ -309,15 +312,17 @@ impl Canvas {
             let scene = Scene::read(graphml);
             let shown = Shown {
                 scene: &scene,
+                painter: &painter,
                 to_screen,
+                text_zoom,
             };
             let mut double_clicked = false;
             let mut drawn_edge = None;
             let drawing = match tool {
                 Tool::Cursor => {
                     let ctrl = ui.input(|input| input.modifiers.command);
-                    select_clicked(&response, &painter, shown, text_zoom, selected, ctrl);
-                    self.start_drag(&response, &painter, shown, text_zoom, selected, ctrl);
+                    select_clicked(&response, shown, selected, ctrl);
+                    self.start_drag(&response, shown, selected, ctrl);
                     // Not with Ctrl, whose clicks only add to or take from the selection.
                     double_clicked = response.double_clicked_by(PointerButton::Primary)
                         && !ctrl
@@ -326,7 +331,7 @@ impl Canvas {
                     // while it's dragged, so not while it draws a box.
                     let hovered = (response.hover_pos())
                         .filter(|_| self.box_drag.is_none())
-                        .and_then(|pos| shown.item_at(&painter, text_zoom, pos, None));
+                        .and_then(|pos| shown.item_at(pos, None));
                     let dragging = self.move_drag.is_some() || self.edge_drag.is_some();
                     if dragging || hovered.is_some() {
                         ui.ctx().set_cursor_icon(CursorIcon::Move);
@@ -344,20 +349,13 @@ impl Canvas {
                 match selected.single().cloned() {
                     Some(Item::Node(id)) => {
                         self.edge_drag = None;
-                        let geometry = self.resize_node(ui, to_screen, graphml, &id);
+                        let geometry = self.resize_node(ui, shown, graphml, &id);
                         resized = geometry.map(|geometry| (id, geometry));
                     }
                     Some(Item::Edge(_)) => {
                         self.resize = None;
-                        dragged_edge = self.drag_edge(
-                            ui,
-                            response.clone(),
-                            &painter,
-                            shown,
-                            text_zoom,
-                            graphml,
-                            selected,
-                        );
+                        dragged_edge =
+                            self.drag_edge(ui, response.clone(), shown, graphml, selected);
                     }
                     None => (self.resize, self.edge_drag) = (None, None),
                 }
@@ -383,7 +381,9 @@ impl Canvas {
             }
             let shown = Shown {
                 scene: &scene,
+                painter: &painter,
                 to_screen,
+                text_zoom,
             };
             painter.rect_filled(rect, 0.0, BACKGROUND);
             let editing = self.editor.as_ref().map(|editor| &editor.label);
@@ -401,15 +401,7 @@ impl Canvas {
                 if boxed || kept && selected.contains(&item) {
                     outlines.push(shown.node_rect(index).expand(SELECTION_GAP));
                 }
-                let graphics = &node.graphics;
-                paint(
-                    &painter,
-                    to_screen,
-                    text_zoom,
-                    graphics,
-                    node.radius,
-                    hidden(&item),
-                );
+                shown.paint_node(&node.graphics, node.radius, hidden(&item));
             }
             let selected_edge = match selected.single() {
                 Some(&Item::Edge(index)) => Some(index),
@@ -419,15 +411,14 @@ impl Canvas {
                 let item = Item::Edge(edge.index);
                 let boxed = boxed.is_some_and(|(rect, _)| shown.edge_in_box(edge, rect));
                 let chosen = boxed || kept && selected.contains(&item);
-                let dragged = dragged_edge.as_ref();
-                let look = match dragged.filter(|_| selected_edge == Some(edge.index)) {
-                    Some(look) => look.clone(),
-                    None => EdgeLook::of(edge),
+                let look = match &dragged_edge {
+                    Some(look) if selected_edge == Some(edge.index) => Cow::Borrowed(look),
+                    _ => Cow::Owned(EdgeLook::of(edge)),
                 };
-                paint_edge(&painter, shown, text_zoom, &look, chosen, hidden(&item));
+                shown.paint_edge(&look, chosen, hidden(&item));
             }
             if let Some(look) = &drawn_edge {
-                paint_edge(&painter, shown, text_zoom, look, false, None);
+                shown.paint_edge(look, false, None);
             }
             // The node the edge being drawn, or the port being dragged, would
             // end on.
@@ -447,8 +438,7 @@ impl Canvas {
                 painter.rect_stroke(rect, 0.0, SELECTION, StrokeKind::Outside);
             }
             if let Some(graphics) = drawing {
-                let radius = style.corner_radius();
-                paint(&painter, to_screen, text_zoom, &graphics, radius, None);
+                shown.paint_node(&graphics, style.corner_radius(), None);
             }
             // Over the nodes, so one on top can't hide them.
             for outline in outlines {
@@ -458,8 +448,11 @@ impl Canvas {
                 && let Some(index) = selected_edge
                 && let Some(edge) = scene.edge(index)
             {
-                let look = dragged_edge.clone().unwrap_or_else(|| EdgeLook::of(edge));
-                paint_handles(&painter, shown, &look, selected.bend());
+                let look = match &dragged_edge {
+                    Some(look) => Cow::Borrowed(look),
+                    None => Cow::Owned(EdgeLook::of(edge)),
+                };
+                shown.paint_handles(&look, selected.bend());
             }
             if let Some((rect, _)) = boxed {
                 let stroke = Stroke::new(1.0, SELECTION.color);
@@ -681,7 +674,6 @@ impl Canvas {
             return self.shape_drag.zip(end).and_then(node);
         }
 
-        // Without a release, Escape stopped the drag, which cancels the node.
         let end = response.ctx.input(primary_release).map(to_graph);
         let graphics = self.shape_drag.take().zip(end).and_then(node);
         if let Some(graphics) = graphics
@@ -728,7 +720,7 @@ impl Canvas {
                 } else {
                     released
                 };
-                if let Some(source) = start.and_then(|pos| shown.node_at(pos)) {
+                if let Some(source) = start.and_then(|pos| shown.node_at(pos, None)) {
                     self.edge_draw = Some(EdgeDraw {
                         tool,
                         source: scene.nodes[source].id.clone(),
@@ -738,7 +730,7 @@ impl Canvas {
             }
             Some(draw) => {
                 if let Some(pos) = released {
-                    match shown.node_at(pos) {
+                    match shown.node_at(pos, None) {
                         // As where it started, or a click on its node.
                         Some(node)
                             if scene.nodes[node].id == draw.source && draw.bends.is_empty() => {}
@@ -766,7 +758,7 @@ impl Canvas {
         let source = scene.node(&draw.source)?;
         let pointer = response.ctx.input(|input| input.pointer.latest_pos())?;
         // It can loop back to its node only through a bend.
-        let target = match shown.node_at(pointer) {
+        let target = match shown.node_at(pointer, None) {
             Some(node) if node != source || !draw.bends.is_empty() => Anchor::Node(node),
             _ => Anchor::Point(graph_point(shown.to_screen, pointer)),
         };
@@ -781,14 +773,11 @@ impl Canvas {
     /// button: its bends and ends by their handles, its labels, and its line,
     /// which adds a bend. A click on a bend selects it. Changes the document
     /// on release, and returns the edge so far while it's being dragged.
-    #[allow(clippy::too_many_arguments)]
     fn drag_edge(
         &mut self,
         ui: &egui::Ui,
         canvas: Response,
-        painter: &Painter,
         shown: Shown,
-        text_zoom: f32,
         graphml: &mut GraphMl,
         selection: &mut Selection,
     ) -> Option<EdgeLook<'static>> {
@@ -802,17 +791,12 @@ impl Canvas {
         let look = EdgeLook::of(edge);
         let route = shown.unclipped(&look);
         let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
-        let part_at = |pos: Pos2| edge_part_at(painter, shown, text_zoom, edge, pos);
         // The handles go over the canvas, so they take the drags and clicks
         // on them.
-        let bends = edge
-            .graphics
-            .path
-            .points
+        let bends = route[1..route.len() - 1]
             .iter()
             .enumerate()
-            .map(|(bend, point)| {
-                let at = shown.to_screen * pos2(point.x as f32, point.y as f32);
+            .map(|(bend, &at)| {
                 let rect = Rect::from_center_size(at, Vec2::splat(2.0 * GRAB));
                 let id = Id::unique(("bend_handle", bend));
                 let response = ui.interact(rect, id, Sense::click_and_drag());
@@ -848,7 +832,7 @@ impl Canvas {
                 // Like drawing a box, this applies a label being typed.
                 ui.memory_mut(|memory| memory.stop_text_input());
                 let from = ui.input(|input| input.pointer.press_origin());
-                let part = from.and_then(|from| part.or_else(|| part_at(from)));
+                let part = from.and_then(|from| part.or_else(|| shown.edge_part_at(edge, from)));
                 self.edge_drag = part.zip(from).map(|(part, from)| EdgeDrag {
                     part,
                     from: to_graph(from),
@@ -863,14 +847,13 @@ impl Canvas {
         let (_, response) = parts.iter().find(|(part, _)| *part == handle)?;
         if !response.drag_stopped() {
             let pointer = response.interact_pointer_pos()?;
-            return Some(self.dragged_edge(edge, drag, pointer, painter, shown, text_zoom));
+            return Some(self.dragged_edge(edge, drag, pointer, shown));
         }
         self.edge_drag = None;
-        // Without a release, Escape stopped the drag, which cancels it.
         if let Some(pointer) = ui.input(primary_release)
             && to_graph(pointer) != drag.from
         {
-            let moved = self.dragged_edge(edge, drag, pointer, painter, shown, text_zoom);
+            let moved = self.dragged_edge(edge, drag, pointer, shown);
             commit_edge(graphml, shown, edge, &moved, drag, selection);
         }
         None
@@ -882,9 +865,7 @@ impl Canvas {
         edge: &SceneEdge,
         drag: EdgeDrag,
         pointer: Pos2,
-        painter: &Painter,
         shown: Shown,
-        text_zoom: f32,
     ) -> EdgeLook<'static> {
         let mut look = EdgeLook::of(edge).into_owned();
         let to = graph_point(shown.to_screen, pointer);
@@ -900,10 +881,7 @@ impl Canvas {
                 }
             }
             EdgePart::Line(bend) => {
-                let point = yed::Point {
-                    x: to.x.into(),
-                    y: to.y.into(),
-                };
+                let point = yed_point(to);
                 path.points.insert(bend.min(path.points.len()), point);
                 let new = shown.route(&look);
                 document::keep_labels(look.graphics.to_mut(), &old, &new);
@@ -923,11 +901,11 @@ impl Canvas {
                     x: center.x + port.x + f64::from(delta.x),
                     y: center.y + port.y + f64::from(delta.y),
                 };
-                let at = pos2(moved.x as f32, moved.y as f32);
+                let at = egui_pos(moved);
                 // Like a new edge, it loops back to its other node only through
                 // a bend.
                 let onto = shown
-                    .node_at(shown.to_screen * at)
+                    .node_at(shown.to_screen * at, None)
                     .filter(|&onto| onto == node || onto != other || bends);
                 match onto {
                     Some(onto) => {
@@ -948,7 +926,7 @@ impl Canvas {
             }
             EdgePart::Label(index) => {
                 if let Some(label) = graphics.labels.get_mut(index) {
-                    let bounds = edge_label_bounds(painter, text_zoom, &old, label);
+                    let bounds = shown.edge_label_bounds(&old, label);
                     let center = yed::Point {
                         x: bounds.x + bounds.width / 2.0 + f64::from(delta.x),
                         y: bounds.y + bounds.height / 2.0 + f64::from(delta.y),
@@ -969,9 +947,7 @@ impl Canvas {
     fn start_drag(
         &mut self,
         canvas: &Response,
-        painter: &Painter,
         shown: Shown,
-        text_zoom: f32,
         selected: &mut Selection,
         ctrl: bool,
     ) {
@@ -982,9 +958,9 @@ impl Canvas {
             return;
         };
         // The selected items win over others on top, as they're the ones moved.
-        let mut item = shown.item_at(painter, text_zoom, from, Some(selected));
+        let mut item = shown.item_at(from, Some(selected));
         if item.is_none() {
-            item = shown.item_at(painter, text_zoom, from, None);
+            item = shown.item_at(from, None);
             if let Some(item) = &item {
                 if ctrl {
                     selected.add(item.clone());
@@ -1024,7 +1000,6 @@ impl Canvas {
             return Some(to - drag.from);
         }
         self.move_drag = None;
-        // Without a release, Escape stopped the drag, which cancels it.
         if let Some(to) = ui.input(primary_release).map(to_graph)
             && to != drag.from
         {
@@ -1052,7 +1027,6 @@ impl Canvas {
             return Some((Rect::from_two_pos(from, to), drag.add));
         }
         self.box_drag = None;
-        // Without a release, Escape stopped the drag, which cancels it.
         if let Some(to) = ui.input(primary_release) {
             let rect = Rect::from_two_pos(from, to);
             if !drag.add {
@@ -1078,16 +1052,14 @@ impl Canvas {
     fn resize_node(
         &mut self,
         ui: &egui::Ui,
-        to_screen: TSTransform,
+        shown: Shown,
         graphml: &mut GraphMl,
         id: &str,
     ) -> Option<yed::Rect> {
-        let graphics = document::graphics_of(graphml, id)?;
-        let node = screen_rect(to_screen, &graphics);
-        let geometry = graphics.geometry;
-        let to_graph = |pos: Pos2| graph_point(to_screen, pos);
-        // The handles go over the canvas, so they take the drags and clicks
-        // on them.
+        let index = shown.scene.node(id)?;
+        let node = shown.node_rect(index);
+        let geometry = shown.geometry(index);
+        let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
         let handles = HANDLES.map(|handle| {
             let rect = handle_rect(node, handle);
             let response = ui
@@ -1098,7 +1070,6 @@ impl Canvas {
         let mut resized = None;
         for (handle, response) in handles {
             if response.drag_started_by(PointerButton::Primary) {
-                // Like drawing a box, this applies a label being typed.
                 ui.memory_mut(|memory| memory.stop_text_input());
                 let from = ui.input(|input| input.pointer.press_origin());
                 self.resize = from.map(|from| Resize {
@@ -1115,7 +1086,6 @@ impl Canvas {
                 continue;
             }
             self.resize = None;
-            // Without a release, Escape stopped the drag, which cancels it.
             if let Some(to) = ui.input(primary_release).map(to_graph) {
                 let new = drag.geometry(geometry, to);
                 if new != geometry {
@@ -1184,14 +1154,7 @@ fn resize_cursor(handle: Align2) -> CursorIcon {
 /// Selects the topmost node or edge a primary click lands on, or nothing if
 /// it misses them all. With `ctrl`, the click adds the item to the selection,
 /// or takes it out, and a miss keeps the selection.
-fn select_clicked(
-    response: &Response,
-    painter: &Painter,
-    shown: Shown,
-    text_zoom: f32,
-    selected: &mut Selection,
-    ctrl: bool,
-) {
+fn select_clicked(response: &Response, shown: Shown, selected: &mut Selection, ctrl: bool) {
     // `clicked()` would count Enter and Space too, which have no position.
     if !response.clicked_by(PointerButton::Primary) {
         return;
@@ -1199,40 +1162,12 @@ fn select_clicked(
     let Some(pos) = response.ctx.input(primary_release) else {
         return;
     };
-    match (shown.item_at(painter, text_zoom, pos, None), ctrl) {
+    match (shown.item_at(pos, None), ctrl) {
         (Some(item), true) => selected.toggle(item),
         (Some(item), false) => *selected = Selection::of([item]),
         (None, true) => {}
         (None, false) => *selected = Selection::default(),
     }
-}
-
-/// The part of `edge` at `pos` on screen, other than a handle: a label, or
-/// else its line.
-fn edge_part_at(
-    painter: &Painter,
-    shown: Shown,
-    text_zoom: f32,
-    edge: &SceneEdge,
-    pos: Pos2,
-) -> Option<EdgePart> {
-    let look = EdgeLook::of(edge);
-    let owner = Owner::Edge(shown.route(&look));
-    let labels = edge.graphics.labels.iter().enumerate().rev();
-    let label = labels
-        .filter(|(_, label)| label.visible)
-        .find(|(_, label)| {
-            let (_, rect) = label_layout(painter, shown.to_screen, text_zoom, &owner, label);
-            rect.contains(pos)
-        });
-    if let Some((label, _)) = label {
-        return Some(EdgePart::Label(label));
-    }
-    let near = edge::nearest_segment(&shown.path(&look), pos).is_some_and(|(_, d)| d <= GRAB);
-    // The bend goes on the segment of the whole route nearest `pos`.
-    near.then(|| edge::nearest_segment(&shown.unclipped(&look), pos))
-        .flatten()
-        .map(|(segment, _)| EdgePart::Line(segment))
 }
 
 /// Makes the change to `edge` in `graphml` that `drag` made, which left it
@@ -1275,11 +1210,7 @@ fn commit_edge(
 fn new_edge(arrows: Arrows, bends: &[Pos2], style: &Style) -> EdgeGraphics {
     let mut graphics = EdgeGraphics::new(EdgeKind::PolyLine);
     graphics.arrows = arrows;
-    let bends = bends.iter().map(|bend| yed::Point {
-        x: bend.x.into(),
-        y: bend.y.into(),
-    });
-    graphics.path.points = bends.collect();
+    graphics.path.points = bends.iter().copied().map(yed_point).collect();
     style.apply_to_edge(&mut graphics);
     graphics
 }
@@ -1340,6 +1271,13 @@ impl Scene {
     }
 }
 
+impl SceneNode {
+    /// The shape the canvas draws it as, if it can draw it.
+    fn outline(&self) -> Option<Outline> {
+        shape(&self.graphics, self.radius)
+    }
+}
+
 impl<'a> EdgeLook<'a> {
     /// `edge` as the document has it.
     fn of(edge: &'a SceneEdge) -> Self {
@@ -1388,62 +1326,69 @@ impl Shown<'_> {
     /// Whether `pos` on screen is inside the node at index `node`, or its
     /// bounds if the canvas can't draw it.
     fn inside(&self, node: usize, pos: Pos2) -> bool {
-        let SceneNode {
-            graphics, radius, ..
-        } = &self.scene.nodes[node];
-        let rect = self.node_rect(node);
-        inside(shape(graphics, *radius), rect, self.to_screen.scaling, pos)
+        let outline = self.scene.nodes[node].outline();
+        inside(outline, self.node_rect(node), self.to_screen.scaling, pos)
     }
 
     /// The topmost node or edge at `pos` on screen, of those `only` has if
     /// it's given. Edges come first, as they're painted over the nodes.
-    fn item_at(
-        &self,
-        painter: &Painter,
-        text_zoom: f32,
-        pos: Pos2,
-        only: Option<&Selection>,
-    ) -> Option<Item> {
+    fn item_at(&self, pos: Pos2, only: Option<&Selection>) -> Option<Item> {
         let edges = self.scene.edges.iter().rev();
         let mut edges = edges.filter(|edge| only.is_none_or(|only| only.contains_edge(edge.index)));
-        if let Some(edge) =
-            edges.find(|edge| edge_part_at(painter, *self, text_zoom, edge, pos).is_some())
-        {
+        if let Some(edge) = edges.find(|edge| self.edge_part_at(edge, pos).is_some()) {
             return Some(Item::Edge(edge.index));
         }
-        let nodes = self.scene.nodes.iter().enumerate().rev();
-        let drawn = nodes.filter(|(_, node)| shape(&node.graphics, node.radius).is_some());
-        let mut wanted =
-            drawn.filter(|(_, node)| only.is_none_or(|only| only.contains_node(&node.id)));
-        let (_, node) = wanted.find(|&(index, _)| self.inside(index, pos))?;
-        Some(Item::Node(node.id.clone()))
+        let node = self.node_at(pos, only)?;
+        Some(Item::Node(self.scene.nodes[node].id.clone()))
+    }
+
+    /// The part of `edge` at `pos` on screen, other than a handle: a label, or
+    /// else its line.
+    fn edge_part_at(&self, edge: &SceneEdge, pos: Pos2) -> Option<EdgePart> {
+        let look = EdgeLook::of(edge);
+        let owner = Owner::Edge(self.route(&look));
+        let labels = edge.graphics.labels.iter().enumerate().rev();
+        let label = labels
+            .filter(|(_, label)| label.visible)
+            .find(|(_, label)| {
+                let (_, rect) = self.label_layout(&owner, label);
+                rect.contains(pos)
+            });
+        if let Some((label, _)) = label {
+            return Some(EdgePart::Label(label));
+        }
+        let near = edge::nearest_segment(&self.path(&look), pos).is_some_and(|(_, d)| d <= GRAB);
+        // The bend goes on the segment of the whole route nearest `pos`.
+        near.then(|| edge::nearest_segment(&self.unclipped(&look), pos))
+            .flatten()
+            .map(|(segment, _)| EdgePart::Line(segment))
     }
 
     /// Whether the node at index `node` is drawn, and inside `rect` on screen.
     fn in_box(&self, node: usize, rect: Rect) -> bool {
-        let SceneNode {
-            graphics, radius, ..
-        } = &self.scene.nodes[node];
-        shape(graphics, *radius).is_some() && rect.contains_rect(self.node_rect(node))
+        let drawn = self.scene.nodes[node].outline().is_some();
+        drawn && rect.contains_rect(self.node_rect(node))
     }
 
     /// Whether `edge` is inside `rect` on screen: both its nodes, by
     /// [`Self::in_box`], and all its bends.
     fn edge_in_box(&self, edge: &SceneEdge, rect: Rect) -> bool {
         let bends = edge.graphics.path.points.iter();
-        let mut bends = bends.map(|bend| self.to_screen * pos2(bend.x as f32, bend.y as f32));
+        let mut bends = bends.map(|&bend| self.to_screen * egui_pos(bend));
         self.in_box(edge.source, rect)
             && self.in_box(edge.target, rect)
             && bends.all(|bend| rect.contains(bend))
     }
 
-    /// The index of the topmost node the canvas draws at `pos` on screen.
-    fn node_at(&self, pos: Pos2) -> Option<usize> {
+    /// The index of the topmost node the canvas draws at `pos` on screen, of
+    /// those `only` has if it's given.
+    fn node_at(&self, pos: Pos2, only: Option<&Selection>) -> Option<usize> {
         let nodes = self.scene.nodes.iter().enumerate().rev();
-        let drawn = nodes.filter(|(_, node)| shape(&node.graphics, node.radius).is_some());
-        drawn
-            .map(|(index, _)| index)
-            .find(|&index| self.inside(index, pos))
+        let drawn = nodes.filter(|(_, node)| node.outline().is_some());
+        let mut wanted =
+            drawn.filter(|(_, node)| only.is_none_or(|only| only.contains_node(&node.id)));
+        let (index, _) = wanted.find(|&(index, _)| self.inside(index, pos))?;
+        Some(index)
     }
 
     /// Where `look` runs on screen, from port to port through its bends.
@@ -1456,10 +1401,7 @@ impl Shown<'_> {
             Anchor::Point(point) => point,
         };
         let path = &look.graphics.path;
-        let bends = path
-            .points
-            .iter()
-            .map(|point| pos2(point.x as f32, point.y as f32));
+        let bends = path.points.iter().copied().map(egui_pos);
         std::iter::once(port(look.source, path.source))
             .chain(bends)
             .chain(std::iter::once(port(look.target, path.target)))
@@ -1473,10 +1415,7 @@ impl Shown<'_> {
         let inside = |anchor: Anchor| {
             let node = match anchor {
                 Anchor::Node(node) => {
-                    let SceneNode {
-                        graphics, radius, ..
-                    } = &self.scene.nodes[node];
-                    Some((shape(graphics, *radius), self.node_rect(node)))
+                    Some((self.scene.nodes[node].outline(), self.node_rect(node)))
                 }
                 Anchor::Point(_) => None,
             };
@@ -1508,62 +1447,8 @@ impl Shown<'_> {
     }
 }
 
-/// Paints an edge as `look` has it, with its labels but the one at index
-/// `hidden`, over a halo if it's `chosen`.
-fn paint_edge(
-    painter: &Painter,
-    shown: Shown,
-    text_zoom: f32,
-    look: &EdgeLook,
-    chosen: bool,
-    hidden: Option<usize>,
-) {
-    let path = shown.path(look);
-    let line = &look.graphics.line;
-    let width = line.width as f32 * shown.to_screen.scaling;
-    if chosen {
-        let halo = Stroke::new(width + 2.0 * HALO.width, HALO.color);
-        painter.add(PathShape::line(path.clone(), halo));
-    }
-    let stroke = line
-        .color
-        .map_or(Stroke::NONE, |color| Stroke::new(width, color32(color)));
-    let arrows = &look.graphics.arrows;
-    edge::paint(painter, path, stroke, &line.line_type, arrows);
-    let owner = Owner::Edge(shown.route(look));
-    for (index, label) in look.graphics.labels.iter().enumerate() {
-        if label.visible && hidden != Some(index) {
-            paint_label(painter, shown.to_screen, text_zoom, &owner, label);
-        }
-    }
-}
-
-/// Paints the handles on the ports and bends of the selected edge, as `look`
-/// has it, filling the one on the bend at index `bend`.
-fn paint_handles(painter: &Painter, shown: Shown, look: &EdgeLook, bend: Option<usize>) {
-    let route = shown.unclipped(look);
-    let outline = Stroke::new(1.0, SELECTION.color);
-    for port in [route[0], route[route.len() - 1]] {
-        painter.add(CircleShape {
-            center: port,
-            radius: HANDLE_SIZE / 2.0,
-            fill: Color32::WHITE,
-            stroke: outline,
-        });
-    }
-    for (index, point) in look.graphics.path.points.iter().enumerate() {
-        let at = shown.to_screen * pos2(point.x as f32, point.y as f32);
-        let fill = if bend == Some(index) {
-            SELECTION.color
-        } else {
-            Color32::WHITE
-        };
-        let rect = Rect::from_center_size(at, Vec2::splat(HANDLE_SIZE));
-        painter.rect(rect, 0.0, fill, outline, StrokeKind::Inside);
-    }
-}
-
-/// Where the primary button was released this frame.
+/// Where the primary button was released this frame. A drag that stops
+/// without a release was stopped by Escape, which cancels it.
 fn primary_release(input: &egui::InputState) -> Option<Pos2> {
     button_event(input, PointerButton::Primary, false)
 }
@@ -1661,9 +1546,17 @@ fn in_ellipse(rect: Rect, pos: Pos2) -> bool {
     rect.contains(pos) && offset.length_sq() <= 1.0
 }
 
-/// Where a node's bounds are on screen.
-fn screen_rect(to_screen: TSTransform, graphics: &NodeGraphics) -> Rect {
-    egui_rect(graphics.geometry, to_screen)
+/// A yEd point as an egui one.
+fn egui_pos(point: yed::Point) -> Pos2 {
+    pos2(point.x as f32, point.y as f32)
+}
+
+/// An egui point as a yEd one.
+fn yed_point(pos: Pos2) -> yed::Point {
+    yed::Point {
+        x: pos.x.into(),
+        y: pos.y.into(),
+    }
 }
 
 /// A yEd rect as an egui one, taken by `transform`.
@@ -1683,101 +1576,145 @@ fn yed_rect(rect: Rect) -> yed::Rect {
     }
 }
 
-/// Paints a node with its labels, except the one at index `hidden`, unless
-/// it's a kind the canvas can't draw yet. `corner_radius` rounds the corners
-/// of a box.
-fn paint(
-    painter: &Painter,
-    to_screen: TSTransform,
-    text_zoom: f32,
-    graphics: &NodeGraphics,
-    corner_radius: Option<f64>,
-    hidden: Option<usize>,
-) {
-    let Some(outline) = shape(graphics, corner_radius) else {
-        return;
-    };
-    let rect = screen_rect(to_screen, graphics);
-    let fill = graphics.fill.color.map_or(Color32::TRANSPARENT, color32);
-    let border = &graphics.border;
-    let stroke = border.color.map_or(Stroke::NONE, |color| {
-        Stroke::new(border.width as f32 * to_screen.scaling, color32(color))
-    });
-    // Like yEd, which centers borders on the outline, over the fill.
-    match outline {
-        Outline::Rect(radius) => {
-            let radius = radius * to_screen.scaling;
-            let ppp = painter.pixels_per_point();
-            let points = line_type::rounded_rect_points(rect, radius, stroke, ppp);
-            if points.is_empty() {
-                painter.rect_filled(rect, 0.0, fill);
-                line_type::paint_rect_outline(painter, rect, stroke, &border.line_type);
-            } else {
-                // On the border's polygon, so their corners line up.
-                let filled = PathShape::convex_polygon(points.clone(), fill, Stroke::NONE);
-                painter.add(filled);
-                line_type::paint_outline(painter, points, stroke, &border.line_type);
+impl Shown<'_> {
+    /// Paints a node with its labels, except the one at index `hidden`, unless
+    /// it's a kind the canvas can't draw yet. `corner_radius` rounds the
+    /// corners of a box.
+    fn paint_node(
+        &self,
+        graphics: &NodeGraphics,
+        corner_radius: Option<f64>,
+        hidden: Option<usize>,
+    ) {
+        let Some(outline) = shape(graphics, corner_radius) else {
+            return;
+        };
+        let painter = self.painter;
+        let rect = egui_rect(graphics.geometry, self.to_screen);
+        let fill = graphics.fill.color.map_or(Color32::TRANSPARENT, color32);
+        let border = &graphics.border;
+        let stroke = border.color.map_or(Stroke::NONE, |color| {
+            Stroke::new(border.width as f32 * self.to_screen.scaling, color32(color))
+        });
+        // Like yEd, which centers borders on the outline, over the fill.
+        match outline {
+            Outline::Rect(radius) => {
+                let radius = radius * self.to_screen.scaling;
+                let ppp = painter.pixels_per_point();
+                let points = line_type::rounded_rect_points(rect, radius, stroke, ppp);
+                if points.is_empty() {
+                    painter.rect_filled(rect, 0.0, fill);
+                    line_type::paint_rect_outline(painter, rect, stroke, &border.line_type);
+                } else {
+                    // On the border's polygon, so their corners line up.
+                    let filled = PathShape::convex_polygon(points.clone(), fill, Stroke::NONE);
+                    painter.add(filled);
+                    line_type::paint_outline(painter, points, stroke, &border.line_type);
+                }
+            }
+            Outline::Ellipse => {
+                let points = line_type::ellipse_points(rect, painter.pixels_per_point());
+                painter.add(PathShape::convex_polygon(points, fill, Stroke::NONE));
+                line_type::paint_ellipse_outline(painter, rect, stroke, &border.line_type);
             }
         }
-        Outline::Ellipse => {
-            let points = line_type::ellipse_points(rect, painter.pixels_per_point());
-            painter.add(PathShape::convex_polygon(points, fill, Stroke::NONE));
-            line_type::paint_ellipse_outline(painter, rect, stroke, &border.line_type);
+
+        let owner = Owner::Node(graphics.geometry);
+        for (index, label) in graphics.labels.iter().enumerate() {
+            if label.visible && hidden != Some(index) {
+                self.paint_label(&owner, label);
+            }
         }
     }
 
-    let owner = Owner::Node(graphics.geometry);
-    for (index, label) in graphics.labels.iter().enumerate() {
-        if label.visible && hidden != Some(index) {
-            paint_label(painter, to_screen, text_zoom, &owner, label);
+    /// Paints an edge as `look` has it, with its labels but the one at index
+    /// `hidden`, over a halo if it's `chosen`.
+    fn paint_edge(&self, look: &EdgeLook, chosen: bool, hidden: Option<usize>) {
+        let path = self.path(look);
+        let line = &look.graphics.line;
+        let width = line.width as f32 * self.to_screen.scaling;
+        if chosen {
+            let halo = Stroke::new(width + 2.0 * HALO.width, HALO.color);
+            self.painter.add(PathShape::line(path.clone(), halo));
+        }
+        let stroke = line
+            .color
+            .map_or(Stroke::NONE, |color| Stroke::new(width, color32(color)));
+        let arrows = &look.graphics.arrows;
+        edge::paint(self.painter, path, stroke, &line.line_type, arrows);
+        let owner = Owner::Edge(self.route(look));
+        for (index, label) in look.graphics.labels.iter().enumerate() {
+            if label.visible && hidden != Some(index) {
+                self.paint_label(&owner, label);
+            }
         }
     }
-}
 
-/// Paints a label of `owner` where yEd puts it, lined up by its alignment,
-/// in its font and color. It's laid out at `text_zoom`, then scaled to the
-/// zoom.
-fn paint_label(
-    painter: &Painter,
-    to_screen: TSTransform,
-    text_zoom: f32,
-    owner: &Owner,
-    label: &Label,
-) {
-    let color = color32(label.text_color);
-    let (galley, label_rect) = label_layout(painter, to_screen, text_zoom, owner, label);
-    let align = Align2([galley.job.halign, Align::Center]);
-    let scale = to_screen.scaling / text_zoom;
-    let size = galley.size() * scale;
-    let rect = align.align_size_within_rect(size, label_rect);
-    let pos = rect.min - galley.rect.min.to_vec2() * scale;
-    if scale == 1.0 {
-        painter.galley(pos, galley, color);
-    } else {
-        let mut text = TextShape::new(pos, galley, color);
-        // About `pos`.
-        text.transform(TSTransform::new(pos.to_vec2() * (1.0 - scale), scale));
-        painter.add(text);
+    /// Paints the handles on the ports and bends of the selected edge, as
+    /// `look` has it, filling the one on the bend at index `bend`.
+    fn paint_handles(&self, look: &EdgeLook, bend: Option<usize>) {
+        let route = self.unclipped(look);
+        let outline = Stroke::new(1.0, SELECTION.color);
+        for port in [route[0], route[route.len() - 1]] {
+            self.painter.add(CircleShape {
+                center: port,
+                radius: HANDLE_SIZE / 2.0,
+                fill: Color32::WHITE,
+                stroke: outline,
+            });
+        }
+        for (index, &at) in route[1..route.len() - 1].iter().enumerate() {
+            let fill = if bend == Some(index) {
+                SELECTION.color
+            } else {
+                Color32::WHITE
+            };
+            let rect = Rect::from_center_size(at, Vec2::splat(HANDLE_SIZE));
+            self.painter
+                .rect(rect, 0.0, fill, outline, StrokeKind::Inside);
+        }
     }
-}
 
-/// A label's text laid out at `text_zoom`, and where on screen the label
-/// goes on `owner`.
-fn label_layout(
-    painter: &Painter,
-    to_screen: TSTransform,
-    text_zoom: f32,
-    owner: &Owner,
-    label: &Label,
-) -> (Arc<Galley>, Rect) {
-    let font = label_font(label, text_zoom, painter.pixels_per_point());
-    let color = color32(label.text_color);
-    let mut job = LayoutJob::simple(label.text.clone(), font, color, f32::INFINITY);
-    job.halign = halign(&label.alignment);
-    let galley = painter.layout_job(job);
-    let size = galley.size() * (to_screen.scaling / text_zoom);
-    let rect = label_rect(to_screen, owner, label, size);
-    (galley, rect)
+    /// Paints a label of `owner` where yEd puts it, lined up by its alignment,
+    /// in its font and color. It's laid out at `text_zoom`, then scaled to the
+    /// zoom.
+    fn paint_label(&self, owner: &Owner, label: &Label) {
+        let color = color32(label.text_color);
+        let (galley, label_rect) = self.label_layout(owner, label);
+        let align = Align2([galley.job.halign, Align::Center]);
+        let scale = self.to_screen.scaling / self.text_zoom;
+        let size = galley.size() * scale;
+        let rect = align.align_size_within_rect(size, label_rect);
+        let pos = rect.min - galley.rect.min.to_vec2() * scale;
+        if scale == 1.0 {
+            self.painter.galley(pos, galley, color);
+        } else {
+            let mut text = TextShape::new(pos, galley, color);
+            // About `pos`.
+            text.transform(TSTransform::new(pos.to_vec2() * (1.0 - scale), scale));
+            self.painter.add(text);
+        }
+    }
+
+    /// A label's text laid out at `text_zoom`, and where on screen the label
+    /// goes on `owner`.
+    fn label_layout(&self, owner: &Owner, label: &Label) -> (Arc<Galley>, Rect) {
+        let font = label_font(label, self.text_zoom, self.painter.pixels_per_point());
+        let color = color32(label.text_color);
+        let mut job = LayoutJob::simple(label.text.clone(), font, color, f32::INFINITY);
+        job.halign = halign(&label.alignment);
+        let galley = self.painter.layout_job(job);
+        let size = galley.size() * (self.to_screen.scaling / self.text_zoom);
+        let rect = label_rect(self.to_screen, owner, label, size);
+        (galley, rect)
+    }
+
+    /// Where an edge label goes along `route`, in graph coordinates.
+    fn edge_label_bounds(&self, route: &Route, label: &Label) -> yed::Rect {
+        let font = label_font(label, self.text_zoom, self.painter.pixels_per_point());
+        let text = (self.painter).layout_no_wrap(label.text.clone(), font, Color32::PLACEHOLDER);
+        placed_on(route, label, text.size() / self.text_zoom)
+    }
 }
 
 /// Where a label of `owner`, with text `size` big on screen, goes on screen:
@@ -1828,13 +1765,6 @@ fn placed_on(route: &Route, label: &Label, text: Vec2) -> yed::Rect {
             height,
         }
     })
-}
-
-/// Where an edge label goes along `route`, in graph coordinates.
-fn edge_label_bounds(painter: &Painter, text_zoom: f32, route: &Route, label: &Label) -> yed::Rect {
-    let font = label_font(label, text_zoom, painter.pixels_per_point());
-    let text = painter.layout_no_wrap(label.text.clone(), font, Color32::PLACEHOLDER);
-    placed_on(route, label, text.size() / text_zoom)
 }
 
 /// A label's font at `zoom`. Its size counts as at least a point, since egui
