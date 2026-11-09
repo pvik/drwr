@@ -1,9 +1,9 @@
 # drwr 
 
-A simple GraphML based diagraming tool 
+A simple, fast and lightweight GraphML based diagraming tool 
 
 #### Features
 
-- Lightweight 
 - Good keyboard support
 - Export to PNG and SVG
+- Can read in yEd GraphML files
