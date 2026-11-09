@@ -10,6 +10,7 @@ pub enum Action {
     Open,
     Save,
     SaveAs,
+    Quit,
     /// Copies, then removes what's selected.
     Cut,
     /// Puts the selected nodes, with the selected edges between them, on the

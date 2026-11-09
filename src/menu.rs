@@ -12,7 +12,7 @@ pub fn show(ui: &mut egui::Ui, file_dialog_open: bool, can_copy: bool) -> Option
         egui::MenuBar::new().ui(ui, |ui| {
             let file = ui.menu_button("File", |ui| {
                 let can_pick = !file_dialog_open;
-                clicked = items(
+                let file = items(
                     ui,
                     [
                         ("New", Action::New, can_pick),
@@ -22,9 +22,7 @@ pub fn show(ui: &mut egui::Ui, file_dialog_open: bool, can_copy: bool) -> Option
                     ],
                 );
                 ui.separator();
-                if ui.button("Quit").clicked() {
-                    ui.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                clicked = file.or(items(ui, [("Quit", Action::Quit, true)]));
             });
             if shortcuts::file_menu_pressed(ui.ctx()) {
                 Popup::open_id(ui.ctx(), Popup::default_response_id(&file.response));

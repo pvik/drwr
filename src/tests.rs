@@ -435,8 +435,9 @@ fn ctrl_n_replaces_the_graph_with_an_empty_unsaved_one() {
 
 #[test]
 fn new_closes_the_dialogs_and_drops_the_labels_being_edited() {
-    let mut harness = Harness::new();
-    type_in_label_field(&mut harness, "Start");
+    let mut harness = fixture_harness();
+    harness.app.selected = Selection::node("n0");
+    harness.click_text("Order\nservice");
     harness.type_text("Stop");
     harness
         .app
@@ -1584,6 +1585,7 @@ fn new_keeps_what_was_set_for_new_items() {
     harness.app.selected = Selection::node(id);
     harness.perform(Action::SetColor(ColorProperty::Fill, Some(RED)));
     harness.perform(Action::New);
+    harness.answer_unsaved("Don't Save");
     assert_eq!(harness.app.graphml, GraphMl::default());
 
     let drawn = harness.draw_node(Tool::Box, vec2(20.0, 20.0), vec2(140.0, 80.0));
@@ -3171,4 +3173,375 @@ fn the_save_button_saves_the_label_edited_on_the_canvas() {
         document::label_text(&saved, &label).as_deref(),
         Some("Renamed")
     );
+}
+
+impl Harness {
+    /// Runs a frame with `input`, returning what it asked of the window.
+    fn commands(&mut self, input: RawInput) -> Vec<egui::ViewportCommand> {
+        let mut output = self.run_input(input);
+        let root = output.viewport_output.remove(&egui::ViewportId::ROOT);
+        output.drop_without_applying_deltas();
+        root.map(|root| root.commands).unwrap_or_default()
+    }
+
+    /// Clicks `at`, returning what the release asked of the window.
+    fn click_for_commands(&mut self, at: Pos2) -> Vec<egui::ViewportCommand> {
+        self.run(vec![Event::PointerMoved(at)]);
+        self.run(vec![button(at, true)]);
+        self.commands(RawInput {
+            events: vec![button(at, false)],
+            ..RawInput::default()
+        })
+    }
+
+    /// Clicks File > Quit, returning whether the app asked to close.
+    fn quit(&mut self) -> bool {
+        self.click_widget("File");
+        let quit = testing::center(&self.widget("Quit"));
+        let commands = self.click_for_commands(quit);
+        commands.contains(&egui::ViewportCommand::Close)
+    }
+
+    /// Asks to close the window, as its close button does, returning whether
+    /// the app kept it open.
+    fn close_window(&mut self) -> bool {
+        let mut input = RawInput::default();
+        let root = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        root.events.push(egui::ViewportEvent::Close);
+        self.commands(input)
+            .contains(&egui::ViewportCommand::CancelClose)
+    }
+
+    /// Clicks the unsaved-changes dialog's button labelled `label`, returning
+    /// what the release asked of the window. The dialog sits below the
+    /// toolbar, whose Save button has the same label.
+    fn answer_unsaved(&mut self, label: &str) -> Vec<egui::ViewportCommand> {
+        self.ctx.enable_accesskit();
+        let mut output = self.run_input(RawInput::default());
+        let widgets = testing::widgets(&mut output);
+        output.drop_without_applying_deltas();
+        let lowest = (widgets.iter())
+            .filter(|widget| widget.label() == Some(label))
+            .map(testing::center)
+            .max_by(|a, b| a.y.total_cmp(&b.y));
+        let at = lowest.unwrap_or_else(|| panic!("no button is labelled {label:?}"));
+        let commands = self.click_for_commands(at);
+        // The dialog keeps the keys in the frame it closes in.
+        self.run(vec![]);
+        commands
+    }
+
+    /// Runs a frame, returning whether it asked whether to save changes.
+    fn asks_to_save(&mut self) -> bool {
+        self.run(vec![]).iter().any(|shape| {
+            matches!(shape, Shape::Text(text) if text.galley.text().starts_with("Save changes to"))
+        })
+    }
+}
+
+/// Selects the fixture's n2 and types "Stack" over its label, "Queue", in
+/// the side panel, without applying it.
+fn retype_queue(harness: &mut Harness) {
+    harness.app.selected = Selection::node("n2");
+    harness.click_text("Queue");
+    harness.press(CTRL, Key::A);
+    harness.type_text("Stack");
+}
+
+/// A copy of the yEd fixture in `dir`, opened, with n0 moved 1 pt right.
+fn modified_fixture(dir: &ScratchDir) -> (Harness, PathBuf) {
+    let file = dir.fixture();
+    let mut harness = Harness::open(&file);
+    harness.app.selected = Selection::node("n0");
+    harness.press(CTRL, Key::ArrowRight);
+    assert!(harness.app.modified);
+    (harness, file)
+}
+
+#[test]
+fn a_marker_shows_unsaved_changes_until_saved() {
+    let dir = ScratchDir::new("marker");
+    let mut harness = Harness::new();
+    assert!(!harness.painted("*"));
+    assert_eq!(harness.app.title, "<Not Saved> — drwr");
+
+    harness.draw_box();
+    assert!(harness.app.modified);
+    assert!(harness.painted("<Not Saved>"));
+    assert!(harness.painted("*"));
+    assert_eq!(harness.app.title, "<Not Saved>* — drwr");
+
+    harness.press(CTRL, Key::S);
+    harness.answer(Some(&dir.path("drawn.graphml")));
+    assert!(!harness.app.modified);
+    assert!(!harness.painted("*"));
+    assert_eq!(harness.app.title, "drawn.graphml — drwr");
+}
+
+#[test]
+fn the_title_is_set_only_when_it_changes() {
+    let mut harness = fixture_harness();
+    let title = egui::ViewportCommand::Title("yed.graphml — drwr".to_owned());
+    harness.app.title.clear();
+    assert!(harness.commands(RawInput::default()).contains(&title));
+    let commands = harness.commands(RawInput::default());
+    let titles = (commands.iter()).filter(|c| matches!(c, egui::ViewportCommand::Title(_)));
+    assert_eq!(titles.count(), 0, "{commands:?}");
+
+    harness.app.selected = Selection::node("n0");
+    let modified = egui::ViewportCommand::Title("yed.graphml* — drwr".to_owned());
+    let commands = harness.commands(RawInput {
+        events: vec![testing::key(CTRL, Key::ArrowRight)],
+        ..RawInput::default()
+    });
+    assert!(commands.contains(&modified), "{commands:?}");
+}
+
+#[test]
+fn moving_a_node_on_the_canvas_marks_the_graph_modified() {
+    let mut harness = fixture_harness();
+    assert!(!harness.app.modified);
+    // n0 spans (100, 40.5) to (220, 100.5).
+    harness.drag(vec2(110.0, 90.0), vec2(150.0, 130.0));
+    assert_eq!(harness.graphics("n0").geometry.x, 140.0);
+    assert!(harness.app.modified);
+    assert!(harness.painted("*"));
+}
+
+#[test]
+fn side_panel_edits_mark_the_graph_modified() {
+    let mut harness = fixture_harness();
+    retype_queue(&mut harness);
+    assert!(!harness.app.modified);
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert!(harness.app.modified);
+}
+
+#[test]
+fn undoing_an_edit_by_hand_clears_the_marker() {
+    let mut harness = fixture_harness();
+    harness.app.selected = Selection::node("n0");
+    harness.press(CTRL, Key::ArrowRight);
+    assert!(harness.app.modified);
+    harness.press(CTRL, Key::ArrowLeft);
+    assert!(!harness.app.modified);
+}
+
+#[test]
+fn a_truncated_path_keeps_the_marker() {
+    let mut harness = Harness::new();
+    harness.draw_box();
+    let long = format!("/{}/drawn.graphml", "folder/".repeat(40));
+    harness.app.file = Some(PathBuf::from(long));
+    let narrow = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(500.0, 400.0))),
+        ..RawInput::default()
+    };
+    for _ in 0..2 {
+        let mut output = harness.run_input(narrow.clone());
+        let shapes = std::mem::take(&mut output.shapes);
+        output.drop_without_applying_deltas();
+        let marker = shapes.iter().find_map(|clipped| match &clipped.shape {
+            Shape::Text(text) if text.galley.text() == "*" => Some(text.pos.x),
+            _ => None,
+        });
+        assert!(marker.is_some_and(|x| x < 500.0), "{marker:?}");
+    }
+}
+
+#[test]
+fn quit_closes_a_graph_without_changes() {
+    let mut harness = fixture_harness();
+    assert!(harness.quit());
+    assert!(!harness.asks_to_save());
+}
+
+#[test]
+fn quit_asks_to_save_changes_first() {
+    let dir = ScratchDir::new("quit");
+    let (mut harness, file) = modified_fixture(&dir);
+    assert!(!harness.quit());
+    assert!(harness.painted("Save changes to yed.graphml?"));
+
+    let commands = harness.answer_unsaved("Cancel");
+    assert!(!commands.contains(&egui::ViewportCommand::Close));
+    assert!(!harness.asks_to_save());
+    assert!(harness.app.modified);
+
+    harness.quit();
+    let commands = harness.answer_unsaved("Save");
+    assert!(commands.contains(&egui::ViewportCommand::Close));
+    assert_eq!(read(&file), harness.app.graphml);
+    assert!(!harness.close_window());
+}
+
+#[test]
+fn quit_without_saving_leaves_the_file_and_lets_the_window_close() {
+    let dir = ScratchDir::new("quit-dont-save");
+    let (mut harness, file) = modified_fixture(&dir);
+    harness.quit();
+    let commands = harness.answer_unsaved("Don't Save");
+    assert!(commands.contains(&egui::ViewportCommand::Close));
+    assert!(harness.app.modified);
+    assert!(!harness.close_window());
+    assert_eq!(read(&file), read(Path::new(FIXTURE)));
+}
+
+#[test]
+fn closing_the_window_asks_to_save_changes_first() {
+    let mut harness = fixture_harness();
+    assert!(!harness.close_window());
+
+    harness.app.selected = Selection::node("n0");
+    harness.press(CTRL, Key::ArrowRight);
+    assert!(harness.close_window());
+    assert!(harness.asks_to_save());
+    // Escape cancels.
+    harness.press(Modifiers::NONE, Key::Escape);
+    assert!(!harness.asks_to_save());
+    assert!(harness.close_window());
+}
+
+#[test]
+fn closing_the_window_applies_the_label_being_typed_then_asks() {
+    let mut harness = fixture_harness();
+    retype_queue(&mut harness);
+    assert!(!harness.app.modified);
+    assert!(harness.close_window());
+    assert_eq!(harness.label("n2"), "Stack");
+    assert!(harness.asks_to_save());
+}
+
+#[test]
+fn open_asks_to_save_changes_before_showing_the_dialog() {
+    let dir = ScratchDir::new("open");
+    let (mut harness, _) = modified_fixture(&dir);
+    harness.press(CTRL, Key::O);
+    assert!(!harness.app.file_dialog.is_open());
+    assert!(harness.asks_to_save());
+    harness.answer_unsaved("Cancel");
+    assert!(!harness.app.file_dialog.is_open());
+
+    harness.press(CTRL, Key::O);
+    harness.answer_unsaved("Don't Save");
+    assert_eq!(harness.app.file_dialog.request(), Some(&Request::Open));
+    // Cancelling the dialog keeps the changes.
+    harness.answer(None);
+    assert!(harness.app.modified);
+}
+
+#[test]
+fn saving_from_the_prompt_goes_on_to_open() {
+    let dir = ScratchDir::new("open-save");
+    let (mut harness, file) = modified_fixture(&dir);
+    let moved = harness.app.graphml.clone();
+    harness.press(CTRL, Key::O);
+    harness.answer_unsaved("Save");
+    assert_eq!(read(&file), moved);
+    assert_eq!(harness.app.file_dialog.request(), Some(&Request::Open));
+
+    harness.answer(Some(Path::new(FIXTURE)));
+    assert_eq!(harness.app.graphml, read(Path::new(FIXTURE)));
+    assert!(!harness.app.modified);
+}
+
+#[test]
+fn new_asks_to_save_an_unsaved_graph_where_first() {
+    let dir = ScratchDir::new("new-save-as");
+    let mut harness = Harness::new();
+    harness.draw_box();
+    harness.press(CTRL, Key::N);
+    assert!(harness.painted("Save changes to the new diagram?"));
+    harness.answer_unsaved("Save");
+    let request = harness.app.file_dialog.request().cloned();
+    assert!(matches!(request, Some(Request::Save { .. })), "{request:?}");
+
+    let file = dir.path("drawn.graphml");
+    let drawn = harness.app.graphml.clone();
+    harness.answer(Some(&file));
+    assert_eq!(read(&file), drawn);
+    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_eq!(harness.app.file, None);
+    assert!(!harness.app.modified);
+}
+
+#[test]
+fn cancelling_save_as_from_the_prompt_keeps_the_graph() {
+    let mut harness = Harness::new();
+    harness.draw_box();
+    let drawn = harness.app.graphml.clone();
+    harness.press(CTRL, Key::N);
+    harness.answer_unsaved("Save");
+    harness.answer(None);
+    assert_eq!(harness.app.graphml, drawn);
+    assert!(harness.app.modified);
+    assert!(!harness.asks_to_save());
+}
+
+#[test]
+fn a_failed_save_from_the_prompt_keeps_the_graph() {
+    let mut harness = fixture_harness();
+    harness.app.file = Some(PathBuf::from("/nonexistent/yed.graphml"));
+    harness.app.selected = Selection::node("n0");
+    harness.press(CTRL, Key::ArrowRight);
+    let moved = harness.app.graphml.clone();
+    harness.press(CTRL, Key::N);
+    harness.answer_unsaved("Save");
+    assert!(harness.app.error.is_some());
+    assert_eq!(harness.app.graphml, moved);
+    assert!(harness.app.modified);
+}
+
+#[test]
+fn new_without_saving_drops_the_changes() {
+    let mut harness = Harness::new();
+    harness.draw_box();
+    harness.press(CTRL, Key::N);
+    harness.answer_unsaved("Don't Save");
+    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert!(!harness.app.modified);
+}
+
+#[test]
+fn enter_saves_from_the_prompt() {
+    let dir = ScratchDir::new("prompt-enter");
+    let (mut harness, file) = modified_fixture(&dir);
+    harness.press(CTRL, Key::N);
+    harness.run(vec![]);
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.app.graphml, GraphMl::default());
+    assert_ne!(read(&file), read(Path::new(FIXTURE)));
+}
+
+#[test]
+fn the_prompt_keeps_the_keys() {
+    let mut harness = Harness::new();
+    harness.draw_box();
+    harness.press(CTRL, Key::N);
+    harness.press(Modifiers::NONE, Key::B);
+    harness.press(CTRL, Key::S);
+    assert_eq!(harness.app.tool, Tool::Cursor);
+    assert!(!harness.app.file_dialog.is_open());
+    assert!(harness.asks_to_save());
+}
+
+#[test]
+fn the_new_button_applies_the_label_typed_first_then_asks() {
+    let mut harness = fixture_harness();
+    retype_queue(&mut harness);
+    harness.click_widget("New");
+    assert_eq!(harness.label("n2"), "Stack");
+    assert!(harness.asks_to_save());
+}
+
+#[test]
+fn the_save_button_leaves_nothing_unsaved() {
+    let dir = ScratchDir::new("save-button-clean");
+    let file = dir.fixture();
+    let mut harness = Harness::open(&file);
+    retype_queue(&mut harness);
+    harness.click_widget("Save");
+    assert_eq!(harness.label("n2"), "Stack");
+    assert!(!harness.app.modified);
+    assert!(!harness.painted("*"));
 }

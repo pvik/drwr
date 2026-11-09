@@ -21,6 +21,7 @@ mod text_dialog;
 mod text_field;
 mod tool;
 mod toolbar;
+mod unsaved_dialog;
 mod zoom;
 
 use std::ffi::OsStr;
@@ -39,6 +40,10 @@ use side_panel::SidePanel;
 use style::Style;
 use text_dialog::TextDialog;
 use tool::Tool;
+use unsaved_dialog::Answer;
+
+/// The app's name, which is also the Wayland app id.
+const NAME: &str = "drwr";
 
 fn main() -> eframe::Result {
     match cli::parse(std::env::args_os().skip(1)) {
@@ -68,9 +73,8 @@ fn main() -> eframe::Result {
 }
 
 fn run_gui(app: DrwrApp) -> eframe::Result {
-    // The app name doubles as the default window title and the Wayland app id.
     eframe::run_native(
-        "drwr",
+        NAME,
         eframe::NativeOptions::default(),
         Box::new(|cc| {
             app.init(&cc.egui_ctx);
@@ -85,6 +89,13 @@ struct DrwrApp {
     graphml: GraphMl,
     /// Where `graphml` is saved, as an absolute path; `None` if it isn't.
     file: Option<PathBuf>,
+    /// `graphml` as last opened, saved or made new.
+    saved: GraphMl,
+    /// Whether `graphml` differs from `saved`, as of the last frame that could
+    /// have changed it.
+    modified: bool,
+    /// Whether an action was performed since `modified` was last updated.
+    performed: bool,
     selected: Selection,
     /// What the user last set on nodes, lines and labels, for new ones. Kept
     /// across files.
@@ -97,6 +108,15 @@ struct DrwrApp {
     /// Picks the colors of the selected nodes and edges.
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelEdit>,
+    /// What waits for the answer to the unsaved-changes dialog while it's open.
+    unsaved: Option<CloseFor>,
+    /// Whether the window was asked to close, which the end of the frame
+    /// decides on.
+    close_requested: bool,
+    /// Whether the window may close although the graph is modified.
+    quitting: bool,
+    /// The window title last set.
+    title: String,
     error: Option<String>,
     /// Whether a text field had the focus at the end of the last frame; see
     /// [`shortcuts::pressed`].
@@ -112,7 +132,16 @@ struct LabelEdit {
 /// What the file dialog picks a file for.
 enum FilePurpose {
     Open,
-    Save,
+    /// Saving the graph, then closing it for this, if anything.
+    Save(Option<CloseFor>),
+}
+
+/// What closes the graph, once its changes are saved or dropped.
+#[derive(Clone, Copy, Debug)]
+enum CloseFor {
+    New,
+    Open,
+    Quit,
 }
 
 impl DrwrApp {
@@ -136,8 +165,10 @@ impl DrwrApp {
     /// Replaces the graph with `graphml`, saved at `file`, dropping what was
     /// selected, edited or viewed in the old one.
     fn replace_graph(&mut self, graphml: GraphMl, file: Option<PathBuf>) {
+        self.saved = graphml.clone();
         self.graphml = graphml;
         self.file = file;
+        self.modified = false;
         self.selected = Selection::default();
         // Labels being edited belong to the old graph.
         self.canvas = Canvas::default();
@@ -146,8 +177,61 @@ impl DrwrApp {
         self.label_dialog.close();
     }
 
-    /// Asks where to save the graph, suggesting its file.
-    fn ask_where_to_save(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+    /// Updates whether the graph is modified, returning whether it is.
+    fn check_modified(&mut self) -> bool {
+        self.modified = self.graphml != self.saved;
+        self.modified
+    }
+
+    /// Closes the graph for `close_for`, asking first whether to save its
+    /// changes, if it has any.
+    fn close_graph(&mut self, close_for: CloseFor, ctx: &egui::Context, frame: &eframe::Frame) {
+        if !self.check_modified() {
+            self.drop_graph(close_for, ctx, frame);
+        } else if !self.file_dialog.is_open() {
+            // Not asked while a file dialog is open, which saving may need.
+            self.unsaved = Some(close_for);
+        }
+    }
+
+    /// Closes the graph for `close_for`, dropping any changes: makes a new
+    /// one, asks for one to open, or quits.
+    fn drop_graph(&mut self, close_for: CloseFor, ctx: &egui::Context, frame: &eframe::Frame) {
+        match close_for {
+            CloseFor::New => self.replace_graph(GraphMl::default(), None),
+            CloseFor::Open => {
+                (self.file_dialog).open(FilePurpose::Open, Request::Open, ctx, frame);
+            }
+            CloseFor::Quit => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    /// Saves the graph to its file, or asks where if it has none, then closes
+    /// it for `then`, if anything, once saved.
+    fn save(&mut self, then: Option<CloseFor>, ctx: &egui::Context, frame: &eframe::Frame) {
+        match self.file.clone() {
+            Some(file) => {
+                if self.save_to(file)
+                    && let Some(then) = then
+                {
+                    self.drop_graph(then, ctx, frame);
+                }
+            }
+            None => self.ask_where_to_save(then, ctx, frame),
+        }
+    }
+
+    /// Asks where to save the graph, suggesting its file, then saves it there
+    /// and closes it for `then`, if anything.
+    fn ask_where_to_save(
+        &mut self,
+        then: Option<CloseFor>,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
         let file = self.file.as_deref();
         let name = (file.and_then(Path::file_name))
             .map_or("untitled.graphml".into(), OsStr::to_string_lossy);
@@ -155,8 +239,7 @@ impl DrwrApp {
             name: name.into_owned(),
             folder: file.and_then(Path::parent).map(Path::to_path_buf),
         };
-        self.file_dialog
-            .open(FilePurpose::Save, request, ctx, frame);
+        (self.file_dialog).open(FilePurpose::Save(then), request, ctx, frame);
     }
 
     /// Writes the graph to `path`, which becomes its file, or shows why it
@@ -167,6 +250,8 @@ impl DrwrApp {
             return false;
         }
         self.file = Some(path);
+        self.saved = self.graphml.clone();
+        self.modified = false;
         true
     }
 
@@ -197,9 +282,9 @@ impl DrwrApp {
     }
 
     /// Performs `action`, clicked in the menu or toolbar, unless it's Cut,
-    /// Copy, Save or Save As. Those go on `waiting`, to wait for the side panel
-    /// and the canvas, which apply a label typed there when the click takes
-    /// away the focus.
+    /// Copy or in the File menu. Those go on `waiting`, to wait for the side
+    /// panel and the canvas, which apply a label typed there when the click
+    /// takes away the focus.
     fn perform_or_wait(
         &mut self,
         action: Option<Action>,
@@ -208,9 +293,15 @@ impl DrwrApp {
         frame: &eframe::Frame,
     ) {
         match action {
-            Some(action @ (Action::Cut | Action::Copy | Action::Save | Action::SaveAs)) => {
-                waiting.push(action);
-            }
+            Some(
+                action @ (Action::Cut
+                | Action::Copy
+                | Action::New
+                | Action::Open
+                | Action::Save
+                | Action::SaveAs
+                | Action::Quit),
+            ) => waiting.push(action),
             Some(action) => self.perform(action, ctx, frame),
             None => {}
         }
@@ -218,21 +309,16 @@ impl DrwrApp {
 
     /// Does what the user asked for, wherever they asked.
     fn perform(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
+        self.performed = true;
         match action {
             // Disabled, as the open file dialog is for the graph as it is.
             Action::New | Action::Open | Action::Save | Action::SaveAs
                 if self.file_dialog.is_open() => {}
-            Action::New => self.replace_graph(GraphMl::default(), None),
-            Action::Open => self
-                .file_dialog
-                .open(FilePurpose::Open, Request::Open, ctx, frame),
-            Action::Save => match self.file.clone() {
-                Some(file) => {
-                    self.save_to(file);
-                }
-                None => self.ask_where_to_save(ctx, frame),
-            },
-            Action::SaveAs => self.ask_where_to_save(ctx, frame),
+            Action::New => self.close_graph(CloseFor::New, ctx, frame),
+            Action::Open => self.close_graph(CloseFor::Open, ctx, frame),
+            Action::Save => self.save(None, ctx, frame),
+            Action::SaveAs => self.ask_where_to_save(None, ctx, frame),
+            Action::Quit => self.close_graph(CloseFor::Quit, ctx, frame),
             Action::Cut => {
                 if self.copy(ctx) {
                     self.remove_selected();
@@ -372,17 +458,30 @@ impl DrwrApp {
 }
 
 impl eframe::App for DrwrApp {
-    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         match self.file_dialog.picked() {
             Some((FilePurpose::Open, path)) => {
                 if let Err(err) = self.open(&path) {
                     self.error = Some(format!("Couldn't open {}:\n{err}", path.display()));
                 }
             }
-            Some((FilePurpose::Save, path)) => {
-                self.save_to(path);
+            Some((FilePurpose::Save(then), path)) => {
+                if self.save_to(path)
+                    && let Some(then) = then
+                {
+                    self.drop_graph(then, ctx, frame);
+                }
             }
             None => {}
+        }
+        // Here, as `ui` doesn't run while the window is hidden, and it closes
+        // after this frame unless cancelled.
+        let close = ctx.input(|input| input.viewport().close_requested());
+        if close && !self.quitting && (self.check_modified() || ctx.text_edit_focused()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            // Applies a label being typed, which then counts as a change.
+            ctx.memory_mut(|memory| memory.stop_text_input());
+            self.close_requested = true;
         }
     }
 
@@ -402,7 +501,7 @@ impl eframe::App for DrwrApp {
         let (tool, zoom) = (self.tool, self.canvas.zoom());
         let toolbar = toolbar::show(ui, file_dialog_open, can_copy, tool, zoom);
         self.perform_or_wait(toolbar, &mut waiting, ui.ctx(), frame);
-        status_bar::show(ui, self.tool, self.file.as_deref());
+        status_bar::show(ui, self.tool, self.file.as_deref(), self.modified);
         for action in self
             .side_panel
             .show(ui, &self.graphml, &self.selected, &self.fonts)
@@ -431,7 +530,46 @@ impl eframe::App for DrwrApp {
                 self.perform(Action::SetLabel(label, text.clone()), ui.ctx(), frame);
             }
         }
+        // Only actions and the canvas edit the graph, the canvas when a button
+        // is let go, so frames with no action and only pointer moves skip
+        // comparing it.
+        let pressed = ui.input(|input| {
+            (input.raw.events.iter()).any(|event| {
+                !matches!(
+                    event,
+                    egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_)
+                )
+            })
+        });
+        if std::mem::take(&mut self.performed) || pressed {
+            self.check_modified();
+        }
+        if std::mem::take(&mut self.close_requested) {
+            self.close_graph(CloseFor::Quit, ui.ctx(), frame);
+        }
+        if let Some(close_for) = self.unsaved {
+            let question = match self.file.as_deref().and_then(Path::file_name) {
+                Some(name) => format!("Save changes to {}?", name.to_string_lossy()),
+                None => "Save changes to the new diagram?".to_owned(),
+            };
+            if let Some(answer) = unsaved_dialog::show(ui, &question) {
+                self.unsaved = None;
+                match answer {
+                    Answer::Save => self.save(Some(close_for), ui.ctx(), frame),
+                    Answer::DontSave => self.drop_graph(close_for, ui.ctx(), frame),
+                    Answer::Cancel => {}
+                }
+            }
+        }
         error_dialog::show(ui, &mut self.error);
+        let name = (self.file.as_deref().and_then(Path::file_name))
+            .map_or(status_bar::NOT_SAVED.into(), OsStr::to_string_lossy);
+        let marker = if self.modified { "*" } else { "" };
+        let title = format!("{name}{marker} — {NAME}");
+        if title != self.title {
+            ui.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
         self.typing = ui.ctx().text_edit_focused();
     }
 }
