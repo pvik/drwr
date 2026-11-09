@@ -262,9 +262,8 @@ impl Default for Smart {
 impl Smart {
     /// Reads the Smart model and its parameter in `label`, if it has them.
     fn read(label: &Element) -> Result<Option<Self>, Error> {
-        let inner = |outer, inner| label.child(outer).and_then(|outer| outer.child(inner));
-        let model = inner("LabelModel", "SmartNodeLabelModel");
-        let parameter = inner("ModelParameter", "SmartNodeLabelModelParameter");
+        let model = inner(label, "LabelModel", "SmartNodeLabelModel");
+        let parameter = inner(label, "ModelParameter", "SmartNodeLabelModelParameter");
         let (Some(model), Some(parameter)) = (model, parameter) else {
             return Ok(None);
         };
@@ -338,8 +337,13 @@ impl Smart {
     }
 }
 
-/// The element `inner` inside `label`'s child `outer`. If `outer` holds no
-/// such element, it's replaced by one that does, after the other children.
+/// The element `inner` inside `label`'s child `outer`.
+pub(crate) fn inner<'a>(label: &'a Element, outer: &str, inner: &str) -> Option<&'a Element> {
+    label.child(outer)?.child(inner)
+}
+
+/// Like [`inner`], but if `outer` holds no such element, it's replaced by one
+/// that does, after the other children.
 pub(crate) fn inner_mut<'a>(label: &'a mut Element, outer: &str, inner: &str) -> &'a mut Element {
     if label.child(outer).and_then(|o| o.child(inner)).is_none() {
         let element =

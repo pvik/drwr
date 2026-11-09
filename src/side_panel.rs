@@ -132,7 +132,7 @@ impl SidePanel {
         let edges: Vec<(&graphml::Edge, &EdgeGraphics)> = (items.iter())
             .filter_map(|(item, graphics)| match (item, graphics) {
                 (&&Item::Edge(index), Graphics::Edge(edge)) => {
-                    Some((&graphml.graphs[0].edges[index], edge))
+                    Some((document::edge(graphml, index)?, edge))
                 }
                 _ => None,
             })

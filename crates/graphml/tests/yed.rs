@@ -1,10 +1,10 @@
 use graphml::{
     Edge, Error, Graph, GraphMl, KeyDomain, Node,
-    xml::Element,
+    xml::{Element, XmlNode},
     yed::{
         Alignment, Arrow, Arrows, Color, EdgeGraphics, EdgeKind, Fill, Font, FontStyle, Keys,
         Label, LabelPosition, LineType, NAMESPACE, NodeGraphics, NodeKind, Path, Point, Rect,
-        Route, ShapeType, Stroke, new_document,
+        Route, ShapeType, Stroke, new_document, resources, resources_mut,
     },
 };
 
@@ -877,6 +877,37 @@ fn ensure_declares_missing_keys_and_namespaces() {
     let (mut doc, keys) = fixture();
     assert_eq!(Keys::ensure(&mut doc), keys);
     assert_eq!(doc.to_xml(), YED);
+}
+
+#[test]
+fn resources_are_found_or_added_like_yeds() {
+    let (mut doc, _) = fixture();
+    let ids: Vec<_> = (resources(&doc).unwrap().elements())
+        .filter_map(|resource| resource.attr("id"))
+        .collect();
+    assert_eq!(ids, ["1"]);
+    resources_mut(&mut doc);
+    assert_eq!(doc.to_xml(), YED);
+    // yEd writes them even when there are none.
+    assert_eq!(resources(&new_document()).unwrap().children, []);
+
+    let mut doc = GraphMl::default();
+    assert_eq!(resources(&doc), None);
+    let resource = Element::new("y:Resource").with_attr("id", "1");
+    resources_mut(&mut doc)
+        .children
+        .push(XmlNode::Element(resource));
+    let expected = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:y="http://www.yworks.com/xml/graphml">
+  <key for="graphml" id="d0" yfiles.type="resources"/>
+  <data key="d0">
+    <y:Resources>
+      <y:Resource id="1"/>
+    </y:Resources>
+  </data>
+</graphml>
+"#;
+    assert_eq!(doc.to_xml(), expected);
 }
 
 #[test]

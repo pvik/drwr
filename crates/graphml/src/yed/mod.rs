@@ -46,15 +46,7 @@ impl Keys {
     /// Like [`Keys::find`], but declares the keys first if they're missing,
     /// along with the GraphML and `y` namespaces yEd needs.
     pub fn ensure(doc: &mut GraphMl) -> Self {
-        // A prefixed document has GraphML's namespace on its prefix.
-        if doc.prefix.is_none() {
-            doc.attributes
-                .entry("xmlns".to_owned())
-                .or_insert_with(|| crate::NAMESPACE.to_owned());
-        }
-        doc.attributes
-            .entry("xmlns:y".to_owned())
-            .or_insert_with(|| NAMESPACE.to_owned());
+        ensure_namespaces(doc);
         Keys {
             node_graphics: Some(ensure_key(doc, "nodegraphics", KeyDomain::Node)),
             edge_graphics: Some(ensure_key(doc, "edgegraphics", KeyDomain::Edge)),
@@ -86,6 +78,47 @@ impl Keys {
     pub fn set_edge_graphics(&self, edge: &mut Edge, graphics: &EdgeGraphics) {
         set_graphics(&mut edge.data, &self.edge_graphics, graphics.to_element());
     }
+}
+
+/// The `y:Resources` element holding the images and SVG drawings that nodes
+/// refer to by `refid`.
+pub fn resources(doc: &GraphMl) -> Option<&Element> {
+    let key = find_key(doc, "resources")?;
+    doc.data.iter().find(|data| data.key == key)?.element()
+}
+
+/// Like [`resources`], but adds the element, its data and its key if missing.
+pub fn resources_mut(doc: &mut GraphMl) -> &mut Element {
+    ensure_namespaces(doc);
+    let key = ensure_key(doc, "resources", KeyDomain::GraphMl);
+    let index = match doc.data.iter().position(|data| data.key == key) {
+        Some(index) => index,
+        None => {
+            doc.data.push(Data {
+                key,
+                ..Data::default()
+            });
+            doc.data.len() - 1
+        }
+    };
+    let data = &mut doc.data[index];
+    if data.element().is_none() {
+        (data.content).push(XmlNode::Element(Element::new("y:Resources")));
+    }
+    data.element_mut().expect("added if missing")
+}
+
+/// Declares the GraphML and `y` namespaces yEd needs, if missing.
+fn ensure_namespaces(doc: &mut GraphMl) {
+    // A prefixed document has GraphML's namespace on its prefix.
+    if doc.prefix.is_none() {
+        doc.attributes
+            .entry("xmlns".to_owned())
+            .or_insert_with(|| crate::NAMESPACE.to_owned());
+    }
+    doc.attributes
+        .entry("xmlns:y".to_owned())
+        .or_insert_with(|| NAMESPACE.to_owned());
 }
 
 fn find_key(doc: &GraphMl, yfiles_type: &str) -> Option<String> {

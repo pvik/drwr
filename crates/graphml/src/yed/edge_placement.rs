@@ -1,7 +1,8 @@
 use std::f64::consts::TAU;
 
 use super::codec::{get_or, set};
-use super::placement::inner_mut;
+use super::placement::{inner, inner_mut};
+use super::route::exit_time;
 use super::{Point, Rect, Route};
 use crate::{Error, xml::Element};
 
@@ -131,9 +132,8 @@ impl Default for SmartEdge {
 impl SmartEdge {
     /// Reads the Smart model and its parameter in `label`, if it has them.
     pub(crate) fn read(label: &Element) -> Result<Option<Self>, Error> {
-        let inner = |outer, inner| label.child(outer).and_then(|outer| outer.child(inner));
-        let model = inner("LabelModel", "SmartEdgeLabelModel");
-        let parameter = inner("ModelParameter", "SmartEdgeLabelModelParameter");
+        let model = inner(label, "LabelModel", "SmartEdgeLabelModel");
+        let parameter = inner(label, "ModelParameter", "SmartEdgeLabelModelParameter");
         let (Some(_), Some(parameter)) = (model, parameter) else {
             return Ok(None);
         };
@@ -340,16 +340,7 @@ fn clearance(node: &Rect, center: Point, direction: Point, width: f64, height: f
     if !inside {
         return 0.0;
     }
-    let exit = |start: f64, delta: f64, min: f64, max: f64| {
-        if delta > 0.0 {
-            (max - start) / delta
-        } else if delta < 0.0 {
-            (min - start) / delta
-        } else {
-            f64::INFINITY
-        }
-    };
-    let x = exit(center.x, direction.x, min_x, max_x);
-    let y = exit(center.y, direction.y, min_y, max_y);
+    let x = exit_time(center.x, direction.x, min_x, max_x);
+    let y = exit_time(center.y, direction.y, min_y, max_y);
     x.min(y)
 }

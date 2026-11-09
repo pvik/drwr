@@ -60,20 +60,23 @@ fn inside(rect: &Rect, point: Point) -> bool {
 /// Where the line from `from`, inside `rect`, to `to`, outside it, leaves it.
 fn exit(rect: &Rect, from: Point, to: Point) -> Point {
     let (dx, dy) = (to.x - from.x, to.y - from.y);
-    let along = |start: f64, delta: f64, min: f64, max: f64| {
-        if delta > 0.0 {
-            (max - start) / delta
-        } else if delta < 0.0 {
-            (min - start) / delta
-        } else {
-            f64::INFINITY
-        }
-    };
-    let x = along(from.x, dx, rect.x, rect.x + rect.width);
-    let y = along(from.y, dy, rect.y, rect.y + rect.height);
+    let x = exit_time(from.x, dx, rect.x, rect.x + rect.width);
+    let y = exit_time(from.y, dy, rect.y, rect.y + rect.height);
     let t = x.min(y).clamp(0.0, 1.0);
     Point {
         x: from.x + dx * t,
         y: from.y + dy * t,
+    }
+}
+
+/// How many `delta`s it takes `start`, between `min` and `max`, to reach the
+/// one it's heading for.
+pub(super) fn exit_time(start: f64, delta: f64, min: f64, max: f64) -> f64 {
+    if delta > 0.0 {
+        (max - start) / delta
+    } else if delta < 0.0 {
+        (min - start) / delta
+    } else {
+        f64::INFINITY
     }
 }

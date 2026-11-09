@@ -1,4 +1,4 @@
-use super::codec::{Part, get_color, get_or, keyword_enum, set, set_color};
+use super::codec::{Part, get_color, get_or, keyword_enum, qualified, set, set_color};
 use super::edge_placement::SmartEdge;
 use super::placement::{LabelPosition, Placement};
 use super::{Color, Point, Rect, Route};
@@ -201,14 +201,10 @@ fn template(name: &str) -> Element {
         .with_attr("verticalTextPosition", "bottom");
     if crate::xml::local_name(name) == "EdgeLabel" {
         let child = |local_name: &str, attributes: &[(&str, &str)]| {
-            let name = match crate::xml::prefix(name) {
-                Some(prefix) => format!("{prefix}:{local_name}"),
-                None => local_name.to_owned(),
-            };
-            let element = Element::new(name);
-            attributes.iter().fold(element, |element, &(name, value)| {
-                element.with_attr(name, value)
-            })
+            let child = Element::new(qualified(&element, local_name));
+            attributes
+                .iter()
+                .fold(child, |child, &(name, value)| child.with_attr(name, value))
         };
         let model = child(
             "SmartEdgeLabelModel",
@@ -243,14 +239,16 @@ fn template(name: &str) -> Element {
                 ("sideReference", "relative_to_edge_flow"),
             ],
         );
+        let model = child("LabelModel", &[]).with_child(model);
+        let parameter = child("ModelParameter", &[]).with_child(parameter);
         element
             .with_attr("configuration", "AutoFlippingLabel")
             .with_attr("distance", "2.0")
             .with_attr("modelName", "custom")
             .with_attr("preferredPlacement", "anywhere")
             .with_attr("ratio", "0.5")
-            .with_child(child("LabelModel", &[]).with_child(model))
-            .with_child(child("ModelParameter", &[]).with_child(parameter))
+            .with_child(model)
+            .with_child(parameter)
             .with_child(descriptor)
     } else {
         element.with_attr("autoSizePolicy", "content")

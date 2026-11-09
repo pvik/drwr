@@ -26,6 +26,22 @@ pub enum Item {
     Edge(usize),
 }
 
+impl Item {
+    pub fn node_id(&self) -> Option<&str> {
+        match self {
+            Item::Node(id) => Some(id),
+            Item::Edge(_) => None,
+        }
+    }
+
+    pub fn edge_index(&self) -> Option<usize> {
+        match self {
+            Item::Edge(index) => Some(*index),
+            Item::Node(_) => None,
+        }
+    }
+}
+
 /// A label of a top-level node or edge. The index one past its last label
 /// stands for a new label.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -56,7 +72,7 @@ impl Graphics {
         }
     }
 
-    pub fn labels_mut(&mut self) -> &mut Vec<Label> {
+    fn labels_mut(&mut self) -> &mut Vec<Label> {
         match self {
             Graphics::Node(graphics) => &mut graphics.labels,
             Graphics::Edge(graphics) => &mut graphics.labels,
@@ -150,7 +166,7 @@ impl ColorProperty {
 /// Returns the node's id.
 pub fn add_node(doc: &mut GraphMl, graphics: &NodeGraphics) -> String {
     let keys = Keys::ensure(doc);
-    let id = unused_node_id(doc);
+    let id = fresh(&mut taken_ids(doc), "n");
     let mut node = Node::new(id.clone());
     keys.set_node_graphics(&mut node, graphics);
     top_graph_mut(doc).nodes.push(node);
@@ -318,10 +334,7 @@ fn ensure_radius_key(doc: &mut GraphMl) -> String {
 
 /// The first of yEd's key ids d0, d1, … that no key in the document has.
 fn unused_key_id(doc: &GraphMl) -> String {
-    (0..)
-        .map(|n| format!("d{n}"))
-        .find(|id| doc.keys.iter().all(|key| key.id != *id))
-        .expect("the ids are endless")
+    first_free("d", 0, |id| doc.keys.iter().any(|key| key.id == id))
 }
 
 /// The top-level graph's node with id `id`.
@@ -454,12 +467,8 @@ fn label_shift(center: f64, old: f64, new: f64) -> f64 {
 /// and the ids of the nodes they join.
 pub fn edge_graphics(doc: &GraphMl) -> impl Iterator<Item = (usize, &Edge, EdgeGraphics)> {
     let keys = Keys::find(doc);
-    let edges = doc
-        .graphs
-        .first()
-        .into_iter()
-        .flat_map(|graph| &graph.edges);
-    edges.enumerate().filter_map(move |(index, edge)| {
+    let edges = top_edges(doc).iter().enumerate();
+    edges.filter_map(move |(index, edge)| {
         let graphics = keys.edge_graphics(edge).ok().flatten()?;
         Some((index, edge, graphics))
     })
@@ -467,18 +476,14 @@ pub fn edge_graphics(doc: &GraphMl) -> impl Iterator<Item = (usize, &Edge, EdgeG
 
 /// The readable graphics of the top-level graph's edge at `index`.
 pub fn edge_graphics_of(doc: &GraphMl, index: usize) -> Option<EdgeGraphics> {
-    let edge = doc.graphs.first()?.edges.get(index)?;
+    let edge = edge(doc, index)?;
     Keys::find(doc).edge_graphics(edge).ok().flatten()
 }
 
 /// Edits the readable graphics of the top-level graph's edge at `index`.
 pub fn edit_edge_graphics(doc: &mut GraphMl, index: usize, edit: impl FnOnce(&mut EdgeGraphics)) {
     let keys = Keys::find(doc);
-    let Some(edge) = doc
-        .graphs
-        .first_mut()
-        .and_then(|graph| graph.edges.get_mut(index))
-    else {
+    let Some(edge) = edge_mut(doc, index) else {
         return;
     };
     if let Ok(Some(mut graphics)) = keys.edge_graphics(edge) {
@@ -493,15 +498,31 @@ pub fn edit_edge_graphics(doc: &mut GraphMl, index: usize, edit: impl FnOnce(&mu
 pub fn add_edge(doc: &mut GraphMl, source: &str, target: &str, graphics: &EdgeGraphics) -> usize {
     let keys = Keys::ensure(doc);
     let mut edge = Edge::new(source, target);
-    edge.id = Some(unused_edge_id(doc));
+    edge.id = Some(fresh(&mut taken_ids(doc), "e"));
     keys.set_edge_graphics(&mut edge, graphics);
     let edges = &mut top_graph_mut(doc).edges;
     edges.push(edge);
     edges.len() - 1
 }
 
+/// The top-level graph's edge at `index`.
+pub fn edge(doc: &GraphMl, index: usize) -> Option<&Edge> {
+    top_edges(doc).get(index)
+}
+
+fn edge_mut(doc: &mut GraphMl, index: usize) -> Option<&mut Edge> {
+    doc.graphs.first_mut()?.edges.get_mut(index)
+}
+
+fn top_edges(doc: &GraphMl) -> &[Edge] {
+    match doc.graphs.first() {
+        Some(graph) => &graph.edges,
+        None => &[],
+    }
+}
+
 /// Removes the top-level graph's edge at `index`.
-pub fn remove_edge(doc: &mut GraphMl, index: usize) {
+fn remove_edge(doc: &mut GraphMl, index: usize) {
     if let Some(graph) = doc.graphs.first_mut()
         && index < graph.edges.len()
     {
@@ -511,28 +532,21 @@ pub fn remove_edge(doc: &mut GraphMl, index: usize) {
 
 /// Removes the top-level nodes and edges `items`, nodes with their edges.
 pub fn remove_items(doc: &mut GraphMl, items: &[Item]) {
-    let mut edges: Vec<usize> = (items.iter())
-        .filter_map(|item| match item {
-            Item::Edge(index) => Some(*index),
-            Item::Node(_) => None,
-        })
-        .collect();
+    let mut edges: Vec<usize> = items.iter().filter_map(Item::edge_index).collect();
     edges.sort_unstable();
     edges.dedup();
     // Last first, as each removal moves the edges after it down.
     for index in edges.into_iter().rev() {
         remove_edge(doc, index);
     }
-    for item in items {
-        if let Item::Node(id) = item {
-            remove_node(doc, id);
-        }
+    for id in items.iter().filter_map(Item::node_id) {
+        remove_node(doc, id);
     }
 }
 
 /// Removes the top-level node with id `id`, with the edges of it and of the
 /// nodes nested in it.
-pub fn remove_node(doc: &mut GraphMl, id: &str) {
+fn remove_node(doc: &mut GraphMl, id: &str) {
     let Some(graph) = doc.graphs.first_mut() else {
         return;
     };
@@ -547,33 +561,19 @@ pub fn remove_node(doc: &mut GraphMl, id: &str) {
         });
     }
     for graph in &mut doc.graphs {
-        remove_edges(graph, &gone);
+        visit_graphs_mut(graph, &mut |graph| {
+            (graph.edges)
+                .retain(|edge| !gone.contains(&edge.source) && !gone.contains(&edge.target));
+        });
     }
     // Or it would stay in the file after the last box keeping a radius.
     drop_unused_radius_key(doc);
 }
 
-/// Removes the edges of `graph` and of the graphs nested in it that join any
-/// of the nodes with ids in `nodes`.
-fn remove_edges(graph: &mut Graph, nodes: &HashSet<String>) {
-    graph
-        .edges
-        .retain(|edge| !nodes.contains(&edge.source) && !nodes.contains(&edge.target));
-    let nested = (graph.nodes.iter_mut().map(|node| &mut node.graph))
-        .chain(graph.edges.iter_mut().map(|edge| &mut edge.graph));
-    for graph in nested.flatten() {
-        remove_edges(graph, nodes);
-    }
-}
-
 /// Moves the port at the `end` of the top-level graph's edge at `index` onto
 /// the node with id `node`, `port` from its middle.
 pub fn move_port(doc: &mut GraphMl, index: usize, end: EdgeEnd, node: &str, port: Point) {
-    let Some(edge) = doc
-        .graphs
-        .first_mut()
-        .and_then(|graph| graph.edges.get_mut(index))
-    else {
+    let Some(edge) = edge_mut(doc, index) else {
         return;
     };
     let joined = match end {
@@ -652,13 +652,11 @@ pub fn move_bends(doc: &mut GraphMl, index: usize, bend: Option<usize>, dx: f64,
 /// edges joining two of the nodes move too, so those edges keep their shape.
 pub fn move_items(doc: &mut GraphMl, items: &[Item], dx: f64, dy: f64) {
     let edges = bends_moved_with(doc, items);
-    for item in items {
-        if let Item::Node(id) = item {
-            edit_graphics(doc, id, |graphics| {
-                graphics.geometry.x += dx;
-                graphics.geometry.y += dy;
-            });
-        }
+    for id in items.iter().filter_map(Item::node_id) {
+        edit_graphics(doc, id, |graphics| {
+            graphics.geometry.x += dx;
+            graphics.geometry.y += dy;
+        });
     }
     for index in edges {
         move_bends(doc, index, None, dx, dy);
@@ -668,18 +666,8 @@ pub fn move_items(doc: &mut GraphMl, items: &[Item], dx: f64, dy: f64) {
 /// The indexes of the top-level edges whose bends [`move_items`] moves with
 /// `items`: those in `items`, and those joining two nodes in them.
 pub fn bends_moved_with(doc: &GraphMl, items: &[Item]) -> HashSet<usize> {
-    let nodes: HashSet<&str> = (items.iter())
-        .filter_map(|item| match item {
-            Item::Node(id) => Some(id.as_str()),
-            Item::Edge(_) => None,
-        })
-        .collect();
-    let edges = doc
-        .graphs
-        .first()
-        .into_iter()
-        .flat_map(|graph| &graph.edges);
-    (edges.enumerate())
+    let nodes: HashSet<&str> = items.iter().filter_map(Item::node_id).collect();
+    (top_edges(doc).iter().enumerate())
         .filter(|(index, edge)| {
             items.contains(&Item::Edge(*index))
                 || nodes.contains(edge.source.as_str()) && nodes.contains(edge.target.as_str())
@@ -688,53 +676,56 @@ pub fn bends_moved_with(doc: &GraphMl, items: &[Item]) -> HashSet<usize> {
         .collect()
 }
 
-/// The first of yEd's ids e0, e1, … that no edge in the document has.
-fn unused_edge_id(doc: &GraphMl) -> String {
-    fn visit<'a>(graph: &'a Graph, ids: &mut HashSet<&'a str>) {
-        ids.extend(graph.edges.iter().filter_map(|edge| edge.id.as_deref()));
-        let nested = (graph.nodes.iter().map(|node| &node.graph))
-            .chain(graph.edges.iter().map(|edge| &edge.graph));
-        for graph in nested.flatten() {
-            visit(graph, ids);
-        }
-    }
-    let mut ids = HashSet::new();
+/// The ids of the nodes and edges in `doc`, at any depth.
+fn taken_ids(doc: &GraphMl) -> HashSet<String> {
+    let mut taken = HashSet::new();
     for graph in &doc.graphs {
-        visit(graph, &mut ids);
-    }
-    (0..)
-        .map(|n| format!("e{n}"))
-        .find(|id| !ids.contains(id.as_str()))
-        .expect("the ids are endless")
-}
-
-/// The first of yEd's ids n0, n1, … that no node in the document has.
-fn unused_node_id(doc: &GraphMl) -> String {
-    let mut ids = HashSet::new();
-    for graph in &doc.graphs {
-        visit_nodes(graph, &mut |node| {
-            ids.insert(node.id.as_str());
+        visit_graphs(graph, &mut |graph| {
+            taken.extend(graph.nodes.iter().map(|node| node.id.clone()));
+            taken.extend(graph.edges.iter().filter_map(|edge| edge.id.clone()));
         });
     }
-    (0..)
-        .map(|n| format!("n{n}"))
-        .find(|id| !ids.contains(id.as_str()))
+    taken
+}
+
+/// The first of `prefix`0, `prefix`1, … not `taken`, which it's added to.
+fn fresh(taken: &mut HashSet<String>, prefix: &str) -> String {
+    let id = first_free(prefix, 0, |id| taken.contains(id));
+    taken.insert(id.clone());
+    id
+}
+
+/// The first id of `prefix` and a number from `start` up that isn't `taken`.
+fn first_free(prefix: &str, start: u32, taken: impl Fn(&str) -> bool) -> String {
+    (start..)
+        .map(|n| format!("{prefix}{n}"))
+        .find(|id| !taken(id))
         .expect("the ids are endless")
 }
 
 /// Calls `visit` with each node of `graph` and of the graphs nested in it.
 fn visit_nodes<'a>(graph: &'a Graph, visit: &mut impl FnMut(&'a Node)) {
-    for node in &graph.nodes {
-        visit(node);
-    }
-    let nested = graph
-        .nodes
-        .iter()
-        .map(|node| &node.graph)
+    visit_graphs(graph, &mut |graph| graph.nodes.iter().for_each(&mut *visit));
+}
+
+/// Calls `visit` with `graph` and each graph nested in it, at any depth.
+fn visit_graphs<'a>(graph: &'a Graph, visit: &mut impl FnMut(&'a Graph)) {
+    visit(graph);
+    let nested = (graph.nodes.iter().map(|node| &node.graph))
         .chain(graph.edges.iter().map(|edge| &edge.graph))
-        .chain(graph.hyperedges.iter().map(|hyperedge| &hyperedge.graph));
+        .chain(graph.hyperedges.iter().map(|edge| &edge.graph));
     for graph in nested.flatten() {
-        visit_nodes(graph, visit);
+        visit_graphs(graph, visit);
+    }
+}
+
+fn visit_graphs_mut(graph: &mut Graph, visit: &mut impl FnMut(&mut Graph)) {
+    visit(graph);
+    let nested = (graph.nodes.iter_mut().map(|node| &mut node.graph))
+        .chain(graph.edges.iter_mut().map(|edge| &mut edge.graph))
+        .chain(graph.hyperedges.iter_mut().map(|edge| &mut edge.graph));
+    for graph in nested.flatten() {
+        visit_graphs_mut(graph, visit);
     }
 }
 

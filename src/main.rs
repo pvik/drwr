@@ -563,7 +563,7 @@ impl eframe::App for DrwrApp {
         }
         // Panels are laid out outside-in in the order they're added, so the
         // canvas (the central panel) must come last.
-        let can_copy = self.selected.nodes().next().is_some();
+        let can_copy = self.selected.has_nodes();
         let file_dialog_open = self.file_dialog.is_open();
         let menu = menu::show(ui, file_dialog_open, can_copy);
         self.perform_or_wait(menu, &mut waiting, ui.ctx(), frame);

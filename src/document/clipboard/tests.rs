@@ -45,8 +45,7 @@ fn refids(doc: &GraphMl, id: &str) -> Vec<String> {
 }
 
 fn resource_ids(doc: &GraphMl) -> Vec<&str> {
-    let resources = resources_data(doc).and_then(Data::element);
-    let resources = resources.into_iter().flat_map(Element::elements);
+    let resources = yed::resources(doc).into_iter().flat_map(Element::elements);
     resources
         .filter_map(|resource| resource.attr("id"))
         .collect()
@@ -209,8 +208,8 @@ fn pasted_resources_are_shared_if_the_same_and_renamed_if_not() {
     paste(&mut doc, copied.clone());
     assert_eq!(refids(&doc, "n6"), ["2"]);
     assert_eq!(resource_ids(&doc), ["1", "2"]);
-    let resources = resources_data(&doc).and_then(Data::element).unwrap();
-    let original = resources_data(&copied).and_then(Data::element).unwrap();
+    let resources = yed::resources(&doc).unwrap();
+    let original = yed::resources(&copied).unwrap();
     let pasted = resources.elements().nth(1).unwrap();
     assert_eq!(
         pasted.children,

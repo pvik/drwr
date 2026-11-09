@@ -37,7 +37,7 @@ impl Style {
         property: ColorProperty,
         color: Option<Color>,
     ) {
-        let nodes = selected.nodes().next().is_some();
+        let nodes = selected.has_nodes();
         match property {
             ColorProperty::Fill if nodes => self.fill = Some(color),
             ColorProperty::Gradient if nodes => self.gradient = Some(color),
@@ -70,7 +70,7 @@ impl Style {
 
     /// Remembers `radius` for new boxes, if `selected` has nodes.
     pub fn set_corner_radius(&mut self, selected: &Selection, radius: f64) {
-        if selected.nodes().next().is_some() {
+        if selected.has_nodes() {
             self.corner_radius = Some(radius);
         }
     }
@@ -87,8 +87,7 @@ impl Style {
     /// The strokes of the kinds of items `selected` has: nodes' borders and
     /// edges' lines.
     fn strokes(&mut self, selected: &Selection) -> impl Iterator<Item = &mut StrokeStyle> {
-        let nodes = selected.nodes().next().is_some();
-        let edges = selected.edges().next().is_some();
+        let (nodes, edges) = (selected.has_nodes(), selected.has_edges());
         let strokes = [(nodes, &mut self.border), (edges, &mut self.line)];
         strokes
             .into_iter()

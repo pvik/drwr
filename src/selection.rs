@@ -67,18 +67,20 @@ impl Selection {
 
     /// The ids of the selected nodes.
     pub fn nodes(&self) -> impl Iterator<Item = &str> {
-        self.items.iter().filter_map(|item| match item {
-            Item::Node(id) => Some(id.as_str()),
-            Item::Edge(_) => None,
-        })
+        self.items.iter().filter_map(Item::node_id)
     }
 
     /// The indexes of the selected edges.
     pub fn edges(&self) -> impl Iterator<Item = usize> {
-        self.items.iter().filter_map(|item| match item {
-            Item::Edge(index) => Some(*index),
-            Item::Node(_) => None,
-        })
+        self.items.iter().filter_map(Item::edge_index)
+    }
+
+    pub fn has_nodes(&self) -> bool {
+        self.nodes().next().is_some()
+    }
+
+    pub fn has_edges(&self) -> bool {
+        self.edges().next().is_some()
     }
 
     /// The selected bend of the only item, an edge.
