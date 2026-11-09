@@ -36,7 +36,8 @@ const SELECTION: Stroke = Stroke {
 };
 /// Between the selected node's bounds and its outline.
 const SELECTION_GAP: f32 = 2.0;
-/// Inside the box a drag from the empty canvas draws to select nodes.
+/// Inside the box a drag from the empty canvas draws to select nodes and
+/// edges.
 const SELECTION_BOX_FILL: Color32 = Color32::from_rgba_unmultiplied_const(0x00, 0x78, 0xD4, 0x20);
 /// Under the selected edges, this wide either side of their lines.
 const HALO: Stroke = Stroke {
@@ -157,12 +158,13 @@ struct MoveDrag {
 }
 
 /// A box being dragged out from the empty canvas, which selects the nodes
-/// inside it.
+/// and edges inside it.
 #[derive(Clone, Copy)]
 struct BoxDrag {
     /// The corner it started from, in graph coordinates, unrounded.
     from: Pos2,
-    /// Whether its nodes are added to the selection, rather than replacing it.
+    /// Whether what it selects is added to the selection, rather than
+    /// replacing it.
     add: bool,
 }
 
@@ -410,7 +412,8 @@ impl Canvas {
             };
             for edge in &scene.edges {
                 let item = Item::Edge(edge.index);
-                let chosen = kept && selected.contains(&item);
+                let boxed = boxed.is_some_and(|(rect, _)| shown.edge_in_box(edge, rect));
+                let chosen = boxed || kept && selected.contains(&item);
                 let dragged = dragged_edge.as_ref();
                 let look = match dragged.filter(|_| selected_edge == Some(edge.index)) {
                     Some(look) => look.clone(),
@@ -950,9 +953,9 @@ impl Canvas {
     /// Starts what a drag of the primary button from the canvas does with the
     /// Cursor tool: from one of the selected items it moves them all, and
     /// from another item it selects that one first. From the empty canvas it
-    /// draws a box, which selects the nodes inside. [`Self::drag_edge`] takes
-    /// drags of the line or labels of the only selected edge. `ctrl` adds to
-    /// the selection rather than replacing it.
+    /// draws a box, which selects the nodes and edges inside.
+    /// [`Self::drag_edge`] takes drags of the line or labels of the only
+    /// selected edge. `ctrl` adds to the selection rather than replacing it.
     fn start_drag(
         &mut self,
         canvas: &Response,
@@ -1022,8 +1025,9 @@ impl Canvas {
     }
 
     /// Selects the nodes inside the box that a drag [`Self::start_drag`]
-    /// started draws, on release. Returns the box so far on screen, and
-    /// whether its nodes are to be added to the selection.
+    /// started draws, on release, with the edges between them whose bends
+    /// are inside too. Returns the box so far on screen, and whether what it
+    /// selects is to be added to the selection.
     fn select_in_box(
         &mut self,
         ui: &egui::Ui,
@@ -1047,6 +1051,11 @@ impl Canvas {
             for (index, node) in shown.scene.nodes.iter().enumerate() {
                 if shown.in_box(index, rect) {
                     selected.add(Item::Node(node.id.clone()));
+                }
+            }
+            for edge in &shown.scene.edges {
+                if shown.edge_in_box(edge, rect) {
+                    selected.add(Item::Edge(edge.index));
                 }
             }
         }
@@ -1406,6 +1415,16 @@ impl Shown<'_> {
             graphics, radius, ..
         } = &self.scene.nodes[node];
         shape(graphics, *radius).is_some() && rect.contains_rect(self.node_rect(node))
+    }
+
+    /// Whether `edge` is inside `rect` on screen: both its nodes, by
+    /// [`Self::in_box`], and all its bends.
+    fn edge_in_box(&self, edge: &SceneEdge, rect: Rect) -> bool {
+        let bends = edge.graphics.path.points.iter();
+        let mut bends = bends.map(|bend| self.to_screen * pos2(bend.x as f32, bend.y as f32));
+        self.in_box(edge.source, rect)
+            && self.in_box(edge.target, rect)
+            && bends.all(|bend| rect.contains(bend))
     }
 
     /// The index of the topmost node the canvas draws at `pos` on screen.
