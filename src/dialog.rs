@@ -1,8 +1,8 @@
 use egui::{Context, Id, Modal, Ui};
 
-/// Shows `dialog`, if open, as a modal laid out by `add_contents`, which
-/// returns whether it was accepted. Closes it when cancelled, and returns it
-/// once accepted.
+/// Shows `dialog`, if open, as a modal that doesn't fade in, laid out by
+/// `add_contents`, which returns whether it was accepted. Closes it when
+/// cancelled, and returns it once accepted.
 pub fn show<D>(
     ctx: &Context,
     id: &str,
@@ -10,7 +10,10 @@ pub fn show<D>(
     add_contents: impl FnOnce(&mut D, &mut Ui) -> bool,
 ) -> Option<D> {
     let open = dialog.as_mut()?;
-    let modal = Modal::new(Id::unique(id)).show(ctx, |ui| add_contents(open, ui));
+    let id = Id::unique(id);
+    let modal = Modal::new(id)
+        .area(Modal::default_area(id).fade_in(false))
+        .show(ctx, |ui| add_contents(open, ui));
     if modal.inner {
         return dialog.take();
     }

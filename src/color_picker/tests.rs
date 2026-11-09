@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use egui::accesskit::{self, Toggled};
-use egui::{Event, FallbackRequest, FontInsert, Modifiers, Pos2, RawInput, vec2};
+use egui::{Event, FallbackRequest, FontInsert, Id, Modal, Modifiers, Pos2, RawInput, Shape, vec2};
 
 use super::*;
 use crate::testing::{self, button, center, widgets};
@@ -18,6 +18,8 @@ struct Harness {
     time: f64,
     /// The widgets the last frame showed.
     widgets: Vec<accesskit::Node>,
+    /// What the last frame painted.
+    shapes: Vec<Shape>,
 }
 
 impl Harness {
@@ -30,6 +32,7 @@ impl Harness {
             picked: Vec::new(),
             time: 0.0,
             widgets: Vec::new(),
+            shapes: Vec::new(),
         }
     }
 
@@ -60,7 +63,15 @@ impl Harness {
             self.picked.extend(self.picker.show(ui.ctx()));
         });
         self.widgets = widgets(&mut output);
+        let shapes = std::mem::take(&mut output.shapes).into_iter();
+        self.shapes = shapes.map(|clipped| clipped.shape).collect();
         output.drop_without_applying_deltas();
+    }
+
+    /// Whether the last frame painted `text`.
+    fn painted(&self, text: &str) -> bool {
+        (self.shapes.iter())
+            .any(|shape| matches!(shape, Shape::Text(shape) if shape.galley.text() == text))
     }
 
     fn widget(&self, label: &str) -> &accesskit::Node {
@@ -212,6 +223,18 @@ fn the_hex_field_follows_the_color_once_left() {
     assert_eq!(harness.hex(), "");
     harness.click("No color", 1);
     assert_eq!(harness.hex(), "#FFCC00");
+}
+
+#[test]
+fn the_hex_field_reads_none_only_for_no_color() {
+    let mut harness = Harness::new();
+    harness.open(Some(ORANGE));
+    // Emptied, it keeps the color.
+    harness.press(Key::Backspace);
+    assert_eq!(harness.hex(), "");
+    assert!(!harness.painted("None"));
+    harness.click("No color", 1);
+    assert!(harness.painted("None"));
 }
 
 #[test]
@@ -520,4 +543,15 @@ fn the_dialog_keeps_still() {
     assert_eq!(layout(&harness), before);
     harness.type_text("ffffff");
     assert_eq!(layout(&harness), before);
+}
+
+#[test]
+fn the_dialog_is_opaque_on_its_first_visible_frame() {
+    let mut harness = Harness::new();
+    harness.open(Some(ORANGE));
+    // As dark as the backdrop gets, so not fading in.
+    let backdrop = Modal::new(Id::NULL).backdrop_color;
+    let shaded = (harness.shapes.iter())
+        .any(|shape| matches!(shape, Shape::Rect(rect) if rect.fill == backdrop));
+    assert!(shaded);
 }

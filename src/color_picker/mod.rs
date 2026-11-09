@@ -188,7 +188,8 @@ impl<T> Dialog<T> {
             let mut field = TextEdit::singleline(&mut self.hex)
                 .id(id)
                 .desired_width(80.0);
-            if self.optional {
+            // Not just when empty, as emptying the field keeps the color.
+            if self.no_color {
                 field = field.hint_text("None");
             }
             if invalid {
