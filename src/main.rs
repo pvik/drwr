@@ -1,4 +1,5 @@
 mod action;
+mod atomic_file;
 mod canvas;
 mod cli;
 mod color_picker;
@@ -319,7 +320,7 @@ impl DrwrApp {
         ctx: &egui::Context,
         frame: &eframe::Frame,
     ) {
-        if let Err(err) = self.graphml.write_file(&path) {
+        if let Err(err) = atomic_file::write(&path, |file| self.graphml.write_to(file)) {
             self.error = Some(format!("Couldn't save {}:\n{err}", path.display()));
             return;
         }

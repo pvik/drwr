@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::ScratchDir;
 
 #[test]
 fn starts_with_an_empty_unsaved_graph() {
@@ -151,31 +152,12 @@ fn open_resets_the_zoom() {
     assert_eq!(app.canvas.zoom(), 1.0);
 }
 
-/// A directory of a test's own for its files, removed afterwards.
-struct ScratchDir(PathBuf);
-
 impl ScratchDir {
-    fn new(test: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("drwr-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        ScratchDir(dir)
-    }
-
-    fn path(&self, name: &str) -> PathBuf {
-        self.0.join(name)
-    }
-
     /// Copies the yEd fixture in, returning the copy's path.
     fn fixture(&self) -> PathBuf {
         let copy = self.path("yed.graphml");
         std::fs::copy(FIXTURE, &copy).unwrap();
         copy
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

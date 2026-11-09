@@ -1,4 +1,7 @@
-//! Helpers shared by the tests of the UI modules.
+//! Helpers shared by tests.
+
+use std::fs;
+use std::path::PathBuf;
 
 use egui::accesskit;
 use egui::{
@@ -193,5 +196,36 @@ pub trait Drive {
     /// shown before a change catch up.
     fn repaint(&mut self) {
         self.frame(vec![]);
+    }
+}
+
+/// A directory of a test's own for its files, removed afterwards.
+pub struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    pub fn new(test: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("drwr-{test}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        ScratchDir(dir)
+    }
+
+    pub fn path(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+
+    /// The names of the files in it, sorted.
+    pub fn names(&self) -> Vec<String> {
+        let entries = fs::read_dir(&self.0).unwrap();
+        let mut names: Vec<_> = entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
