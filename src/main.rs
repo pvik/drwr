@@ -10,6 +10,7 @@ mod fonts;
 mod label_position;
 mod line_type;
 mod menu;
+mod prompt;
 mod selection;
 mod shortcuts;
 mod side_panel;
@@ -105,8 +106,8 @@ struct DrwrApp {
     /// Picks the colors of the selected nodes and edges.
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelEdit>,
-    /// What waits for the answer to the unsaved-changes dialog while it's open.
-    unsaved: Option<CloseFor>,
+    /// The question waiting for an answer.
+    prompt: Option<Prompt>,
     /// Whether the window was asked to close, which the end of the frame
     /// decides on.
     close_requested: bool,
@@ -139,6 +140,16 @@ enum CloseFor {
     New,
     Open,
     Quit,
+}
+
+/// A question for the user, and what it's for.
+#[derive(Clone)]
+enum Prompt {
+    /// Whether to save the changes before closing the graph for this.
+    Unsaved(CloseFor),
+    /// Whether to save over the file at this path, then close the graph for
+    /// this, if anything.
+    Replace(PathBuf, Option<CloseFor>),
 }
 
 impl DrwrApp {
@@ -197,7 +208,7 @@ impl DrwrApp {
             self.drop_graph(close_for, ctx, frame);
         } else if !self.file_dialog.is_open() {
             // Not asked while a file dialog is open, which saving may need.
-            self.unsaved = Some(close_for);
+            self.prompt = Some(Prompt::Unsaved(close_for));
         }
     }
 
@@ -220,13 +231,7 @@ impl DrwrApp {
     /// it for `then`, if anything, once saved.
     fn save(&mut self, then: Option<CloseFor>, ctx: &egui::Context, frame: &eframe::Frame) {
         match self.file.clone() {
-            Some(file) => {
-                if self.save_to(file)
-                    && let Some(then) = then
-                {
-                    self.drop_graph(then, ctx, frame);
-                }
-            }
+            Some(file) => self.save_to(file, then, ctx, frame),
             None => self.ask_where_to_save(then, ctx, frame),
         }
     }
@@ -249,17 +254,76 @@ impl DrwrApp {
         (self.file_dialog).open(FilePurpose::Save(then), request, ctx, frame);
     }
 
-    /// Writes the graph to `path`, which becomes its file, or shows why it
-    /// can't. Returns whether it did.
-    fn save_to(&mut self, path: PathBuf) -> bool {
+    /// Saves the graph where the file dialog picked, then closes it for
+    /// `then`, if anything. A name without an extension gets ".graphml",
+    /// asking first if that file exists, as the dialog only checked the name.
+    fn save_picked(
+        &mut self,
+        mut path: PathBuf,
+        then: Option<CloseFor>,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
+        if path.extension().is_none() {
+            path.set_extension("graphml");
+            if path.exists() {
+                self.prompt = Some(Prompt::Replace(path, then));
+                return;
+            }
+        }
+        self.save_to(path, then, ctx, frame);
+    }
+
+    /// Writes the graph to `path`, which becomes its file, then closes it for
+    /// `then`, if anything; or shows why it can't.
+    fn save_to(
+        &mut self,
+        path: PathBuf,
+        then: Option<CloseFor>,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
         if let Err(err) = self.graphml.write_file(&path) {
             self.error = Some(format!("Couldn't save {}:\n{err}", path.display()));
-            return false;
+            return;
         }
         self.file = Some(path);
         self.saved = self.graphml.clone();
         self.modified = false;
-        true
+        if let Some(then) = then {
+            self.drop_graph(then, ctx, frame);
+        }
+    }
+
+    /// Asks the question waiting for an answer, if any, then does what the
+    /// answer says.
+    fn show_prompt(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        match self.prompt.clone() {
+            Some(Prompt::Unsaved(close_for)) => {
+                let Some(answer) = unsaved_dialog::show(ctx, self.file.as_deref()) else {
+                    return;
+                };
+                self.prompt = None;
+                match answer {
+                    Answer::Save => self.save(Some(close_for), ctx, frame),
+                    Answer::DontSave => self.drop_graph(close_for, ctx, frame),
+                    Answer::Cancel => {}
+                }
+            }
+            Some(Prompt::Replace(path, then)) => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let question = format!("{name} already exists. Replace it?");
+                let answers = [("Replace", true), ("Cancel", false)];
+                let Some(replace) = prompt::ask(ctx, &question, &answers) else {
+                    return;
+                };
+                self.prompt = None;
+                if replace {
+                    self.save_to(path, then, ctx, frame);
+                }
+            }
+            None => {}
+        }
     }
 
     /// Edits the graphics of each selected node and edge.
@@ -472,13 +536,7 @@ impl eframe::App for DrwrApp {
                     self.error = Some(format!("Couldn't open {}:\n{err}", path.display()));
                 }
             }
-            Some((FilePurpose::Save(then), path)) => {
-                if self.save_to(path)
-                    && let Some(then) = then
-                {
-                    self.drop_graph(then, ctx, frame);
-                }
-            }
+            Some((FilePurpose::Save(then), path)) => self.save_picked(path, then, ctx, frame),
             None => {}
         }
         // Here, as `ui` doesn't run while the window is hidden, and it closes
@@ -554,21 +612,8 @@ impl eframe::App for DrwrApp {
         if std::mem::take(&mut self.close_requested) {
             self.close_graph(CloseFor::Quit, ui.ctx(), frame);
         }
-        if let Some(close_for) = self.unsaved {
-            let question = match self.file.as_deref().and_then(Path::file_name) {
-                Some(name) => format!("Save changes to {}?", name.to_string_lossy()),
-                None => "Save changes to the new diagram?".to_owned(),
-            };
-            if let Some(answer) = unsaved_dialog::show(ui, &question) {
-                self.unsaved = None;
-                match answer {
-                    Answer::Save => self.save(Some(close_for), ui.ctx(), frame),
-                    Answer::DontSave => self.drop_graph(close_for, ui.ctx(), frame),
-                    Answer::Cancel => {}
-                }
-            }
-        }
-        error_dialog::show(ui, &mut self.error);
+        self.show_prompt(ui.ctx(), frame);
+        error_dialog::show(ui.ctx(), &mut self.error);
         let name = (self.file.as_deref().and_then(Path::file_name))
             .map_or(status_bar::NOT_SAVED.into(), OsStr::to_string_lossy);
         let marker = if self.modified { "*" } else { "" };

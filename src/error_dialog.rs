@@ -1,14 +1,10 @@
-/// Shows `error` in a modal dialog until it's dismissed.
-pub fn show(ui: &mut egui::Ui, error: &mut Option<String>) {
-    let Some(message) = error else { return };
-    let modal = egui::Modal::new(egui::Id::unique("error_dialog")).show(ui.ctx(), |ui| {
-        ui.set_max_width(400.0);
-        ui.label(message.as_str());
-        if ui.button("OK").clicked() {
-            ui.close();
-        }
-    });
-    if modal.should_close() {
+use crate::prompt;
+
+/// Shows `error` in a modal dialog until OK, Enter or Escape dismisses it.
+pub fn show(ctx: &egui::Context, error: &mut Option<String>) {
+    if let Some(message) = error
+        && prompt::ask(ctx, message, &[("OK", ())]).is_some()
+    {
         *error = None;
     }
 }

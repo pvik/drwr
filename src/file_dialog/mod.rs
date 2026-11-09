@@ -22,8 +22,9 @@ pub enum Request {
 
 struct Asked<T> {
     target: T,
-    request: Request,
     picked: Receiver<Option<PathBuf>>,
+    #[cfg(test)]
+    request: Request,
     /// Tests answer in place of rfd, which would show the user's real dialog.
     #[cfg(test)]
     answer: Sender<Option<PathBuf>>,
@@ -59,26 +60,22 @@ impl<T> FileDialog<T> {
         let _ = (ctx, parent);
         self.asked = Some(Asked {
             target,
-            request,
             picked,
+            #[cfg(test)]
+            request,
             #[cfg(test)]
             answer: sender,
         });
     }
 
-    /// Takes the target and the file picked, once the dialog has closed. A
-    /// file to save without an extension gets ".graphml".
+    /// Takes the target and the file picked, once the dialog has closed.
     pub fn picked(&mut self) -> Option<(T, PathBuf)> {
         let result = self.asked.as_ref()?.picked.try_recv();
         if matches!(result, Err(TryRecvError::Empty)) {
             return None;
         }
         let asked = self.asked.take()?;
-        let mut path = result.ok().flatten()?;
-        if matches!(asked.request, Request::Save { .. }) && path.extension().is_none() {
-            path.set_extension("graphml");
-        }
-        Some((asked.target, path))
+        Some((asked.target, result.ok().flatten()?))
     }
 }
 

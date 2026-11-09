@@ -1587,7 +1587,7 @@ fn new_keeps_what_was_set_for_new_items() {
     harness.app.selected = Selection::node(id);
     harness.perform(Action::SetColor(ColorProperty::Fill, Some(RED)));
     harness.perform(Action::New);
-    harness.answer_unsaved("Don't Save");
+    harness.answer_prompt("Don't Save");
     assert_eq!(harness.app.graphml, yed::new_document());
 
     let drawn = harness.draw_node(Tool::Box, vec2(20.0, 20.0), vec2(140.0, 80.0));
@@ -3078,6 +3078,90 @@ fn a_box_drawn_and_saved_is_in_a_yed_document() {
 }
 
 #[test]
+fn only_names_without_an_extension_get_graphml() {
+    let dir = ScratchDir::new("save-extensions");
+    std::fs::create_dir(dir.path("v1.2")).unwrap();
+    for (picked, saved) in [
+        ("plan.xml", "plan.xml"),
+        ("plan.graphml", "plan.graphml"),
+        ("v1.2/plan", "v1.2/plan.graphml"),
+    ] {
+        let mut harness = Harness::new();
+        harness.draw_box();
+        harness.press(CTRL, Key::S);
+        harness.answer(Some(&dir.path(picked)));
+        assert_eq!(harness.app.file, Some(dir.path(saved)), "{picked}");
+    }
+}
+
+#[test]
+fn a_name_without_an_extension_asks_before_replacing_that_file() {
+    let dir = ScratchDir::new("save-replace");
+    let file = dir.path("plan.graphml");
+    std::fs::copy(FIXTURE, &file).unwrap();
+    let question = "plan.graphml already exists. Replace it?";
+    let mut harness = Harness::new();
+    harness.draw_box();
+
+    harness.press(CTRL, Key::S);
+    harness.answer(Some(&dir.path("plan")));
+    assert!(harness.painted(question));
+    harness.answer_prompt("Cancel");
+    assert!(!harness.painted(question));
+    assert_eq!(read(&file), read(Path::new(FIXTURE)));
+    assert_eq!(harness.app.file, None);
+    assert!(harness.app.modified);
+
+    harness.press(CTRL, Key::S);
+    harness.answer(Some(&dir.path("plan")));
+    harness.answer_prompt("Replace");
+    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(harness.app.file, Some(file));
+    assert!(!harness.app.modified);
+}
+
+#[test]
+fn replacing_goes_on_to_close_the_graph_and_cancelling_drops_that() {
+    let dir = ScratchDir::new("save-replace-new");
+    let file = dir.path("plan.graphml");
+    std::fs::copy(FIXTURE, &file).unwrap();
+    let mut harness = Harness::new();
+    harness.draw_box();
+    let drawn = harness.app.graphml.clone();
+    let new = yed::new_document();
+    for (answer, graphml) in [("Cancel", &drawn), ("Replace", &new)] {
+        harness.press(CTRL, Key::N);
+        harness.answer_prompt("Save");
+        harness.answer(Some(&dir.path("plan")));
+        harness.answer_prompt(answer);
+        assert_eq!(&harness.app.graphml, graphml, "{answer}");
+        assert!(!harness.asks_to_save(), "{answer}");
+    }
+    assert_eq!(read(&file), drawn);
+}
+
+#[test]
+fn prompts_are_opaque_on_their_first_visible_frame() {
+    let mut harness = Harness::new();
+    let message = "Couldn't save";
+    harness.app.error = Some(message.to_owned());
+    let painted = |shape: &Shape| match shape {
+        Shape::Text(text) if text.galley.text() == message => Some(text.fallback_color),
+        _ => None,
+    };
+    // A dialog shown for the first time is only sized in its first frame.
+    let shapes = (0..3)
+        .map(|_| harness.run(vec![]))
+        .find(|shapes| shapes.iter().any(|shape| painted(shape).is_some()))
+        .expect("the error was shown");
+    let color = shapes.iter().find_map(painted).unwrap();
+    assert_eq!(color.a(), 255);
+    let backdrop = Color32::from_black_alpha(100);
+    let dimmed = |shape: &Shape| matches!(shape, Shape::Rect(rect) if rect.fill == backdrop);
+    assert!(shapes.iter().any(dimmed));
+}
+
+#[test]
 fn save_as_writes_the_fixture_byte_for_byte_and_switches_to_the_copy() {
     let dir = ScratchDir::new("save-as");
     let mut harness = Harness::open(Path::new(FIXTURE));
@@ -3232,10 +3316,10 @@ impl Harness {
             .contains(&egui::ViewportCommand::CancelClose)
     }
 
-    /// Clicks the unsaved-changes dialog's button labelled `label`, returning
-    /// what the release asked of the window. The dialog sits below the
-    /// toolbar, whose Save button has the same label.
-    fn answer_unsaved(&mut self, label: &str) -> Vec<egui::ViewportCommand> {
+    /// Clicks the open prompt's button labelled `label`, returning what the
+    /// release asked of the window. The prompt sits below the toolbar, whose
+    /// Save button has the same label as the unsaved-changes prompt's.
+    fn answer_prompt(&mut self, label: &str) -> Vec<egui::ViewportCommand> {
         self.ctx.enable_accesskit();
         let mut output = self.run_input(RawInput::default());
         let widgets = testing::widgets(&mut output);
@@ -3383,13 +3467,13 @@ fn quit_asks_to_save_changes_first() {
     assert!(!harness.quit());
     assert!(harness.painted("Save changes to yed.graphml?"));
 
-    let commands = harness.answer_unsaved("Cancel");
+    let commands = harness.answer_prompt("Cancel");
     assert!(!commands.contains(&egui::ViewportCommand::Close));
     assert!(!harness.asks_to_save());
     assert!(harness.app.modified);
 
     harness.quit();
-    let commands = harness.answer_unsaved("Save");
+    let commands = harness.answer_prompt("Save");
     assert!(commands.contains(&egui::ViewportCommand::Close));
     assert_eq!(read(&file), harness.app.graphml);
     assert!(!harness.close_window());
@@ -3400,7 +3484,7 @@ fn quit_without_saving_leaves_the_file_and_lets_the_window_close() {
     let dir = ScratchDir::new("quit-dont-save");
     let (mut harness, file) = modified_fixture(&dir);
     harness.quit();
-    let commands = harness.answer_unsaved("Don't Save");
+    let commands = harness.answer_prompt("Don't Save");
     assert!(commands.contains(&egui::ViewportCommand::Close));
     assert!(harness.app.modified);
     assert!(!harness.close_window());
@@ -3439,11 +3523,11 @@ fn open_asks_to_save_changes_before_showing_the_dialog() {
     harness.press(CTRL, Key::O);
     assert!(!harness.app.file_dialog.is_open());
     assert!(harness.asks_to_save());
-    harness.answer_unsaved("Cancel");
+    harness.answer_prompt("Cancel");
     assert!(!harness.app.file_dialog.is_open());
 
     harness.press(CTRL, Key::O);
-    harness.answer_unsaved("Don't Save");
+    harness.answer_prompt("Don't Save");
     assert_eq!(harness.app.file_dialog.request(), Some(&Request::Open));
     // Cancelling the dialog keeps the changes.
     harness.answer(None);
@@ -3456,7 +3540,7 @@ fn saving_from_the_prompt_goes_on_to_open() {
     let (mut harness, file) = modified_fixture(&dir);
     let moved = harness.app.graphml.clone();
     harness.press(CTRL, Key::O);
-    harness.answer_unsaved("Save");
+    harness.answer_prompt("Save");
     assert_eq!(read(&file), moved);
     assert_eq!(harness.app.file_dialog.request(), Some(&Request::Open));
 
@@ -3472,7 +3556,7 @@ fn new_asks_to_save_an_unsaved_graph_where_first() {
     harness.draw_box();
     harness.press(CTRL, Key::N);
     assert!(harness.painted("Save changes to the new diagram?"));
-    harness.answer_unsaved("Save");
+    harness.answer_prompt("Save");
     let request = harness.app.file_dialog.request().cloned();
     assert!(matches!(request, Some(Request::Save { .. })), "{request:?}");
 
@@ -3491,7 +3575,7 @@ fn cancelling_save_as_from_the_prompt_keeps_the_graph() {
     harness.draw_box();
     let drawn = harness.app.graphml.clone();
     harness.press(CTRL, Key::N);
-    harness.answer_unsaved("Save");
+    harness.answer_prompt("Save");
     harness.answer(None);
     assert_eq!(harness.app.graphml, drawn);
     assert!(harness.app.modified);
@@ -3506,7 +3590,7 @@ fn a_failed_save_from_the_prompt_keeps_the_graph() {
     harness.press(CTRL, Key::ArrowRight);
     let moved = harness.app.graphml.clone();
     harness.press(CTRL, Key::N);
-    harness.answer_unsaved("Save");
+    harness.answer_prompt("Save");
     assert!(harness.app.error.is_some());
     assert_eq!(harness.app.graphml, moved);
     assert!(harness.app.modified);
@@ -3517,7 +3601,7 @@ fn new_without_saving_drops_the_changes() {
     let mut harness = Harness::new();
     harness.draw_box();
     harness.press(CTRL, Key::N);
-    harness.answer_unsaved("Don't Save");
+    harness.answer_prompt("Don't Save");
     assert_eq!(harness.app.graphml, yed::new_document());
     assert!(!harness.app.modified);
 }

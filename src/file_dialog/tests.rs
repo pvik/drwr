@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::*;
 
@@ -38,25 +38,13 @@ fn cancelling_closes_the_dialog_without_a_file() {
 }
 
 #[test]
-fn a_file_to_save_gets_the_graphml_extension_if_it_has_none() {
-    for (picked, saved) in [
-        ("/tmp/plan", "/tmp/plan.graphml"),
-        ("/tmp/plan.graphml", "/tmp/plan.graphml"),
-        ("/tmp/plan.xml", "/tmp/plan.xml"),
-        ("/tmp/v1.2/plan", "/tmp/v1.2/plan.graphml"),
-    ] {
-        let mut dialog = open_on(save_request());
-        dialog.answer(Some(PathBuf::from(picked)));
-        let (_, path) = dialog.picked().unwrap();
-        assert_eq!(path, Path::new(saved), "{picked}");
+fn the_file_picked_keeps_its_name() {
+    for request in [Request::Open, save_request()] {
+        let mut dialog = open_on(request.clone());
+        dialog.answer(Some(PathBuf::from("/tmp/plan")));
+        let picked = dialog.picked();
+        assert_eq!(picked, Some((1, PathBuf::from("/tmp/plan"))), "{request:?}");
     }
-}
-
-#[test]
-fn a_file_to_open_keeps_its_name() {
-    let mut dialog = open_on(Request::Open);
-    dialog.answer(Some(PathBuf::from("/tmp/plan")));
-    assert_eq!(dialog.picked(), Some((1, PathBuf::from("/tmp/plan"))));
 }
 
 #[test]

@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use crate::prompt;
+
 /// What the user chose to do with the unsaved changes.
 #[derive(Clone, Copy, Debug)]
 pub enum Answer {
@@ -6,29 +10,17 @@ pub enum Answer {
     Cancel,
 }
 
-/// Asks `question` in a modal dialog with Save, Don't Save and Cancel buttons,
-/// where Escape cancels. Returns the answer once given.
-pub fn show(ui: &mut egui::Ui, question: &str) -> Option<Answer> {
-    let mut answer = None;
-    let modal = egui::Modal::new(egui::Id::unique("unsaved_dialog")).show(ui.ctx(), |ui| {
-        ui.set_max_width(400.0);
-        ui.label(question);
-        ui.horizontal(|ui| {
-            let save = ui.button("Save");
-            // So Enter saves, and Tab moves on to the other buttons.
-            if ui.memory(|memory| memory.focused().is_none()) {
-                save.request_focus();
-            }
-            for (response, chosen) in [
-                (save, Answer::Save),
-                (ui.button("Don't Save"), Answer::DontSave),
-                (ui.button("Cancel"), Answer::Cancel),
-            ] {
-                if response.clicked() {
-                    answer = Some(chosen);
-                }
-            }
-        });
-    });
-    answer.or(modal.should_close().then_some(Answer::Cancel))
+/// Asks whether to save the changes to `file`, or to a new diagram if it's
+/// `None`. Enter saves and Escape cancels. Returns the answer once given.
+pub fn show(ctx: &egui::Context, file: Option<&Path>) -> Option<Answer> {
+    let question = match file.and_then(Path::file_name) {
+        Some(name) => format!("Save changes to {}?", name.to_string_lossy()),
+        None => "Save changes to the new diagram?".to_owned(),
+    };
+    let answers = [
+        ("Save", Answer::Save),
+        ("Don't Save", Answer::DontSave),
+        ("Cancel", Answer::Cancel),
+    ];
+    prompt::ask(ctx, &question, &answers)
 }
