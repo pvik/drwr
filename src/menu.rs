@@ -1,22 +1,24 @@
 use egui::{Button, Popup};
 
 use crate::action::Action;
-use crate::open_dialog::OpenDialog;
 use crate::shortcuts;
 
-/// Shows the menu bar at the top of the window, with Cut and Copy enabled if
+/// Shows the menu bar at the top of the window, with New, Open, Save and Save
+/// As disabled while `file_dialog_open`, and Cut and Copy enabled if
 /// `can_copy`. Returns the action clicked.
-pub fn show(ui: &mut egui::Ui, open_dialog: &OpenDialog, can_copy: bool) -> Option<Action> {
+pub fn show(ui: &mut egui::Ui, file_dialog_open: bool, can_copy: bool) -> Option<Action> {
     let mut clicked = None;
     egui::Panel::top("menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             let file = ui.menu_button("File", |ui| {
+                let can_pick = !file_dialog_open;
                 clicked = items(
                     ui,
                     [
-                        ("New", Action::New, true),
-                        ("Open", Action::Open, !open_dialog.is_open()),
-                        ("Save", Action::Save, true),
+                        ("New", Action::New, can_pick),
+                        ("Open", Action::Open, can_pick),
+                        ("Save", Action::Save, can_pick),
+                        ("Save As…", Action::SaveAs, can_pick),
                     ],
                 );
                 ui.separator();

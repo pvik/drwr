@@ -9,11 +9,15 @@ const MOVE_STEP: f64 = 1.0;
 /// for a wheel notch.
 const PAN_STEP: f32 = 40.0;
 
+const SHIFT_COMMAND: Modifiers = Modifiers::SHIFT.plus(Modifiers::COMMAND);
+
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 27] = [
+const SHORTCUTS: [(Modifiers, Key, Action); 28] = [
     (Modifiers::COMMAND, Key::N,          Action::New),
     (Modifiers::COMMAND, Key::O,          Action::Open),
+    // Before Ctrl+S, which egui also matches with Shift held.
+    (SHIFT_COMMAND,      Key::S,          Action::SaveAs),
     (Modifiers::COMMAND, Key::S,          Action::Save),
     (Modifiers::COMMAND, Key::X,          Action::Cut),
     (Modifiers::COMMAND, Key::C,          Action::Copy),

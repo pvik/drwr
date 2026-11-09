@@ -22,8 +22,8 @@ const FIXTURE: &str = concat!(
     "/crates/graphml/tests/fixtures/yed.graphml"
 );
 
-/// Drives the whole app, one frame at a time. Never press Ctrl+O or click
-/// Open in it: that opens the real file dialog on the desktop.
+/// Drives the whole app, one frame at a time. Its file dialogs wait for
+/// [`FileDialog::answer`], as tests never show rfd's.
 struct Harness {
     ctx: egui::Context,
     frame: eframe::Frame,
@@ -44,15 +44,21 @@ impl Harness {
         harness
     }
 
+    /// Runs a frame with `input`, as eframe does.
+    fn run_input(&mut self, input: RawInput) -> egui::FullOutput {
+        self.ctx.run_ui(input, |ui| {
+            self.app.logic(ui.ctx(), &mut self.frame);
+            self.app.ui(ui, &mut self.frame);
+        })
+    }
+
     /// Runs a frame with `events`, returning what it painted.
     fn run(&mut self, events: Vec<Event>) -> Vec<Shape> {
         let input = RawInput {
             events,
             ..RawInput::default()
         };
-        let mut output = self
-            .ctx
-            .run_ui(input, |ui| self.app.ui(ui, &mut self.frame));
+        let mut output = self.run_input(input);
         let shapes = std::mem::take(&mut output.shapes);
         output.drop_without_applying_deltas();
         shapes.into_iter().map(|clipped| clipped.shape).collect()
@@ -192,9 +198,7 @@ impl Harness {
     /// button.
     fn widget(&mut self, label: &str) -> egui::accesskit::Node {
         self.ctx.enable_accesskit();
-        let mut output = self
-            .ctx
-            .run_ui(RawInput::default(), |ui| self.app.ui(ui, &mut self.frame));
+        let mut output = self.run_input(RawInput::default());
         let widgets = testing::widgets(&mut output);
         output.drop_without_applying_deltas();
         let widget = widgets.into_iter().find(|w| w.label() == Some(label));
@@ -213,9 +217,7 @@ impl Harness {
             events,
             ..RawInput::default()
         };
-        let output = self
-            .ctx
-            .run_ui(input, |ui| self.app.ui(ui, &mut self.frame));
+        let output = self.run_input(input);
         let copied = (output.platform_output.commands.iter())
             .filter_map(|command| match command {
                 egui::OutputCommand::CopyText(text) => Some(text.clone()),
@@ -2112,9 +2114,7 @@ impl Harness {
     /// Runs a frame, returning the widgets in `role`, top down.
     fn widgets_of(&mut self, role: egui::accesskit::Role) -> Vec<egui::accesskit::Node> {
         self.ctx.enable_accesskit();
-        let mut output = self
-            .ctx
-            .run_ui(RawInput::default(), |ui| self.app.ui(ui, &mut self.frame));
+        let mut output = self.run_input(RawInput::default());
         let widgets = testing::widgets(&mut output);
         output.drop_without_applying_deltas();
         let mut found: Vec<_> = (widgets.into_iter())
@@ -2943,4 +2943,232 @@ fn the_copy_button_copies_the_label_edited_on_the_canvas() {
         Some("Renamed")
     );
     assert_eq!(harness.label("n2"), "Renamed");
+}
+
+/// A directory of a test's own for its files, removed afterwards.
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    fn new(test: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("drwr-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        ScratchDir(dir)
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+
+    /// Copies the yEd fixture in, returning the copy's path.
+    fn fixture(&self) -> PathBuf {
+        let copy = self.path("yed.graphml");
+        std::fs::copy(FIXTURE, &copy).unwrap();
+        copy
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl Harness {
+    /// Opens the GraphML file at `path`.
+    fn open(path: &Path) -> Self {
+        let mut harness = Harness::new();
+        harness.app.open(path).unwrap();
+        harness.run(vec![]);
+        harness
+    }
+
+    /// Picks `path` in the open file dialog, or cancels it, then runs a frame.
+    fn answer(&mut self, path: Option<&Path>) {
+        self.app.file_dialog.answer(path.map(Path::to_path_buf));
+        self.run(vec![]);
+    }
+
+    /// Draws a box with the Box tool, leaving it selected.
+    fn draw_box(&mut self) {
+        self.press(Modifiers::NONE, Key::B);
+        self.drag(vec2(20.0, 20.0), vec2(140.0, 80.0));
+        self.press(Modifiers::NONE, Key::Escape);
+    }
+}
+
+/// The GraphML file at `path`, read.
+fn read(path: &Path) -> GraphMl {
+    GraphMl::read_file(path).unwrap()
+}
+
+#[test]
+fn the_file_menu_has_save_as_after_save() {
+    let mut harness = Harness::new();
+    harness.click_widget("File");
+    let actions = [Action::New, Action::Open, Action::Save, Action::SaveAs];
+    let names = ["New", "Open", "Save", "Save As…"];
+    let mut items: Vec<_> = (actions.iter().zip(names))
+        .map(|(action, name)| {
+            let shortcut = shortcuts::text(&harness.ctx, action).unwrap();
+            testing::center(&harness.widget(&format!("{name} {shortcut}"))).y
+        })
+        .collect();
+    items.push(testing::center(&harness.widget("Quit")).y);
+    assert!(items.is_sorted(), "{items:?}");
+    assert_eq!(
+        shortcuts::text(&harness.ctx, &Action::SaveAs).as_deref(),
+        Some("Ctrl+Shift+S")
+    );
+}
+
+#[test]
+fn ctrl_s_saves_to_the_file() {
+    let dir = ScratchDir::new("ctrl-s");
+    let file = dir.fixture();
+    let mut harness = Harness::open(&file);
+    harness.app.selected = Selection::node("n0");
+    harness.press(CTRL, Key::ArrowRight);
+    harness.press(CTRL, Key::S);
+    assert!(!harness.app.file_dialog.is_open());
+    assert_eq!(harness.app.file.as_deref(), Some(file.as_path()));
+    assert_eq!(read(&file), harness.app.graphml);
+    assert_ne!(read(&file), read(Path::new(FIXTURE)));
+}
+
+#[test]
+fn saving_an_unsaved_graph_asks_where_and_adds_the_extension() {
+    let dir = ScratchDir::new("save-unsaved");
+    let mut harness = Harness::new();
+    harness.draw_box();
+    harness.press(CTRL, Key::S);
+    let request = Request::Save {
+        name: "untitled.graphml".to_owned(),
+        folder: None,
+    };
+    assert_eq!(harness.app.file_dialog.request(), Some(&request));
+    assert_eq!(harness.app.file, None);
+
+    harness.answer(Some(&dir.path("drawn")));
+    let file = dir.path("drawn.graphml");
+    assert_eq!(harness.app.file.as_deref(), Some(file.as_path()));
+    assert_eq!(read(&file), harness.app.graphml);
+    assert_eq!(harness.app.graphml.graphs[0].nodes.len(), 1);
+}
+
+#[test]
+fn save_as_writes_the_fixture_byte_for_byte_and_switches_to_the_copy() {
+    let dir = ScratchDir::new("save-as");
+    let mut harness = Harness::open(Path::new(FIXTURE));
+    harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
+    let request = Request::Save {
+        name: "yed.graphml".to_owned(),
+        folder: Path::new(FIXTURE).parent().map(Path::to_path_buf),
+    };
+    assert_eq!(harness.app.file_dialog.request(), Some(&request));
+
+    let copy = dir.path("copy.graphml");
+    harness.answer(Some(&copy));
+    assert_eq!(harness.app.file.as_deref(), Some(copy.as_path()));
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        std::fs::read(FIXTURE).unwrap()
+    );
+}
+
+#[test]
+fn cancelling_save_as_saves_nothing() {
+    let dir = ScratchDir::new("save-as-cancel");
+    let file = dir.fixture();
+    let mut harness = Harness::open(&file);
+    harness.app.selected = Selection::node("n0");
+    harness.press(CTRL, Key::ArrowRight);
+    harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
+    harness.answer(None);
+    assert!(!harness.app.file_dialog.is_open());
+    assert_eq!(harness.app.file.as_deref(), Some(file.as_path()));
+    assert_eq!(read(&file), read(Path::new(FIXTURE)));
+}
+
+#[test]
+fn a_failed_save_keeps_the_file_and_shows_why() {
+    let mut harness = Harness::open(Path::new(FIXTURE));
+    harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
+    harness.answer(Some(Path::new("/nonexistent/drwr.graphml")));
+    assert_eq!(harness.app.file.as_deref(), Some(Path::new(FIXTURE)));
+    let error = harness.app.error.clone().unwrap_or_default();
+    assert!(
+        error.starts_with("Couldn't save /nonexistent/drwr.graphml:\n"),
+        "{error:?}"
+    );
+
+    harness.press(Modifiers::NONE, Key::Escape);
+    // The dialog keeps the keys in the frame Escape closes it in.
+    harness.run(vec![]);
+    harness.app.file = Some(PathBuf::from("/nonexistent/yed.graphml"));
+    harness.press(CTRL, Key::S);
+    assert!(harness.app.error.is_some());
+    assert_eq!(
+        harness.app.file.as_deref(),
+        Some(Path::new("/nonexistent/yed.graphml"))
+    );
+}
+
+#[test]
+fn file_actions_wait_while_a_file_dialog_is_open() {
+    let mut harness = fixture_harness();
+    harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
+    for label in ["New", "Open", "Save"] {
+        assert!(harness.widget(label).is_disabled(), "{label}");
+    }
+    let before = harness.app.graphml.clone();
+    for key in [Key::N, Key::O] {
+        harness.press(CTRL, key);
+    }
+    assert_eq!(harness.app.graphml, before);
+    let request = harness.app.file_dialog.request();
+    assert!(matches!(request, Some(Request::Save { .. })), "{request:?}");
+
+    harness.answer(None);
+    assert!(!harness.widget("Open").is_disabled());
+}
+
+#[test]
+fn the_save_button_saves_the_label_typed_first() {
+    let dir = ScratchDir::new("save-button");
+    let file = dir.path("typed.graphml");
+    let mut harness = Harness::new();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.app.file = Some(file.clone());
+    harness.type_text("Typed");
+    harness.click_widget("Save");
+    let label = LabelRef {
+        item: node(&id),
+        index: 0,
+    };
+    let saved = read(&file);
+    assert_eq!(
+        document::label_text(&saved, &label).as_deref(),
+        Some("Typed")
+    );
+}
+
+#[test]
+fn the_save_button_saves_the_label_edited_on_the_canvas() {
+    let dir = ScratchDir::new("save-canvas-label");
+    let file = dir.fixture();
+    let mut harness = Harness::open(&file);
+    harness.app.selected = Selection::node("n2");
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    harness.type_text("Renamed");
+    harness.click_widget("Save");
+    let label = LabelRef {
+        item: node("n2"),
+        index: 0,
+    };
+    let saved = read(&file);
+    assert_eq!(
+        document::label_text(&saved, &label).as_deref(),
+        Some("Renamed")
+    );
 }

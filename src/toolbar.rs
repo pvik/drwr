@@ -1,7 +1,6 @@
 use egui::{Button, ComboBox, Image, ImageSource, Vec2, include_image};
 
 use crate::action::Action;
-use crate::open_dialog::OpenDialog;
 use crate::shortcuts;
 use crate::tool::Tool;
 use crate::zoom;
@@ -33,13 +32,13 @@ const BUTTON_PADDING: Vec2 = Vec2::splat(4.0);
 /// Wide enough for "400%", so the zoom dropdown keeps its width.
 const ZOOM_BOX_WIDTH: f32 = 64.0;
 
-/// Shows the New, Open and Save buttons, the Cut, Copy and Paste buttons with
-/// Cut and Copy enabled if `can_copy`, a button per tool with the `selected`
-/// one highlighted, then the zoom buttons and a dropdown showing `zoom`.
-/// Returns the action clicked.
+/// Shows the New, Open and Save buttons, disabled while `file_dialog_open`,
+/// the Cut, Copy and Paste buttons with Cut and Copy enabled if `can_copy`, a
+/// button per tool with the `selected` one highlighted, then the zoom buttons
+/// and a dropdown showing `zoom`. Returns the action clicked.
 pub fn show(
     ui: &mut egui::Ui,
-    open_dialog: &OpenDialog,
+    file_dialog_open: bool,
     can_copy: bool,
     selected: Tool,
     zoom: f32,
@@ -49,12 +48,13 @@ pub fn show(
             // So the zoom dropdown is as tall as the icon buttons.
             ui.spacing_mut().interact_size.y = ICON_SIZE.y + 2.0 * BUTTON_PADDING.y;
 
+            let can_pick = !file_dialog_open;
             let file = action_buttons(
                 ui,
                 [
-                    (Action::New, "New", NEW_ICON, true),
-                    (Action::Open, "Open", OPEN_ICON, !open_dialog.is_open()),
-                    (Action::Save, "Save", SAVE_ICON, true),
+                    (Action::New, "New", NEW_ICON, can_pick),
+                    (Action::Open, "Open", OPEN_ICON, can_pick),
+                    (Action::Save, "Save", SAVE_ICON, can_pick),
                 ],
             );
 

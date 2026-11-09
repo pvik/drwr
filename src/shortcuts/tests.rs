@@ -25,6 +25,7 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::N, Action::New),
         (CTRL, Key::O, Action::Open),
         (CTRL, Key::S, Action::Save),
+        (CTRL.plus(Modifiers::SHIFT), Key::S, Action::SaveAs),
         (CTRL, Key::X, Action::Cut),
         (CTRL, Key::C, Action::Copy),
         (CTRL, Key::V, Action::Paste),
@@ -175,6 +176,8 @@ fn text_reads_like_the_shortcut() {
     let ctx = Context::default();
     ctx.set_os(OperatingSystem::Nix);
     assert_eq!(text(&ctx, &Action::Open).as_deref(), Some("Ctrl+O"));
+    assert_eq!(text(&ctx, &Action::Save).as_deref(), Some("Ctrl+S"));
+    assert_eq!(text(&ctx, &Action::SaveAs).as_deref(), Some("Ctrl+Shift+S"));
     assert_eq!(text(&ctx, &Action::Paste).as_deref(), Some("Ctrl+V"));
     let cursor = text(&ctx, &Action::SelectTool(Tool::Cursor));
     assert_eq!(cursor.as_deref(), Some("Escape"));

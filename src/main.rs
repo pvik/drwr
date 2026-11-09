@@ -4,12 +4,12 @@ mod cli;
 mod color_picker;
 mod document;
 mod error_dialog;
+mod file_dialog;
 mod font_picker;
 mod fonts;
 mod label_position;
 mod line_type;
 mod menu;
-mod open_dialog;
 mod selection;
 mod shortcuts;
 mod side_panel;
@@ -23,6 +23,7 @@ mod tool;
 mod toolbar;
 mod zoom;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -30,9 +31,9 @@ use action::{Action, FontPart};
 use canvas::Canvas;
 use color_picker::ColorPicker;
 use document::{ColorProperty, Graphics, Item, LabelRef};
+use file_dialog::{FileDialog, Request};
 use fonts::Fonts;
 use graphml::GraphMl;
-use open_dialog::OpenDialog;
 use selection::Selection;
 use side_panel::SidePanel;
 use style::Style;
@@ -92,7 +93,7 @@ struct DrwrApp {
     /// The fonts labels are drawn in, which egui is given too.
     fonts: Arc<Fonts>,
     side_panel: SidePanel,
-    open_dialog: OpenDialog,
+    file_dialog: FileDialog<FilePurpose>,
     /// Picks the colors of the selected nodes and edges.
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelEdit>,
@@ -106,6 +107,12 @@ struct DrwrApp {
 struct LabelEdit {
     labels: Vec<LabelRef>,
     text: String,
+}
+
+/// What the file dialog picks a file for.
+enum FilePurpose {
+    Open,
+    Save,
 }
 
 impl DrwrApp {
@@ -139,6 +146,30 @@ impl DrwrApp {
         self.label_dialog.close();
     }
 
+    /// Asks where to save the graph, suggesting its file.
+    fn ask_where_to_save(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let file = self.file.as_deref();
+        let name = (file.and_then(Path::file_name))
+            .map_or("untitled.graphml".into(), OsStr::to_string_lossy);
+        let request = Request::Save {
+            name: name.into_owned(),
+            folder: file.and_then(Path::parent).map(Path::to_path_buf),
+        };
+        self.file_dialog
+            .open(FilePurpose::Save, request, ctx, frame);
+    }
+
+    /// Writes the graph to `path`, which becomes its file, or shows why it
+    /// can't. Returns whether it did.
+    fn save_to(&mut self, path: PathBuf) -> bool {
+        if let Err(err) = self.graphml.write_file(&path) {
+            self.error = Some(format!("Couldn't save {}:\n{err}", path.display()));
+            return false;
+        }
+        self.file = Some(path);
+        true
+    }
+
     /// Edits the graphics of each selected node and edge.
     fn edit_selected(&mut self, edit: impl Fn(&mut Graphics)) {
         for item in self.selected.items() {
@@ -165,18 +196,21 @@ impl DrwrApp {
         self.canvas.cancel_label_edit();
     }
 
-    /// Performs `action`, clicked in the menu or toolbar, unless it's Cut or
-    /// Copy. Those go on `copies`, to wait for the side panel and the canvas,
-    /// which apply a label typed there when the click takes away the focus.
+    /// Performs `action`, clicked in the menu or toolbar, unless it's Cut,
+    /// Copy, Save or Save As. Those go on `waiting`, to wait for the side panel
+    /// and the canvas, which apply a label typed there when the click takes
+    /// away the focus.
     fn perform_or_wait(
         &mut self,
         action: Option<Action>,
-        copies: &mut Vec<Action>,
+        waiting: &mut Vec<Action>,
         ctx: &egui::Context,
         frame: &eframe::Frame,
     ) {
         match action {
-            Some(action @ (Action::Cut | Action::Copy)) => copies.push(action),
+            Some(action @ (Action::Cut | Action::Copy | Action::Save | Action::SaveAs)) => {
+                waiting.push(action);
+            }
             Some(action) => self.perform(action, ctx, frame),
             None => {}
         }
@@ -185,11 +219,20 @@ impl DrwrApp {
     /// Does what the user asked for, wherever they asked.
     fn perform(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
         match action {
+            // Disabled, as the open file dialog is for the graph as it is.
+            Action::New | Action::Open | Action::Save | Action::SaveAs
+                if self.file_dialog.is_open() => {}
             Action::New => self.replace_graph(GraphMl::default(), None),
-            Action::Open => self.open_dialog.open(ctx, frame),
-            Action::Save => {
-                // TODO: save the graph, asking for a file if it's unsaved.
-            }
+            Action::Open => self
+                .file_dialog
+                .open(FilePurpose::Open, Request::Open, ctx, frame),
+            Action::Save => match self.file.clone() {
+                Some(file) => {
+                    self.save_to(file);
+                }
+                None => self.ask_where_to_save(ctx, frame),
+            },
+            Action::SaveAs => self.ask_where_to_save(ctx, frame),
             Action::Cut => {
                 if self.copy(ctx) {
                     self.remove_selected();
@@ -330,10 +373,16 @@ impl DrwrApp {
 
 impl eframe::App for DrwrApp {
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(path) = self.open_dialog.picked()
-            && let Err(err) = self.open(&path)
-        {
-            self.error = Some(format!("Couldn't open {}:\n{err}", path.display()));
+        match self.file_dialog.picked() {
+            Some((FilePurpose::Open, path)) => {
+                if let Err(err) = self.open(&path) {
+                    self.error = Some(format!("Couldn't open {}:\n{err}", path.display()));
+                }
+            }
+            Some((FilePurpose::Save, path)) => {
+                self.save_to(path);
+            }
+            None => {}
         }
     }
 
@@ -346,12 +395,13 @@ impl eframe::App for DrwrApp {
         // Panels are laid out outside-in in the order they're added, so the
         // canvas (the central panel) must come last.
         let can_copy = self.selected.nodes().next().is_some();
-        let mut copies = Vec::new();
-        let menu = menu::show(ui, &self.open_dialog, can_copy);
-        self.perform_or_wait(menu, &mut copies, ui.ctx(), frame);
+        let file_dialog_open = self.file_dialog.is_open();
+        let mut waiting = Vec::new();
+        let menu = menu::show(ui, file_dialog_open, can_copy);
+        self.perform_or_wait(menu, &mut waiting, ui.ctx(), frame);
         let (tool, zoom) = (self.tool, self.canvas.zoom());
-        let toolbar = toolbar::show(ui, &self.open_dialog, can_copy, tool, zoom);
-        self.perform_or_wait(toolbar, &mut copies, ui.ctx(), frame);
+        let toolbar = toolbar::show(ui, file_dialog_open, can_copy, tool, zoom);
+        self.perform_or_wait(toolbar, &mut waiting, ui.ctx(), frame);
         status_bar::show(ui, self.tool, self.file.as_deref());
         for action in self
             .side_panel
@@ -366,7 +416,7 @@ impl eframe::App for DrwrApp {
             &mut self.selected,
             &self.style,
         );
-        for action in actions.into_iter().chain(copies) {
+        for action in actions.into_iter().chain(waiting) {
             self.perform(action, ui.ctx(), frame);
         }
 
