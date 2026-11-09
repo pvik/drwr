@@ -1,11 +1,12 @@
-use egui::{Button, Popup};
+use egui::{Atom, Atoms, Button, Checkbox, Popup, RichText};
 
 use crate::action::{Action, Enabled};
+use crate::canvas;
 use crate::shortcuts;
 
-/// Shows the menu bar at the top of the window, its items `enabled` or not.
-/// Returns the action clicked.
-pub fn show(ui: &mut egui::Ui, enabled: Enabled) -> Option<Action> {
+/// Shows the menu bar at the top of the window, its items `enabled` or not,
+/// and the canvas `options` ticked. Returns the action clicked.
+pub fn show(ui: &mut egui::Ui, enabled: Enabled, options: canvas::Options) -> Option<Action> {
     let mut clicked = None;
     egui::Panel::top("menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
@@ -48,6 +49,26 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled) -> Option<Action> {
                 );
                 clicked = history.or(clipboard);
             });
+            ui.menu_button("View", |ui| {
+                let zoom = items(
+                    ui,
+                    [
+                        ("Zoom In", Action::ZoomIn, enabled.zoom_in),
+                        ("Zoom Out", Action::ZoomOut, enabled.zoom_out),
+                        ("Zoom to 100%", Action::SetZoom(1.0), true),
+                    ],
+                );
+                ui.separator();
+                let options = check_items(
+                    ui,
+                    [(
+                        "Canvas Grid Lines",
+                        Action::ToggleGridLines,
+                        options.grid_lines,
+                    )],
+                );
+                clicked = zoom.or(options);
+            });
         });
     });
     clicked
@@ -62,6 +83,27 @@ fn items<const N: usize>(ui: &mut egui::Ui, items: [(&str, Action, bool); N]) ->
             button = button.shortcut_text(shortcut);
         }
         if ui.add_enabled(enabled, button).clicked() {
+            clicked = Some(action);
+        }
+    }
+    clicked
+}
+
+/// Adds a check box item per action, ticked or not, showing its shortcut.
+/// Returns the action clicked.
+fn check_items<const N: usize>(
+    ui: &mut egui::Ui,
+    items: [(&str, Action, bool); N],
+) -> Option<Action> {
+    let mut clicked = None;
+    for (name, action, mut ticked) in items {
+        let mut text = Atoms::new(name);
+        if let Some(shortcut) = shortcuts::text(ui.ctx(), &action) {
+            // Right-aligned and weak, as a button's shortcut text is.
+            text.push_right(Atom::grow());
+            text.push_right(RichText::new(shortcut).weak());
+        }
+        if ui.add(Checkbox::new(&mut ticked, text)).clicked() {
             clicked = Some(action);
         }
     }

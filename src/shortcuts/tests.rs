@@ -36,6 +36,7 @@ fn shortcuts_pick_their_actions() {
         (CTRL, Key::Equals, Action::ZoomIn),
         (CTRL, Key::Minus, Action::ZoomOut),
         (CTRL, Key::Num0, Action::SetZoom(1.0)),
+        (CTRL, Key::Quote, Action::ToggleGridLines),
         (CTRL, Key::ArrowLeft, Action::MoveBy(-1.0, 0.0)),
         (CTRL, Key::ArrowRight, Action::MoveBy(1.0, 0.0)),
         (CTRL, Key::ArrowUp, Action::MoveBy(0.0, -1.0)),
@@ -210,4 +211,7 @@ fn text_reads_like_the_shortcut() {
     assert_eq!(cursor.as_deref(), Some("Escape"));
     // The first of an action's shortcuts.
     assert_eq!(text(&ctx, &Action::ZoomIn).as_deref(), Some("Ctrl+Plus"));
+    // Not "Ctrl+Quote", as egui has it.
+    let grid = text(&ctx, &Action::ToggleGridLines);
+    assert_eq!(grid.as_deref(), Some("Ctrl+'"));
 }

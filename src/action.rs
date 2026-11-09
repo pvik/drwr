@@ -40,6 +40,8 @@ pub enum Action {
     /// Moves the view right and down over the graph by these distances, in
     /// screen points.
     PanBy(f32, f32),
+    /// Shows or hides the canvas's grid lines.
+    ToggleGridLines,
     /// Moves the selected bend, or else everything selected, right and down
     /// by these distances, in points; see [`crate::document::move_items`].
     MoveBy(f64, f64),
@@ -96,4 +98,7 @@ pub struct Enabled {
     pub lower: bool,
     pub undo: bool,
     pub redo: bool,
+    /// Zoom In and Zoom Out, unavailable at the limits.
+    pub zoom_in: bool,
+    pub zoom_out: bool,
 }

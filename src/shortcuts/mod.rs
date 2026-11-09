@@ -13,7 +13,7 @@ const SHIFT_COMMAND: Modifiers = Modifiers::SHIFT.plus(Modifiers::COMMAND);
 
 /// `COMMAND` is Ctrl, or Cmd on macOS.
 #[rustfmt::skip]
-const SHORTCUTS: [(Modifiers, Key, Action); 35] = [
+const SHORTCUTS: [(Modifiers, Key, Action); 36] = [
     (Modifiers::COMMAND, Key::N,          Action::New),
     (Modifiers::COMMAND, Key::O,          Action::Open),
     // Before Ctrl+S, which egui also matches with Shift held.
@@ -35,6 +35,7 @@ const SHORTCUTS: [(Modifiers, Key, Action); 35] = [
     (Modifiers::COMMAND, Key::Equals,     Action::ZoomIn),
     (Modifiers::COMMAND, Key::Minus,      Action::ZoomOut),
     (Modifiers::COMMAND, Key::Num0,       Action::SetZoom(1.0)),
+    (Modifiers::COMMAND, Key::Quote,      Action::ToggleGridLines),
     (Modifiers::COMMAND, Key::ArrowLeft,  Action::MoveBy(-MOVE_STEP, 0.0)),
     (Modifiers::COMMAND, Key::ArrowRight, Action::MoveBy(MOVE_STEP, 0.0)),
     (Modifiers::COMMAND, Key::ArrowUp,    Action::MoveBy(0.0, -MOVE_STEP)),
@@ -106,7 +107,12 @@ pub fn file_menu_pressed(ctx: &Context) -> bool {
 /// How `action`'s shortcut reads, e.g. "Ctrl+O", if it has one.
 pub fn text(ctx: &Context, action: &Action) -> Option<String> {
     let (modifiers, key, _) = SHORTCUTS.into_iter().find(|(.., a)| a == action)?;
-    Some(ctx.format_shortcut(&KeyboardShortcut::new(modifiers, key)))
+    let text = ctx.format_shortcut(&KeyboardShortcut::new(modifiers, key));
+    // Egui spells this one out.
+    Some(match key {
+        Key::Quote => text.replace("Quote", "'"),
+        _ => text,
+    })
 }
 
 /// Whether egui moves the focus between widgets with the key: a plain arrow.

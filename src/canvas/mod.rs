@@ -1,5 +1,6 @@
 mod drawing;
 mod edge;
+mod grid;
 mod paint;
 mod shown;
 mod textures;
@@ -84,10 +85,18 @@ const MAX_TEXT_SCALE: f32 = 1.25;
 const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
 const EDITOR_MIN_WIDTH: f32 = 60.0;
 
+/// What the View menu turns on for the canvas.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Options {
+    pub grid_lines: bool,
+}
+
 /// The drawing canvas, which shows the graph zoomed and panned.
 #[derive(Default)]
 pub struct Canvas {
     view: View,
+    /// As last shown with.
+    options: Options,
     /// The size it was last shown at, to zoom about its middle.
     size: Vec2,
     /// The zoom it was last shown at.
@@ -237,8 +246,9 @@ struct Preview {
 }
 
 impl Canvas {
-    /// Shows the canvas in the space left over by the other panels, drawing
-    /// new nodes, edges and labels in `style`. Returns the actions asked for.
+    /// Shows the canvas in the space left over by the other panels, with
+    /// what `options` turns on, drawing new nodes, edges and labels in
+    /// `style`. Returns the actions asked for.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -246,8 +256,10 @@ impl Canvas {
         doc: &mut Document,
         selected: &mut Selection,
         style: &Style,
+        options: Options,
     ) -> Vec<Action> {
         let mut actions = Vec::new();
+        self.options = options;
         egui::CentralPanel::default().show(ui, |ui| {
             let sense = match tool {
                 Tool::Cursor => Sense::click_and_drag(),

@@ -146,6 +146,26 @@ fn exports_are_written_where_picked_and_change_nothing_else() {
 }
 
 #[test]
+fn canvas_grid_lines_are_not_exported() {
+    let dir = ScratchDir::new("export-grid");
+    let mut harness = fixture_harness();
+    let export = |harness: &mut Harness, name: &str| {
+        for (format, extension) in [("PNG", "png"), ("SVG", "svg")] {
+            harness.export_with(&[format]);
+            harness.export_to(&dir.path(&format!("{name}.{extension}")));
+        }
+    };
+    export(&mut harness, "plain");
+    harness.press(CTRL, Key::Quote);
+    assert!(harness.app.canvas_options.grid_lines);
+    export(&mut harness, "grid");
+    for extension in ["png", "svg"] {
+        let read = |name: &str| std::fs::read(dir.path(&format!("{name}.{extension}"))).unwrap();
+        assert_eq!(read("plain"), read("grid"), "{extension}");
+    }
+}
+
+#[test]
 fn only_names_without_an_extension_get_the_formats() {
     let dir = ScratchDir::new("export-extensions");
     std::fs::create_dir(dir.path("v1.2")).unwrap();

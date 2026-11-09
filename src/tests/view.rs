@@ -159,3 +159,97 @@ fn frames_that_change_nothing_read_nothing() {
     harness.press(CTRL, Key::ArrowRight);
     assert_eq!(harness.app.doc.reads(), reads + 1);
 }
+
+const GRID_LINES: &str = "Canvas Grid Lines Ctrl+'";
+
+/// Whether the canvas painted grid lines: quads of gray.
+fn grid_painted(shapes: &[Shape]) -> bool {
+    shapes.iter().any(|shape| match shape {
+        Shape::Mesh(mesh) => mesh.vertices.iter().any(|vertex| {
+            let [r, g, b, _] = vertex.color.to_array();
+            r == g && g == b && 0xC0 < r && r < 0xFF
+        }),
+        _ => false,
+    })
+}
+
+#[test]
+fn the_view_menu_has_the_zoom_commands_then_canvas_grid_lines() {
+    let mut harness = Harness::new();
+    harness.click_widget("View");
+    let labels = [
+        "Zoom In Ctrl+Plus",
+        "Zoom Out Ctrl+Minus",
+        "Zoom to 100% Ctrl+0",
+        GRID_LINES,
+    ];
+    let ys: Vec<_> = (labels.iter())
+        .map(|label| testing::center(&harness.widget(label)).y)
+        .collect();
+    assert!(ys.is_sorted(), "{ys:?}");
+}
+
+#[test]
+fn the_view_menu_zooms_the_canvas() {
+    let mut harness = Harness::new();
+    for (label, zoom) in [
+        ("Zoom In Ctrl+Plus", 1.25),
+        ("Zoom In Ctrl+Plus", 1.5),
+        ("Zoom Out Ctrl+Minus", 1.25),
+        ("Zoom to 100% Ctrl+0", 1.0),
+    ] {
+        harness.click_widget("View");
+        harness.click_widget(label);
+        assert_eq!(harness.app.canvas.zoom(), zoom, "{label}");
+        assert!(!Popup::is_any_open(&harness.ctx), "{label}");
+    }
+}
+
+#[test]
+fn the_view_menus_zoom_items_are_disabled_at_the_limits() {
+    let mut harness = Harness::new();
+    harness.app.canvas.set_zoom(zoom::MAX);
+    harness.click_widget("View");
+    assert!(harness.widget("Zoom In Ctrl+Plus").is_disabled());
+    assert!(!harness.widget("Zoom Out Ctrl+Minus").is_disabled());
+    harness.press(Modifiers::NONE, Key::Escape);
+    harness.app.canvas.set_zoom(zoom::MIN);
+    harness.click_widget("View");
+    assert!(!harness.widget("Zoom In Ctrl+Plus").is_disabled());
+    assert!(harness.widget("Zoom Out Ctrl+Minus").is_disabled());
+}
+
+#[test]
+fn canvas_grid_lines_toggle_from_the_view_menu_and_with_ctrl_quote() {
+    use egui::accesskit::{Role, Toggled};
+    let mut harness = Harness::new();
+    assert!(!grid_painted(&harness.run(vec![])));
+    harness.click_widget("View");
+    let item = harness.widget(GRID_LINES);
+    assert_eq!(item.role(), Role::CheckBox);
+    assert_eq!(item.toggled(), Some(Toggled::False));
+    harness.click_widget(GRID_LINES);
+    assert!(harness.app.canvas_options.grid_lines);
+    assert!(!Popup::is_any_open(&harness.ctx));
+    assert!(grid_painted(&harness.run(vec![])));
+
+    harness.click_widget("View");
+    assert_eq!(harness.widget(GRID_LINES).toggled(), Some(Toggled::True));
+    harness.press(Modifiers::NONE, Key::Escape);
+    harness.press(CTRL, Key::Quote);
+    assert!(!harness.app.canvas_options.grid_lines);
+    assert!(!grid_painted(&harness.run(vec![])));
+    harness.press(CTRL, Key::Quote);
+    assert!(harness.app.canvas_options.grid_lines);
+}
+
+#[test]
+fn canvas_grid_lines_stay_on_for_new_and_opened_graphs() {
+    let mut harness = Harness::new();
+    harness.press(CTRL, Key::Quote);
+    harness.press(CTRL, Key::N);
+    harness.run(vec![]);
+    assert!(harness.app.canvas_options.grid_lines);
+    harness.app.open(Path::new(FIXTURE)).unwrap();
+    assert!(grid_painted(&harness.run(vec![])));
+}

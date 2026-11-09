@@ -22,6 +22,7 @@ struct Harness {
     doc: Document,
     selected: Selection,
     style: Style,
+    options: Options,
     /// What the canvas asked for, in order.
     actions: Vec<Action>,
     /// The mouse cursor the last frame asked for.
@@ -44,6 +45,7 @@ impl Harness {
             doc: Document::default(),
             selected: Selection::default(),
             style: Style::default(),
+            options: Options::default(),
             actions: Vec::new(),
             cursor: CursorIcon::Default,
             repaint_delay: Duration::MAX,
@@ -71,6 +73,7 @@ impl Harness {
                 &mut self.doc,
                 &mut self.selected,
                 &self.style,
+                self.options,
             );
             self.actions.extend(actions);
         });
@@ -2201,6 +2204,80 @@ fn labels_are_painted_however_far_the_view_zooms() {
         let shapes = harness.frame(vec![]);
         assert_eq!(font_size(&shapes, "Label"), painted_size, "{factor}");
     }
+}
+
+/// The grid lines painted, each with its color: quads of gray.
+fn grid_lines(shapes: &[Shape]) -> Vec<(Rect, Color32)> {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::Mesh(mesh) => Some(mesh.vertices.as_chunks::<4>().0),
+            _ => None,
+        })
+        .flatten()
+        .filter(|quad| {
+            let color = quad[0].color;
+            let [r, g, b, _] = color.to_array();
+            r == g && g == b && 0 < r && r < 255 && quad.iter().all(|v| v.color == color)
+        })
+        .map(|quad| {
+            let rect = Rect::from_points(&quad.map(|vertex| vertex.pos));
+            (rect, quad[0].color)
+        })
+        .collect()
+}
+
+/// Where the first grid lines across the canvas are painted, from its left.
+fn first_grid_lines(harness: &mut Harness) -> Vec<f32> {
+    let shapes = harness.frame(vec![]);
+    let height = filled_rects(&shapes, BACKGROUND)[0].height();
+    let mut across: Vec<_> = (grid_lines(&shapes).into_iter())
+        .filter(|(line, _)| line.height() == height)
+        .map(|(line, _)| line.min.x - harness.origin.x)
+        .collect();
+    across.sort_by(f32::total_cmp);
+    across.truncate(3);
+    across
+}
+
+#[test]
+fn grid_lines_show_only_when_turned_on() {
+    let mut harness = Harness::new(Tool::Cursor);
+    assert_eq!(grid_lines(&harness.frame(vec![])), []);
+    harness.options.grid_lines = true;
+    let lines = grid_lines(&harness.frame(vec![]));
+    assert!(!lines.is_empty());
+    for (line, _) in lines {
+        assert!(line.width() == 1.0 || line.height() == 1.0, "{line:?}");
+    }
+}
+
+#[test]
+fn grid_lines_are_painted_under_the_nodes() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    harness.options.grid_lines = true;
+    let shapes = harness.frame(vec![]);
+    let is_grid = |shape: &Shape| !grid_lines(std::slice::from_ref(shape)).is_empty();
+    let grid = shapes.iter().position(is_grid).unwrap();
+    let node = (shapes.iter())
+        .position(|shape| matches!(shape, Shape::Rect(rect) if rect.fill == BOX_FILL))
+        .unwrap();
+    assert!(grid < node);
+}
+
+#[test]
+fn grid_lines_space_out_and_fill_in_with_the_zoom() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.options.grid_lines = true;
+    // From the graph's origin, at the canvas's corner, every 10 points.
+    assert_eq!(first_grid_lines(&mut harness), [0.0, 10.0, 20.0]);
+    // Lines 10 points apart thin out to every fifth, 50 points apart.
+    harness.zoom(0.5);
+    assert_eq!(first_grid_lines(&mut harness), [0.0, 25.0, 50.0]);
+    // Zoomed in, lines 5 points apart fill in.
+    harness.zoom(8.0);
+    assert_eq!(first_grid_lines(&mut harness), [0.0, 20.0, 40.0]);
 }
 
 #[test]

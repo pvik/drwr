@@ -21,7 +21,7 @@ use super::shown::{Anchor, EdgeLook, Outline, Shown, egui_rect, shape};
 use super::textures::Textures;
 use super::{
     BACKGROUND, Canvas, EdgeDrag, EdgePart, HALO, HANDLE_SIZE, LABEL_PADDING, MAX_TEXT_PIXELS,
-    Owner, Preview, SELECTION, SELECTION_BOX_FILL, SELECTION_GAP, edge,
+    Owner, Preview, SELECTION, SELECTION_BOX_FILL, SELECTION_GAP, edge, grid,
 };
 
 impl Canvas {
@@ -44,6 +44,9 @@ impl Canvas {
         } = preview;
         let (scene, painter) = (shown.scene, shown.painter);
         painter.rect_filled(rect, 0.0, BACKGROUND);
+        if self.options.grid_lines {
+            grid::paint(painter, rect, shown.to_screen);
+        }
         let editing = self.editor.as_ref().map(|editor| &editor.label);
         // The label being edited shows in its editor instead.
         let hidden = |item: &Item| {

@@ -40,7 +40,8 @@ const ZOOM_BOX_WIDTH: f32 = 64.0;
 /// Shows the New, Open, Save and Export buttons, the Cut, Copy and Paste
 /// buttons, the Undo and Redo buttons, each as `enabled` says, a button per
 /// tool with the `selected` one highlighted and the Insert SVG button, then
-/// the zoom buttons and a dropdown showing `zoom`. Returns the action clicked.
+/// the zoom buttons, as `enabled` says too, and a dropdown showing `zoom`.
+/// Returns the action clicked.
 pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> Option<Action> {
     let toolbar = egui::Panel::top("toolbar").show(ui, |ui| {
         button_row(ui, |ui| {
@@ -100,13 +101,11 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled, selected: Tool, zoom: f32) -> O
 
             ui.separator();
 
-            let can_zoom_in = zoom::step_in(zoom).is_some();
-            let can_zoom_out = zoom::step_out(zoom).is_some();
             let zoom_step = action_buttons(
                 ui,
                 [
-                    (Action::ZoomIn, "Zoom In", ZOOM_IN_ICON, can_zoom_in),
-                    (Action::ZoomOut, "Zoom Out", ZOOM_OUT_ICON, can_zoom_out),
+                    (Action::ZoomIn, "Zoom In", ZOOM_IN_ICON, enabled.zoom_in),
+                    (Action::ZoomOut, "Zoom Out", ZOOM_OUT_ICON, enabled.zoom_out),
                 ],
             );
             let preset = zoom_box(ui, zoom).map(Action::SetZoom);

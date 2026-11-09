@@ -124,6 +124,8 @@ struct DrwrApp {
     /// How the drawing was last exported. Kept across files.
     export_settings: export::Settings,
     canvas: Canvas,
+    /// What the View menu turns on for the canvas. Kept across files.
+    canvas_options: canvas::Options,
     /// The fonts labels are drawn in, which egui is given too.
     fonts: Arc<Fonts>,
     side_panel: SidePanel,
@@ -680,6 +682,9 @@ impl DrwrApp {
             }
             Action::SetZoom(zoom) => self.canvas.set_zoom(zoom),
             Action::PanBy(dx, dy) => self.canvas.pan_by(egui::vec2(dx, dy)),
+            Action::ToggleGridLines => {
+                self.canvas_options.grid_lines = !self.canvas_options.grid_lines;
+            }
             Action::MoveBy(dx, dy) => match (self.selected.single(), self.selected.bend()) {
                 (Some(&Item::Edge(index)), Some(bend)) => {
                     document::move_bends(self.doc.graphml_mut(), index, Some(bend), dx, dy);
@@ -857,8 +862,10 @@ impl eframe::App for DrwrApp {
             lower,
             undo: self.doc.can_undo(),
             redo: self.doc.can_redo(),
+            zoom_in: zoom::step_in(self.canvas.zoom()).is_some(),
+            zoom_out: zoom::step_out(self.canvas.zoom()).is_some(),
         };
-        let menu = menu::show(ui, enabled);
+        let menu = menu::show(ui, enabled, self.canvas_options);
         self.perform_or_wait(menu, &mut waiting, ui.ctx(), frame);
         let (tool, zoom) = (self.tool, self.canvas.zoom());
         let toolbar = toolbar::show(ui, enabled, tool, zoom);
@@ -885,6 +892,7 @@ impl eframe::App for DrwrApp {
             &mut self.doc,
             &mut self.selected,
             &self.style,
+            self.canvas_options,
         );
         if self.doc.edits() != edits {
             self.edited(None);
