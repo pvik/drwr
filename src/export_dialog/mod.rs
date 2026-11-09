@@ -83,7 +83,7 @@ impl Dialog {
             selected_only,
         } = &mut self.accepted;
         row(ui, "Format", |ui| {
-            for format in [Format::Png, Format::Svg] {
+            for format in Format::ALL {
                 ui.radio_value(&mut settings.format, format, format.name());
             }
         });

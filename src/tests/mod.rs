@@ -6,7 +6,9 @@ mod keys;
 mod labels;
 mod multi_selection;
 mod nodes;
+mod recent_files;
 mod remembered_style;
+mod settings;
 mod snapping;
 mod stacking;
 mod svg_nodes;
@@ -47,8 +49,13 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Harness::with_config(Config::default())
+    }
+
+    /// The app keeping its settings and recent files with `config`.
+    fn with_config(config: Config) -> Self {
         let ctx = egui::Context::default();
-        let app = DrwrApp::new(Fonts::default());
+        let app = DrwrApp::new(Fonts::default(), config);
         app.init(&ctx);
         let mut harness = Harness {
             ctx,

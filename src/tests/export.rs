@@ -157,7 +157,7 @@ fn canvas_grid_lines_are_not_exported() {
     };
     export(&mut harness, "plain");
     harness.press(CTRL, Key::Quote);
-    assert!(harness.app.canvas_options.grid_lines);
+    assert!(harness.app.settings.view.grid_lines);
     export(&mut harness, "grid");
     for extension in ["png", "svg"] {
         let read = |name: &str| std::fs::read(dir.path(&format!("{name}.{extension}"))).unwrap();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::style::Style;
 
 /// The light blue new nodes get.
 const LIGHT_BLUE: yed::Color = yed::Color::rgb(0xAD, 0xD8, 0xE6);
@@ -291,7 +292,7 @@ fn pasting_reproduces_what_was_copied_whatever_was_set_since() {
     ] {
         harness.perform(action);
     }
-    assert_ne!(harness.app.style, Style::default());
+    assert_ne!(harness.app.settings.style, Style::default());
 
     harness.run(vec![Event::Paste(copied[0].clone())]);
     let pasted = harness.app.selected.clone();

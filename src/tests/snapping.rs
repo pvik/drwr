@@ -23,7 +23,7 @@ fn snap_lines_start_on_and_toggle_from_the_view_menu() {
     harness.click_widget("View");
     assert_eq!(harness.widget("Snap Lines").toggled(), Some(Toggled::True));
     harness.click_widget("Snap Lines");
-    assert!(!harness.app.canvas_options.snap_lines);
+    assert!(!harness.app.settings.view.snap_lines);
     harness.click_widget("View");
     assert_eq!(harness.widget("Snap Lines").toggled(), Some(Toggled::False));
 }

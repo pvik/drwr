@@ -230,7 +230,7 @@ fn canvas_grid_lines_toggle_from_the_view_menu_and_with_ctrl_quote() {
     assert_eq!(item.role(), Role::CheckBox);
     assert_eq!(item.toggled(), Some(Toggled::False));
     harness.click_widget(GRID_LINES);
-    assert!(harness.app.canvas_options.grid_lines);
+    assert!(harness.app.settings.view.grid_lines);
     assert!(!Popup::is_any_open(&harness.ctx));
     assert!(grid_painted(&harness.run(vec![])));
 
@@ -238,10 +238,10 @@ fn canvas_grid_lines_toggle_from_the_view_menu_and_with_ctrl_quote() {
     assert_eq!(harness.widget(GRID_LINES).toggled(), Some(Toggled::True));
     harness.press(Modifiers::NONE, Key::Escape);
     harness.press(CTRL, Key::Quote);
-    assert!(!harness.app.canvas_options.grid_lines);
+    assert!(!harness.app.settings.view.grid_lines);
     assert!(!grid_painted(&harness.run(vec![])));
     harness.press(CTRL, Key::Quote);
-    assert!(harness.app.canvas_options.grid_lines);
+    assert!(harness.app.settings.view.grid_lines);
 }
 
 #[test]
@@ -255,8 +255,8 @@ fn grid_and_snap_lines_stay_as_set_for_new_and_opened_graphs() {
         grid_lines: true,
         snap_lines: false,
     };
-    assert_eq!(harness.app.canvas_options, options);
+    assert_eq!(harness.app.settings.view, options);
     harness.app.open(Path::new(FIXTURE)).unwrap();
     assert!(grid_painted(&harness.run(vec![])));
-    assert_eq!(harness.app.canvas_options, options);
+    assert_eq!(harness.app.settings.view, options);
 }

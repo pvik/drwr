@@ -1,3 +1,6 @@
+use std::path::{Path, PathBuf};
+
+use directories::BaseDirs;
 use egui::{Atom, Atoms, Button, Checkbox, Popup, RichText};
 
 use crate::action::{Action, Enabled};
@@ -5,17 +8,29 @@ use crate::canvas;
 use crate::shortcuts;
 
 /// Shows the menu bar at the top of the window, its items `enabled` or not,
-/// and the canvas `options` ticked. Returns the action clicked.
-pub fn show(ui: &mut egui::Ui, enabled: Enabled, options: canvas::Options) -> Option<Action> {
+/// the canvas `options` ticked and the `recent_files` listed. Returns the
+/// action clicked.
+pub fn show(
+    ui: &mut egui::Ui,
+    enabled: Enabled,
+    options: canvas::Options,
+    recent_files: &[PathBuf],
+) -> Option<Action> {
     let mut clicked = None;
     egui::Panel::top("menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             let file = ui.menu_button("File", |ui| {
-                let file = items(
+                let open = items(
                     ui,
                     [
                         ("New", Action::New, enabled.file),
                         ("Open…", Action::Open, enabled.file),
+                    ],
+                );
+                let recent = recent_files_menu(ui, recent_files, enabled.file);
+                let save = items(
+                    ui,
+                    [
                         ("Save", Action::Save, enabled.file),
                         ("Save As…", Action::SaveAs, enabled.file),
                     ],
@@ -24,7 +39,7 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled, options: canvas::Options) -> Op
                 let export = items(ui, [("Export…", Action::Export, enabled.file)]);
                 ui.separator();
                 let quit = items(ui, [("Quit", Action::Quit, true)]);
-                clicked = file.or(export).or(quit);
+                clicked = open.or(recent).or(save).or(export).or(quit);
             });
             if shortcuts::file_menu_pressed(ui.ctx()) {
                 Popup::open_id(ui.ctx(), Popup::default_response_id(&file.response));
@@ -72,6 +87,41 @@ pub fn show(ui: &mut egui::Ui, enabled: Enabled, options: canvas::Options) -> Op
         });
     });
     clicked
+}
+
+/// Adds the Recent Files submenu, listing `files` by name, each with its
+/// folder; disabled without any, or unless `enabled`. Returns the action
+/// clicked.
+fn recent_files_menu(ui: &mut egui::Ui, files: &[PathBuf], enabled: bool) -> Option<Action> {
+    let menu = ui.add_enabled_ui(enabled && !files.is_empty(), |ui| {
+        ui.menu_button("Recent Files", |ui| {
+            let dirs = BaseDirs::new();
+            let home = dirs.as_ref().map(BaseDirs::home_dir);
+            let mut clicked = None;
+            for path in files {
+                let (name, folder) = describe(path, home);
+                let response = ui.add(Button::new(name).shortcut_text(folder));
+                if picked(ui, &response) {
+                    clicked = Some(Action::OpenRecent(path.clone()));
+                }
+            }
+            clicked
+        })
+    });
+    menu.inner.inner.flatten()
+}
+
+/// The name of the file at `path`, and its folder, with `~` for `home` where
+/// that's the custom.
+pub fn describe(path: &Path, home: Option<&Path>) -> (String, String) {
+    let name = path.file_name().unwrap_or(path.as_os_str());
+    let folder = path.parent().unwrap_or(path);
+    let folder = match home.and_then(|home| folder.strip_prefix(home).ok()) {
+        Some(below) if cfg!(unix) && below.as_os_str().is_empty() => "~".to_owned(),
+        Some(below) if cfg!(unix) => format!("~/{}", below.display()),
+        _ => folder.display().to_string(),
+    };
+    (name.to_string_lossy().into_owned(), folder)
 }
 
 /// Adds an item per action, showing its shortcut. Returns the action clicked.

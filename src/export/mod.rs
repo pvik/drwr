@@ -8,6 +8,7 @@ use std::fmt;
 use egui::Rect;
 use graphml::yed::Color;
 use resvg::{tiny_skia, usvg};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::canvas::Drawing;
 use crate::fonts::Fonts;
@@ -23,6 +24,8 @@ pub enum Format {
 }
 
 impl Format {
+    pub const ALL: [Format; 2] = [Format::Png, Format::Svg];
+
     pub fn name(self) -> &'static str {
         match self {
             Format::Png => "PNG",
@@ -38,8 +41,24 @@ impl Format {
     }
 }
 
+/// Written as its extension. One this version doesn't know reads as PNG.
+impl Serialize for Format {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.extension())
+    }
+}
+
+impl<'de> Deserialize<'de> for Format {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let extension = String::deserialize(deserializer)?;
+        let format = Format::ALL.into_iter().find(|f| f.extension() == extension);
+        Ok(format.unwrap_or_default())
+    }
+}
+
 /// How drawings are exported.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub format: Format,
     /// Around the drawing, in points.

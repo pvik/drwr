@@ -17,6 +17,7 @@ use graphml::GraphMl;
 use graphml::yed::{
     self, Arrows, EdgeGraphics, EdgeKind, NodeGraphics, NodeKind, Route, ShapeType,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
 use crate::document::{self, EdgeEnd, Item, LabelRef};
@@ -93,7 +94,8 @@ const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
 const EDITOR_MIN_WIDTH: f32 = 60.0;
 
 /// What the View menu turns on for the canvas.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Options {
     pub grid_lines: bool,
     /// Whether drags snap onto the sides and middles of other nodes, with

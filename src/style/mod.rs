@@ -1,4 +1,7 @@
+mod stored;
+
 use graphml::yed::{Color, EdgeGraphics, FontStyle, Label, LineType, NodeGraphics, Stroke};
+use serde::{Deserialize, Serialize};
 
 use crate::action::FontPart;
 use crate::document::ColorProperty;
@@ -7,25 +10,35 @@ use crate::selection::Selection;
 /// The properties the user last set on nodes, lines and labels, which new
 /// ones get. Each is `None` until set, keeping its default, and a color set
 /// to none is `Some(None)`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Style {
+    #[serde(with = "stored::color_or_none")]
     fill: Option<Option<Color>>,
+    #[serde(with = "stored::color_or_none")]
     gradient: Option<Option<Color>>,
+    #[serde(skip_serializing_if = "StrokeStyle::is_unset")]
     border: StrokeStyle,
     corner_radius: Option<f64>,
     /// Of edges, apart from nodes' borders.
+    #[serde(skip_serializing_if = "StrokeStyle::is_unset")]
     line: StrokeStyle,
     font_family: Option<String>,
+    #[serde(with = "stored::keyword")]
     font_style: Option<FontStyle>,
     font_size: Option<u32>,
+    #[serde(with = "stored::color")]
     text_color: Option<Color>,
 }
 
 /// The parts of a node's border or an edge's line last set.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 struct StrokeStyle {
+    #[serde(with = "stored::color_or_none")]
     color: Option<Option<Color>>,
     width: Option<f64>,
+    #[serde(with = "stored::keyword")]
     line_type: Option<LineType>,
 }
 
@@ -121,6 +134,10 @@ impl Style {
 }
 
 impl StrokeStyle {
+    fn is_unset(&self) -> bool {
+        *self == StrokeStyle::default()
+    }
+
     fn apply_to(&self, stroke: &mut Stroke) {
         apply(&self.color, &mut stroke.color);
         apply(&self.width, &mut stroke.width);

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use graphml::yed::{Color, FontStyle, LabelPosition, LineType};
 
 use crate::document::{ColorProperty, EdgeEnd, LabelRef};
@@ -8,6 +10,8 @@ use crate::tool::Tool;
 pub enum Action {
     New,
     Open,
+    /// Opens the file at this path from File > Recent Files.
+    OpenRecent(PathBuf),
     Save,
     SaveAs,
     /// Opens the export dialog, which exports the drawing as PNG or SVG.
@@ -88,8 +92,8 @@ pub enum FontPart {
 /// Which commands the menu and the toolbars offer now.
 #[derive(Clone, Copy, Debug)]
 pub struct Enabled {
-    /// New, Open, Save, Save As, Export and Insert SVG, unavailable while a
-    /// file dialog is open.
+    /// New, Open, Recent Files, Save, Save As, Export and Insert SVG,
+    /// unavailable while a file dialog is open.
     pub file: bool,
     /// Cut and Copy, which need nodes selected.
     pub copy: bool,

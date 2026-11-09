@@ -3,6 +3,7 @@ mod atomic_file;
 mod canvas;
 mod cli;
 mod color_picker;
+mod config;
 mod dialog;
 mod document;
 mod error_dialog;
@@ -43,6 +44,7 @@ use std::thread::JoinHandle;
 use action::{Action, Enabled, FontPart};
 use canvas::{Canvas, Drawing};
 use color_picker::ColorPicker;
+use config::Config;
 use document::{ColorProperty, Graphics, Item, LabelRef};
 use export_dialog::{Accepted, ExportDialog};
 use file_dialog::{FileDialog, Request};
@@ -52,7 +54,6 @@ use history::{Document, Merge};
 use scene::Scene;
 use selection::Selection;
 use side_panel::SidePanel;
-use style::Style;
 use svg_image::SvgImage;
 use text_dialog::TextDialog;
 use tool::Tool;
@@ -67,7 +68,7 @@ const MAX_SVG_SIZE: f32 = 100.0;
 fn main() -> eframe::Result {
     match cli::parse(std::env::args_os().skip(1)) {
         Ok(cli::Command::Run { file }) => {
-            let mut app = DrwrApp::new(Fonts::system());
+            let mut app = DrwrApp::new(Fonts::system(), Config::load());
             if let Some(path) = file
                 && let Err(err) = app.open(&path)
             {
@@ -119,14 +120,11 @@ struct DrwrApp {
     frame_merge: Option<Option<Merge>>,
     /// What edits of the actions being performed may merge with.
     merge_with: Option<Merge>,
-    /// What the user last set on nodes, lines and labels, for new ones. Kept
-    /// across files.
-    style: Style,
-    /// How the drawing was last exported. Kept across files.
-    export_settings: export::Settings,
+    /// What the user set that outlasts files and restarts.
+    settings: config::Settings,
+    /// Keeps `settings` and the recent files across restarts.
+    config: Config,
     canvas: Canvas,
-    /// What the View menu turns on for the canvas. Kept across files.
-    canvas_options: canvas::Options,
     /// The fonts labels are drawn in, which egui is given too.
     fonts: Arc<Fonts>,
     side_panel: SidePanel,
@@ -181,10 +179,12 @@ struct Writing {
 }
 
 /// What closes the graph, once its changes are saved or dropped.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum CloseFor {
     New,
     Open,
+    /// Opening the file at this path.
+    OpenFile(PathBuf),
     Quit,
 }
 
@@ -201,10 +201,13 @@ enum Prompt {
 }
 
 impl DrwrApp {
-    /// The app with a new drawing open, its labels drawn in `fonts`.
-    fn new(fonts: Fonts) -> Self {
+    /// The app with a new drawing open, its labels drawn in `fonts`, and the
+    /// settings `config` keeps.
+    fn new(fonts: Fonts, config: Config) -> Self {
         let mut app = DrwrApp {
             fonts: Arc::new(fonts),
+            settings: config.settings().clone(),
+            config,
             ..DrwrApp::default()
         };
         app.replace_graph(yed::new_document(), None);
@@ -224,8 +227,28 @@ impl DrwrApp {
     fn open(&mut self, path: &Path) -> Result<(), graphml::Error> {
         let path = std::path::absolute(path)?;
         let graphml = GraphMl::read_file(&path)?;
+        self.config.add_recent_file(&path);
         self.replace_graph(graphml, Some(path));
         Ok(())
+    }
+
+    /// Opens the file at `path`, or shows why it can't.
+    fn open_or_show_error(&mut self, path: &Path) {
+        if let Err(err) = self.open(path) {
+            self.error = Some(format!("Couldn't open {}:\n{err}", path.display()));
+        }
+    }
+
+    /// Opens the recent file at `path`, first asking whether to save the
+    /// graph's changes, unless it's gone, which drops it from the list.
+    fn open_recent(&mut self, path: PathBuf, ctx: &egui::Context, frame: &eframe::Frame) {
+        if let Ok(false) = std::fs::exists(&path) {
+            let gone = "It no longer exists, so it's been removed from Recent Files.";
+            self.error = Some(format!("Couldn't open {}:\n{gone}", path.display()));
+            self.config.remove_recent_file(&path);
+        } else {
+            self.close_graph(CloseFor::OpenFile(path), ctx, frame);
+        }
     }
 
     /// Adds the SVG file at `path` as a node in the middle of the view, at
@@ -351,6 +374,7 @@ impl DrwrApp {
             CloseFor::Open => {
                 (self.file_dialog).open(FilePurpose::Open, Request::Open, ctx, frame);
             }
+            CloseFor::OpenFile(path) => self.open_or_show_error(&path),
             CloseFor::Quit => {
                 self.quitting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -417,6 +441,7 @@ impl DrwrApp {
             self.error = Some(format!("Couldn't save {}:\n{err}", path.display()));
             return;
         }
+        self.config.add_recent_file(&path);
         self.file = Some(path);
         self.saved = self.doc.graphml().clone();
         self.modified = false;
@@ -433,7 +458,7 @@ impl DrwrApp {
         let everything = Drawing::of(ctx, scene, None).bounds;
         let selected = (!self.selected.is_empty())
             .then(|| Drawing::of(ctx, scene, Some(&self.selected)).bounds);
-        (self.export_dialog).open(self.export_settings.clone(), everything, selected);
+        (self.export_dialog).open(self.settings.export.clone(), everything, selected);
     }
 
     /// Asks where to export the drawing as the export dialog was `accepted`,
@@ -448,7 +473,7 @@ impl DrwrApp {
             settings,
             selected_only,
         } = accepted;
-        self.export_settings = settings.clone();
+        self.settings.export = settings.clone();
         let only = selected_only.then_some(&self.selected);
         let drawing = Drawing::of(ctx, self.doc.scene(), only);
         let format = settings.format;
@@ -607,6 +632,7 @@ impl DrwrApp {
                 | Action::Copy
                 | Action::New
                 | Action::Open
+                | Action::OpenRecent(_)
                 | Action::Save
                 | Action::SaveAs
                 | Action::Export
@@ -631,6 +657,7 @@ impl DrwrApp {
             // Disabled, as the open file dialog is for the graph as it is.
             Action::New
             | Action::Open
+            | Action::OpenRecent(_)
             | Action::Save
             | Action::SaveAs
             | Action::Export
@@ -638,6 +665,7 @@ impl DrwrApp {
                 if self.file_dialog.is_open() => {}
             Action::New => self.close_graph(CloseFor::New, ctx, frame),
             Action::Open => self.close_graph(CloseFor::Open, ctx, frame),
+            Action::OpenRecent(path) => self.open_recent(path, ctx, frame),
             Action::Save => self.save(None, ctx, frame),
             Action::SaveAs => self.ask_where_to_save(None, ctx, frame),
             Action::Export => self.open_export_dialog(ctx),
@@ -684,10 +712,10 @@ impl DrwrApp {
             Action::SetZoom(zoom) => self.canvas.set_zoom(zoom),
             Action::PanBy(dx, dy) => self.canvas.pan_by(egui::vec2(dx, dy)),
             Action::ToggleGridLines => {
-                self.canvas_options.grid_lines = !self.canvas_options.grid_lines;
+                self.settings.view.grid_lines = !self.settings.view.grid_lines;
             }
             Action::ToggleSnapLines => {
-                self.canvas_options.snap_lines = !self.canvas_options.snap_lines;
+                self.settings.view.snap_lines = !self.settings.view.snap_lines;
             }
             Action::MoveBy(dx, dy) => match (self.selected.single(), self.selected.bend()) {
                 (Some(&Item::Edge(index)), Some(bend)) => {
@@ -723,23 +751,23 @@ impl DrwrApp {
             }
             Action::SetColor(property, color) => {
                 self.edit_selected(|graphics| property.set(graphics, color));
-                self.style.set_color(&self.selected, property, color);
+                (self.settings.style).set_color(&self.selected, property, color);
             }
             Action::SetLineWidth(width) => {
                 self.edit_selected(|graphics| graphics.stroke_mut().width = width);
-                self.style.set_line_width(&self.selected, width);
+                self.settings.style.set_line_width(&self.selected, width);
             }
             Action::SetLineType(line_type) => {
                 self.edit_selected(|graphics| {
                     graphics.stroke_mut().line_type = line_type.clone();
                 });
-                self.style.set_line_type(&self.selected, &line_type);
+                (self.settings.style).set_line_type(&self.selected, &line_type);
             }
             Action::SetCornerRadius(radius) => {
                 for id in self.selected.nodes() {
                     document::set_corner_radius(self.doc.graphml_mut(), id, radius);
                 }
-                self.style.set_corner_radius(&self.selected, radius);
+                (self.settings.style).set_corner_radius(&self.selected, radius);
             }
             Action::SetArrow(end, arrow) => {
                 for index in self.selected.edges() {
@@ -775,10 +803,10 @@ impl DrwrApp {
                 }
             }
             Action::SetLabel(label, text) => {
-                document::set_label(self.doc.graphml_mut(), &label, &text, &self.style);
+                document::set_label(self.doc.graphml_mut(), &label, &text, &self.settings.style);
             }
             Action::SetFont(label, part) => {
-                self.style.set_font(&part);
+                self.settings.style.set_font(&part);
                 document::edit_label(self.doc.graphml_mut(), &label, |label| {
                     let font = &mut label.font;
                     match part {
@@ -813,11 +841,7 @@ fn ask_to_replace(ctx: &egui::Context, path: &Path) -> Option<bool> {
 impl eframe::App for DrwrApp {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         match self.file_dialog.picked() {
-            Some((FilePurpose::Open, path)) => {
-                if let Err(err) = self.open(&path) {
-                    self.error = Some(format!("Couldn't open {}:\n{err}", path.display()));
-                }
-            }
+            Some((FilePurpose::Open, path)) => self.open_or_show_error(&path),
             Some((FilePurpose::InsertSvg, path)) => {
                 if let Err(err) = self.insert_svg(&path) {
                     self.error = Some(format!("Couldn't insert {}:\n{err}", path.display()));
@@ -839,6 +863,7 @@ impl eframe::App for DrwrApp {
         } else if close {
             // Rather than leave a file half written.
             self.finish_exports(true);
+            self.config.flush(&self.settings);
         }
     }
 
@@ -869,7 +894,8 @@ impl eframe::App for DrwrApp {
             zoom_in: zoom::step_in(self.canvas.zoom()).is_some(),
             zoom_out: zoom::step_out(self.canvas.zoom()).is_some(),
         };
-        let menu = menu::show(ui, enabled, self.canvas_options);
+        let recent_files = self.config.recent_files();
+        let menu = menu::show(ui, enabled, self.settings.view, recent_files);
         self.perform_or_wait(menu, &mut waiting, ui.ctx(), frame);
         let (tool, zoom) = (self.tool, self.canvas.zoom());
         let toolbar = toolbar::show(ui, enabled, tool, zoom);
@@ -895,8 +921,8 @@ impl eframe::App for DrwrApp {
             self.tool,
             &mut self.doc,
             &mut self.selected,
-            &self.style,
-            self.canvas_options,
+            &self.settings.style,
+            self.settings.view,
         );
         if self.doc.edits() != edits {
             self.edited(None);
@@ -927,6 +953,10 @@ impl eframe::App for DrwrApp {
         self.show_prompt(ui.ctx(), frame);
         error_dialog::show(ui.ctx(), &mut self.error);
         self.update_title(ui.ctx());
+        let now = ui.ctx().input(|input| input.time);
+        if let Some(wait) = self.config.save(&self.settings, now) {
+            ui.ctx().request_repaint_after_secs(wait as f32);
+        }
         self.typing = ui.ctx().text_edit_focused();
     }
 }

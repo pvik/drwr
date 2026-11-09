@@ -3,7 +3,7 @@ use crate::testing::ScratchDir;
 
 #[test]
 fn starts_with_an_empty_unsaved_graph() {
-    let app = DrwrApp::new(Fonts::default());
+    let app = DrwrApp::new(Fonts::default(), Config::default());
     assert_eq!(*app.doc.graphml(), yed::new_document());
     assert_eq!(app.file, None);
     assert_eq!(app.saved, *app.doc.graphml());

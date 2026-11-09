@@ -11,6 +11,7 @@ edition = "2024"
 [dependencies]
 # Embeds SVG nodes' drawings in exports. usvg uses it, so it builds nothing new.
 base64 = "0.22.1"
+directories = "6.0.0"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_extras = { version = "0.37.0", features = ["svg"] }
@@ -22,4 +23,6 @@ graphml = { path = "crates/graphml" }
 harfrust = "0.12.0"
 resvg = { version = "0.45.1", default-features = false }
 rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
+toml = "1.2.1"
