@@ -501,6 +501,32 @@ fn the_key_stays_while_any_node_keeps_a_corner_radius() {
 }
 
 #[test]
+fn the_key_goes_with_the_last_box_keeping_a_corner_radius() {
+    let original = fixture();
+    let mut doc = original.clone();
+    // As the Box tool draws boxes once a radius was set.
+    let id = add_node(&mut doc, &rectangle());
+    set_corner_radius(&mut doc, &id, 10.0);
+    let items = [Item::Node(id.clone())];
+    let mut deleted = doc.clone();
+    remove_items(&mut deleted, &items);
+    assert_eq!(deleted, original);
+
+    // As Cut does, and pasting brings it back.
+    let copied = copy(&doc, &items).unwrap();
+    remove_items(&mut doc, &items);
+    assert_eq!(doc, original);
+    assert_eq!(paste(&mut doc, copied), items);
+    assert_eq!(corner_radius(&doc, &id), Some(10.0));
+
+    // Not while another box keeps one.
+    let other = add_node(&mut doc, &rectangle());
+    set_corner_radius(&mut doc, &other, 20.0);
+    remove_items(&mut doc, &items);
+    assert_eq!(corner_radius(&doc, &other), Some(20.0));
+}
+
+#[test]
 fn kept_corner_radii_round_only_round_rectangles() {
     let mut doc = yed::new_document();
     let id = add_node(&mut doc, &rectangle());

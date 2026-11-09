@@ -273,6 +273,14 @@ fn drop_corner_radius(doc: &mut GraphMl, id: &str) {
     if let Some(node) = node_mut(doc, id) {
         node.data.retain(|data| data.key != key);
     }
+    drop_unused_radius_key(doc);
+}
+
+/// Drops the key corner radii are kept under, unless a node keeps one.
+fn drop_unused_radius_key(doc: &mut GraphMl) {
+    let Some(key) = radius_key(doc).map(str::to_owned) else {
+        return;
+    };
     let mut used = false;
     for graph in &doc.graphs {
         visit_nodes(graph, &mut |node| {
@@ -541,6 +549,8 @@ pub fn remove_node(doc: &mut GraphMl, id: &str) {
     for graph in &mut doc.graphs {
         remove_edges(graph, &gone);
     }
+    // Or it would stay in the file after the last box keeping a radius.
+    drop_unused_radius_key(doc);
 }
 
 /// Removes the edges of `graph` and of the graphs nested in it that join any
