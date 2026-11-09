@@ -194,13 +194,19 @@ impl Harness {
         self.run(vec![Event::ModifiersChanged(Modifiers::NONE)]);
     }
 
-    /// Runs a frame, returning the widget labelled `label`, e.g. a toolbar
-    /// button.
-    fn widget(&mut self, label: &str) -> egui::accesskit::Node {
+    /// Runs a frame, returning the widgets it showed.
+    fn widgets(&mut self) -> Vec<egui::accesskit::Node> {
         self.ctx.enable_accesskit();
         let mut output = self.run_input(RawInput::default());
         let widgets = testing::widgets(&mut output);
         output.drop_without_applying_deltas();
+        widgets
+    }
+
+    /// Runs a frame, returning the widget labelled `label`, e.g. a toolbar
+    /// button.
+    fn widget(&mut self, label: &str) -> egui::accesskit::Node {
+        let widgets = self.widgets();
         let widget = widgets.into_iter().find(|w| w.label() == Some(label));
         widget.unwrap_or_else(|| panic!("no widget is labelled {label:?}"))
     }
@@ -450,9 +456,7 @@ fn new_closes_the_dialogs_and_drops_the_labels_being_edited() {
         text: String::new(),
     };
     harness.app.label_dialog.open(edit, "Label", "");
-    harness
-        .app
-        .perform(Action::New, &harness.ctx, &harness.frame);
+    harness.perform(Action::New);
     assert!(!harness.app.color_picker.is_open());
     assert!(!harness.app.label_dialog.is_open());
     harness.run(vec![]);
@@ -610,8 +614,7 @@ fn clicking_a_color_in_the_side_panel_picks_a_new_one() {
     harness.press(Modifiers::NONE, Key::Enter);
 
     assert!(!harness.app.color_picker.is_open());
-    let red = yed::Color::rgb(0xFF, 0x00, 0x00);
-    assert_eq!(harness.graphics(&id).fill.color, Some(red));
+    assert_eq!(harness.graphics(&id).fill.color, Some(RED));
     #[rustfmt::skip]
     assert_eq!(harness.side_panel(), [
         "Id",           "n0",
@@ -674,7 +677,7 @@ fn typing_a_color_selects_no_tools() {
 }
 
 /// yEd's default node fill, which [`new_box`] has.
-const BOX_FILL: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
+const YED_FILL: Color32 = Color32::from_rgb(0xFF, 0xCC, 0x00);
 
 /// Adds the box from [`new_box`] and selects it, then clicks its border width
 /// in the side panel. Returns the box's id.
@@ -697,7 +700,7 @@ fn typing_a_border_width_in_the_side_panel_sets_it() {
     assert_eq!(harness.graphics(&id).border.width, 4.5);
     assert!(!harness.ctx.text_edit_focused());
     let shapes = harness.run(vec![]);
-    assert_eq!(border(&shapes, BOX_FILL), Stroke::new(4.5, Color32::BLACK));
+    assert_eq!(border(&shapes, YED_FILL), Stroke::new(4.5, Color32::BLACK));
     let side_panel = harness.side_panel();
     assert!(
         side_panel
@@ -716,7 +719,7 @@ fn dragging_the_border_width_changes_it_as_it_goes() {
     // A tenth per point, rightwards.
     let shapes = harness.drag_and_hold(field, field + vec2(20.0, 0.0));
     assert_eq!(harness.graphics(&id).border.width, 3.0);
-    assert_eq!(border(&shapes, BOX_FILL).width, 3.0);
+    assert_eq!(border(&shapes, YED_FILL).width, 3.0);
     harness.run(vec![button(field + vec2(20.0, 0.0), false)]);
     assert_eq!(harness.graphics(&id).border.width, 3.0);
 }
@@ -826,8 +829,8 @@ fn typing_a_corner_radius_in_the_side_panel_rounds_the_box() {
     let shapes = harness.run(vec![]);
     let canvas = canvas(&shapes);
     let on_canvas = |shape: &&Shape| match shape {
-        Shape::Rect(rect) => rect.fill == BOX_FILL && canvas.contains_rect(rect.rect),
-        Shape::Path(path) => path.fill == BOX_FILL && canvas.contains(path.points[0]),
+        Shape::Rect(rect) => rect.fill == YED_FILL && canvas.contains_rect(rect.rect),
+        Shape::Path(path) => path.fill == YED_FILL && canvas.contains(path.points[0]),
         _ => false,
     };
     let filled: Vec<_> = shapes.iter().filter(on_canvas).collect();
@@ -898,7 +901,7 @@ fn picking_a_border_style_in_the_side_panel_sets_it() {
         shown = name;
     }
     let shapes = harness.run(vec![]);
-    assert_eq!(border(&shapes, BOX_FILL), Stroke::new(1.0, Color32::BLACK));
+    assert_eq!(border(&shapes, YED_FILL), Stroke::new(1.0, Color32::BLACK));
 }
 
 #[test]
@@ -970,7 +973,7 @@ fn unknown_border_styles_read_as_written_and_are_drawn_solid() {
         "{side_panel:?}"
     );
     let shapes = harness.run(vec![]);
-    assert_eq!(border(&shapes, BOX_FILL), Stroke::new(1.0, Color32::BLACK));
+    assert_eq!(border(&shapes, YED_FILL), Stroke::new(1.0, Color32::BLACK));
     assert_eq!(harness.app.graphml, before);
 }
 
@@ -1934,8 +1937,7 @@ fn clicking_the_text_color_picks_a_new_one() {
     harness.type_text("#FF0000");
     harness.press(Modifiers::NONE, Key::Enter);
 
-    let red = yed::Color::rgb(0xFF, 0x00, 0x00);
-    assert_eq!(harness.graphics(&id).labels[0].text_color, red);
+    assert_eq!(harness.graphics(&id).labels[0].text_color, RED);
     let painted = harness.canvas_text("Start").color;
     assert_eq!(painted, Color32::from_rgb(0xFF, 0x00, 0x00));
 }
@@ -2092,10 +2094,7 @@ fn arrows_in_a_label_field_move_the_text_cursor() {
 /// Opens the yEd fixture: its edge e0 runs from n0 to n1 through two bends
 /// and has a label, and e1 joins n2 and n3.
 fn fixture_harness() -> Harness {
-    let mut harness = Harness::new();
-    harness.app.open(Path::new(FIXTURE)).unwrap();
-    harness.run(vec![]);
-    harness
+    Harness::open(Path::new(FIXTURE))
 }
 
 impl Harness {
@@ -2117,11 +2116,7 @@ impl Harness {
 
     /// Runs a frame, returning the widgets in `role`, top down.
     fn widgets_of(&mut self, role: egui::accesskit::Role) -> Vec<egui::accesskit::Node> {
-        self.ctx.enable_accesskit();
-        let mut output = self.run_input(RawInput::default());
-        let widgets = testing::widgets(&mut output);
-        output.drop_without_applying_deltas();
-        let mut found: Vec<_> = (widgets.into_iter())
+        let mut found: Vec<_> = (self.widgets().into_iter())
             .filter(|widget| widget.role() == role)
             .collect();
         found.sort_by(|a, b| testing::center(a).y.total_cmp(&testing::center(b).y));
@@ -2265,13 +2260,13 @@ fn the_arrow_check_boxes_set_the_arrowheads() {
 fn line_properties_apply_to_the_selected_edge() {
     let mut harness = fixture_harness();
     harness.app.selected = Selection::edge(0);
-    let red = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    let red = Some(RED);
     for action in [
         Action::SetLineWidth(2.5),
         Action::SetLineType(yed::LineType::Dotted),
         Action::SetColor(ColorProperty::Line, red),
     ] {
-        harness.app.perform(action, &harness.ctx, &harness.frame);
+        harness.perform(action);
     }
     let line = harness.edge(0).line;
     assert_eq!(
@@ -2371,7 +2366,7 @@ fn the_side_panel_shows_what_the_selected_nodes_share() {
     let mut right = labelled_box("Same");
     right.geometry.x = 400.0;
     right.geometry.width = 100.0;
-    right.fill.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    right.fill.color = Some(RED);
     right.labels.push(yed::Label::new("Second"));
     let graphml = &mut harness.app.graphml;
     document::add_node(graphml, &left);
@@ -2519,9 +2514,8 @@ fn colors_picked_in_the_side_panel_go_to_every_selected_node() {
     assert!(harness.painted("Fill color"));
     harness.run(vec![Event::Text("#FF0000".to_owned())]);
     harness.press(Modifiers::NONE, Key::Enter);
-    let red = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
-    assert_eq!(harness.graphics(&left).fill.color, red);
-    assert_eq!(harness.graphics(&right).fill.color, red);
+    assert_eq!(harness.graphics(&left).fill.color, Some(RED));
+    assert_eq!(harness.graphics(&right).fill.color, Some(RED));
 }
 
 #[test]
@@ -2703,8 +2697,7 @@ fn font_rows_show_for_the_labels_that_some_selected_items_have() {
     let graphml = &mut harness.app.graphml;
     let mut labelled = labelled_box("Box");
     labelled.labels[0].font.size = 20;
-    let red = yed::Color::rgb(0xFF, 0x00, 0x00);
-    labelled.labels[0].text_color = red;
+    labelled.labels[0].text_color = RED;
     let left = document::add_node(graphml, &labelled);
     let right = document::add_node(graphml, &box_at(300.0, 0.0));
     document::add_edge(graphml, &left, &right, &edge_through(&[]));
@@ -2742,7 +2735,7 @@ fn font_rows_show_for_the_labels_that_some_selected_items_have() {
     harness.run(vec![]);
     harness.press(Modifiers::NONE, Key::Enter);
     assert!(!harness.app.color_picker.is_open());
-    assert_eq!(harness.graphics(&left).labels[0].text_color, red);
+    assert_eq!(harness.graphics(&left).labels[0].text_color, RED);
 }
 
 fn node(id: &str) -> Item {
@@ -3010,7 +3003,7 @@ fn the_file_menu_has_save_as_after_save() {
     let mut harness = Harness::new();
     harness.click_widget("File");
     let actions = [Action::New, Action::Open, Action::Save, Action::SaveAs];
-    let names = ["New", "Open", "Save", "Save As…"];
+    let names = ["New", "Open…", "Save", "Save As…"];
     let mut items: Vec<_> = (actions.iter().zip(names))
         .map(|(action, name)| {
             let shortcut = shortcuts::text(&harness.ctx, action).unwrap();
@@ -3360,11 +3353,7 @@ impl Harness {
     /// release asked of the window. The prompt sits below the toolbar, whose
     /// Save button has the same label as the unsaved-changes prompt's.
     fn answer_prompt(&mut self, label: &str) -> Vec<egui::ViewportCommand> {
-        self.ctx.enable_accesskit();
-        let mut output = self.run_input(RawInput::default());
-        let widgets = testing::widgets(&mut output);
-        output.drop_without_applying_deltas();
-        let lowest = (widgets.iter())
+        let lowest = (self.widgets().iter())
             .filter(|widget| widget.label() == Some(label))
             .map(testing::center)
             .max_by(|a, b| a.y.total_cmp(&b.y));

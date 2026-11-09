@@ -54,17 +54,18 @@ impl<T> FileDialog<T> {
             return;
         }
         let (sender, picked) = mpsc::channel();
-        #[cfg(not(test))]
-        show(&request, sender, ctx, parent);
         #[cfg(test)]
-        let _ = (ctx, parent);
+        let answer = sender.clone();
+        if !cfg!(test) {
+            show(&request, sender, ctx, parent);
+        }
         self.asked = Some(Asked {
             target,
             picked,
             #[cfg(test)]
             request,
             #[cfg(test)]
-            answer: sender,
+            answer,
         });
     }
 
@@ -98,7 +99,6 @@ impl<T> FileDialog<T> {
 
 /// Shows rfd's dialog for `request` on its own thread, which sends the file
 /// picked.
-#[cfg(not(test))]
 fn show(
     request: &Request,
     sender: Sender<Option<PathBuf>>,

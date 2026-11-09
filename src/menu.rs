@@ -16,7 +16,7 @@ pub fn show(ui: &mut egui::Ui, file_dialog_open: bool, can_copy: bool) -> Option
                     ui,
                     [
                         ("New", Action::New, can_pick),
-                        ("Open", Action::Open, can_pick),
+                        ("Open…", Action::Open, can_pick),
                         ("Save", Action::Save, can_pick),
                         ("Save As…", Action::SaveAs, can_pick),
                     ],

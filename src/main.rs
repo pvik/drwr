@@ -26,7 +26,7 @@ mod toolbar;
 mod unsaved_dialog;
 mod zoom;
 
-use std::ffi::OsStr;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -202,6 +202,42 @@ impl DrwrApp {
         self.modified
     }
 
+    /// Updates whether the graph is modified, unless nothing this frame could
+    /// have changed it.
+    fn update_modified(&mut self, ctx: &egui::Context) {
+        // Only actions and the canvas edit the graph, the canvas when a button
+        // is let go, so frames with no action and only pointer moves skip
+        // comparing it.
+        let moved_only = ctx.input(|input| {
+            (input.raw.events.iter()).all(|event| {
+                matches!(
+                    event,
+                    egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_)
+                )
+            })
+        });
+        if std::mem::take(&mut self.performed) || !moved_only {
+            self.check_modified();
+        }
+    }
+
+    /// The name of the graph's file, if it has one.
+    fn file_name(&self) -> Option<Cow<'_, str>> {
+        Some(self.file.as_deref()?.file_name()?.to_string_lossy())
+    }
+
+    /// Titles the window with the file's name, marked if the graph is
+    /// modified, when that changes.
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let name = self.file_name().unwrap_or(status_bar::NOT_SAVED.into());
+        let marker = if self.modified { "*" } else { "" };
+        let title = format!("{name}{marker} — {NAME}");
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+
     /// Closes the graph for `close_for`, asking first whether to save its
     /// changes, if it has any.
     fn close_graph(&mut self, close_for: CloseFor, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -245,12 +281,11 @@ impl DrwrApp {
         ctx: &egui::Context,
         frame: &eframe::Frame,
     ) {
-        let file = self.file.as_deref();
-        let name = (file.and_then(Path::file_name))
-            .map_or("untitled.graphml".into(), OsStr::to_string_lossy);
+        let name = self.file_name().unwrap_or("untitled.graphml".into());
+        let folder = self.file.as_deref().and_then(Path::parent);
         let request = Request::Save {
             name: name.into_owned(),
-            folder: file.and_then(Path::parent).map(Path::to_path_buf),
+            folder: folder.map(Path::to_path_buf),
         };
         (self.file_dialog).open(FilePurpose::Save(then), request, ctx, frame);
     }
@@ -599,33 +634,13 @@ impl eframe::App for DrwrApp {
                 self.perform(Action::SetLabel(label, text.clone()), ui.ctx(), frame);
             }
         }
-        // Only actions and the canvas edit the graph, the canvas when a button
-        // is let go, so frames with no action and only pointer moves skip
-        // comparing it.
-        let pressed = ui.input(|input| {
-            (input.raw.events.iter()).any(|event| {
-                !matches!(
-                    event,
-                    egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_)
-                )
-            })
-        });
-        if std::mem::take(&mut self.performed) || pressed {
-            self.check_modified();
-        }
+        self.update_modified(ui.ctx());
         if std::mem::take(&mut self.close_requested) {
             self.close_graph(CloseFor::Quit, ui.ctx(), frame);
         }
         self.show_prompt(ui.ctx(), frame);
         error_dialog::show(ui.ctx(), &mut self.error);
-        let name = (self.file.as_deref().and_then(Path::file_name))
-            .map_or(status_bar::NOT_SAVED.into(), OsStr::to_string_lossy);
-        let marker = if self.modified { "*" } else { "" };
-        let title = format!("{name}{marker} — {NAME}");
-        if title != self.title {
-            ui.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            self.title = title;
-        }
+        self.update_title(ui.ctx());
         self.typing = ui.ctx().text_edit_focused();
     }
 }
