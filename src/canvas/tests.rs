@@ -2,11 +2,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use egui::epaint::{ClippedShape, ColorMode, Primitive, Vertex};
-use egui::{Key, Modifiers, RawInput, Shape, ViewportId, pos2, vec2};
+use egui::epaint::{ClippedShape, ColorMode, PathShape, Primitive, Vertex};
+use egui::{Key, Modifiers, RawInput, Shape, StrokeKind, ViewportId, pos2, vec2};
+use graphml::yed::{Alignment, Label};
 
 use super::*;
-use crate::fonts::Fonts;
+use crate::fonts::{self, Fonts};
+use crate::line_type;
 use crate::testing::{self, CTRL, button, middle_button};
 
 /// The light blue new boxes get.
