@@ -234,8 +234,28 @@ fn the_undo_button_takes_back_the_label_being_typed() {
     harness.type_text("Typed");
     harness.click_widget("Undo");
     assert_eq!(harness.label(&id), "Start");
+    // Selected, as when the label was typed.
+    assert_eq!(harness.app.selected, Selection::node(id.clone()));
     harness.click_widget("Redo");
     assert_eq!(harness.label(&id), "Typed");
+    assert_eq!(harness.app.selected, Selection::node(id.clone()));
+}
+
+#[test]
+fn the_redo_button_applies_the_label_being_typed_first() {
+    let mut harness = Harness::new();
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));
+    harness.click(vec2(150.0, 60.0));
+    harness.press(CTRL, Key::ArrowRight);
+    harness.press(CTRL, Key::Z);
+    // The side panel is painted first, so this is its field, not the canvas.
+    harness.click_text("Start");
+    harness.press(CTRL, Key::A);
+    harness.type_text("Typed");
+    harness.click_widget("Redo");
+    assert_eq!(harness.label(&id), "Typed");
+    // A new change, which leaves the nudge undone.
+    assert_eq!(harness.graphics(&id).geometry, new_box().geometry);
 }
 
 #[test]
@@ -266,4 +286,5 @@ fn the_undo_button_takes_back_the_label_typed_on_the_canvas() {
     assert_eq!(*harness.app.doc.graphml(), nudged);
     assert_eq!(harness.label("n0"), before);
     assert!(!harness.ctx.text_edit_focused());
+    assert_eq!(harness.app.selected, Selection::node("n0"));
 }

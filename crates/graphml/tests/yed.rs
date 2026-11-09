@@ -194,9 +194,27 @@ fn reads_edges() {
     assert_eq!(e1.path.points, [Point { x: 240.0, y: 180.0 }]);
 }
 
+/// [`YED`] with some of n1's and e0's values written otherwise than this
+/// library writes them, though they read the same.
+fn unusual_yed() -> String {
+    let text = YED
+        .replace(
+            r#"height="50.0" width="50.0" x="300.0""#,
+            r#"height="50" width="50.0" x="300.0""#,
+        )
+        .replace(r##"color="#3366FF""##, r##"color="#3366ff""##)
+        .replace(r#"x="13.0""#, r#"x="13""#)
+        .replace(r#"<y:Point x="260.0""#, r#"<y:Point x="260""#)
+        .replace(r#"ratio="0.5" segment"#, r#"ratio="0.50" segment"#);
+    assert_eq!(changed_lines(YED, &text).len(), 5);
+    text
+}
+
 #[test]
 fn unchanged_graphics_write_back_identically() {
-    let (mut doc, keys) = fixture();
+    let text = unusual_yed();
+    let mut doc = GraphMl::parse(&text).unwrap();
+    let keys = Keys::find(&doc);
     for id in ["n0", "n1", "n2", "n3", "n4", "n5", "n5::n0"] {
         let graphics = node_graphics(&mut doc, &keys, id);
         keys.set_node_graphics(node(&mut doc, id), &graphics);
@@ -205,20 +223,22 @@ fn unchanged_graphics_write_back_identically() {
         let graphics = edge_graphics(&mut doc, &keys, id);
         keys.set_edge_graphics(edge(&mut doc, id), &graphics);
     }
-    assert_eq!(doc.to_xml(), YED);
+    assert_eq!(doc.to_xml(), text);
 }
 
 #[test]
 fn moving_a_node_changes_only_its_geometry() {
-    let (mut doc, keys) = fixture();
+    let text = unusual_yed();
+    let mut doc = GraphMl::parse(&text).unwrap();
+    let keys = Keys::find(&doc);
     let mut n1 = node_graphics(&mut doc, &keys, "n1");
     n1.geometry.x += 12.5;
     keys.set_node_graphics(node(&mut doc, "n1"), &n1);
     assert_eq!(
-        changed_lines(YED, &doc.to_xml()),
+        changed_lines(&text, &doc.to_xml()),
         pairs(&[(
-            r#"<y:Geometry height="50.0" width="50.0" x="300.0" y="45.5"/>"#,
-            r#"<y:Geometry height="50.0" width="50.0" x="312.5" y="45.5"/>"#
+            r#"<y:Geometry height="50" width="50.0" x="300.0" y="45.5"/>"#,
+            r#"<y:Geometry height="50" width="50.0" x="312.5" y="45.5"/>"#
         )])
     );
 }
@@ -273,11 +293,9 @@ fn labels_can_be_added_and_removed() {
 
     let text = doc.to_xml();
     // Whitespace around the text is kept, and the empty-label marker removed.
-    assert!(
-        text.contains(
-            r#"width="4.0" x="18.0" xml:space="preserve" y="44.0"> cloud <y:LabelModel>"#
-        )
-    );
+    assert!(text.contains(
+        r##"<y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="4.0" horizontalTextPosition="center" iconTextGap="4" modelName="custom" textColor="#000000" verticalTextPosition="bottom" visible="true" width="4.0" x="18.0" xml:space="preserve" y="44.0"> cloud <y:LabelModel>"##
+    ));
     assert!(text.contains(concat!(
         r##"<y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="0.0" horizontalTextPosition="center" iconTextGap="4" modelName="internal" modelPosition="c" textColor="#000000" verticalTextPosition="bottom" visible="true" width="0.0" x="0.0" y="0.0">second</y:NodeLabel>"##,
         "\n          <y:SVGNodeProperties"
@@ -291,6 +309,63 @@ fn labels_can_be_added_and_removed() {
 fn n1_label(doc: &mut GraphMl) -> &mut Element {
     let realizer = node(doc, "n1").data[0].element_mut().unwrap();
     realizer.child_mut("NodeLabel").unwrap()
+}
+
+#[test]
+fn emptied_labels_are_marked_like_yeds() {
+    let (mut doc, keys) = fixture();
+    let mut n1 = node_graphics(&mut doc, &keys, "n1");
+    n1.labels[0].text.clear();
+    keys.set_node_graphics(node(&mut doc, "n1"), &n1);
+    let label = n1_label(&mut doc);
+    assert_eq!(
+        (label.attr("hasText"), label.text()),
+        (Some("false"), String::new())
+    );
+
+    let mut n1 = node_graphics(&mut doc, &keys, "n1");
+    n1.labels[0].text = "DB".into();
+    keys.set_node_graphics(node(&mut doc, "n1"), &n1);
+    assert_eq!(doc.to_xml(), YED);
+}
+
+#[test]
+fn label_frames_distances_and_rotations_are_read_and_kept() {
+    let (mut doc, keys) = fixture();
+    let label = n1_label(&mut doc);
+    label.attributes.remove("hasLineColor");
+    label.set_attr("lineColor", "#FF0000");
+    let model = label.child_mut("LabelModel").unwrap();
+    model
+        .child_mut("SmartNodeLabelModel")
+        .unwrap()
+        .set_attr("distance", "8.0");
+    let n1 = node_graphics(&mut doc, &keys, "n1");
+    let mut label = n1.labels[0].clone();
+    assert_eq!(label.border, Some(Color::rgb(0xFF, 0x00, 0x00)));
+    // The model's fixed positions keep its distance from the node.
+    label.set_position(LabelPosition::North);
+    let placed = label.placed(&n1.geometry, 24.0, 20.0).unwrap();
+    assert_eq!(placed.y, -28.0);
+
+    let parameter = n1_label(&mut doc)
+        .child_mut("ModelParameter")
+        .unwrap()
+        .child_mut("SmartNodeLabelModelParameter")
+        .unwrap();
+    parameter.set_attr("upX", "1.0");
+    parameter.set_attr("upY", "0.0");
+    let before = doc.to_xml();
+    let mut n1 = node_graphics(&mut doc, &keys, "n1");
+    n1.geometry.x += 12.5;
+    keys.set_node_graphics(node(&mut doc, "n1"), &n1);
+    assert_eq!(
+        changed_lines(&before, &doc.to_xml()),
+        pairs(&[(
+            r#"<y:Geometry height="50.0" width="50.0" x="300.0" y="45.5"/>"#,
+            r#"<y:Geometry height="50.0" width="50.0" x="312.5" y="45.5"/>"#
+        )])
+    );
 }
 
 #[test]
@@ -382,6 +457,43 @@ fn positions_outside_a_labels_model_switch_it_to_smart() {
           "##
     );
     assert_eq!(read, Some(LabelPosition::SouthWest));
+}
+
+#[test]
+fn fixed_label_models_have_their_own_positions() {
+    use LabelPosition::*;
+    let fixed = |model: &str, position: &str| {
+        let label = Element::new("y:NodeLabel")
+            .with_attr("modelName", model)
+            .with_attr("modelPosition", position);
+        let node = Element::new("y:ShapeNode").with_child(label);
+        NodeGraphics::from_element(&node).unwrap().labels.remove(0)
+    };
+    // The model a label is written in, and where it reads back.
+    let rewritten = |label: &Label| {
+        let mut graphics = NodeGraphics::new(NodeKind::Shape(ShapeType::Rectangle));
+        graphics.labels.push(label.clone());
+        let element = graphics.to_element();
+        let model = element.child("NodeLabel").unwrap().attr("modelName");
+        let read = NodeGraphics::from_element(&element).unwrap();
+        (model.unwrap().to_owned(), read.labels[0].position())
+    };
+    // Each model, two positions it has, and one it hasn't.
+    for (model, (keyword, position), next, (outside_keyword, outside)) in [
+        ("internal", ("c", Center), BottomRight, ("n", North)),
+        ("sandwich", ("s", South), North, ("nw", NorthWest)),
+        ("sides", ("e", East), West, ("se", SouthEast)),
+        ("corners", ("nw", NorthWest), SouthEast, ("n", North)),
+        ("eight_pos", ("ne", NorthEast), South, ("c", Center)),
+    ] {
+        let mut label = fixed(model, keyword);
+        assert_eq!(label.position(), Some(position), "{model}");
+        assert_eq!(fixed(model, outside_keyword).position(), None, "{model}");
+        label.set_position(next);
+        assert_eq!(rewritten(&label), (model.to_owned(), Some(next)));
+        label.set_position(outside);
+        assert_eq!(rewritten(&label), ("custom".to_owned(), Some(outside)));
+    }
 }
 
 #[test]
@@ -564,7 +676,8 @@ fn edge_labels_are_placed_by_yeds_smart_model() {
         assert_eq!(placed, Some(rect(x, y, 20.0, 10.0)), "{parameter:?}");
     }
 
-    // Negative segments count from the target.
+    // Negative segments count from the target. Ones past either end, as a
+    // bend inside a node leaves, are the end ones.
     let bent = Route::new(
         &Path {
             points: vec![point(20.0, 100.0)],
@@ -573,14 +686,48 @@ fn edge_labels_are_placed_by_yeds_smart_model() {
         rect(0.0, 0.0, 40.0, 20.0),
         rect(200.0, 90.0, 40.0, 20.0),
     );
-    let label = smart_label(&[("position", "center"), ("ratio", "0.5"), ("segment", "-1")]);
-    assert_eq!(
-        label.placed_on(&bent, 20.0, 10.0),
-        Some(rect(92.5, 95.0, 20.0, 10.0))
+    for (segment, x, y) in [("-1", 92.5, 95.0), ("2", 92.5, 95.0), ("-5", 10.0, 60.0)] {
+        let parameter = [
+            ("position", "center"),
+            ("ratio", "0.5"),
+            ("segment", segment),
+        ];
+        let label = smart_label(&parameter);
+        let placed = label.placed_on(&bent, 20.0, 10.0);
+        assert_eq!(placed, Some(rect(x, y, 20.0, 10.0)), "{segment}");
+    }
+    // Without room to keep clear of both nodes, labels go halfway.
+    let short = Route::new(
+        &Path::default(),
+        rect(0.0, 0.0, 40.0, 20.0),
+        rect(60.0, 0.0, 40.0, 20.0),
     );
+    for ratio in ["0.0", "1.0"] {
+        let label = smart_label(&[("position", "center"), ("ratio", ratio)]);
+        let placed = label.placed_on(&short, 20.0, 10.0);
+        assert_eq!(placed, Some(rect(40.0, 5.0, 20.0, 10.0)), "{ratio}");
+    }
     // Turned labels and other models aren't placed.
     let turned = smart_label(&[("angle", "1.0")]);
     assert_eq!(turned.placed_on(&route, 20.0, 10.0), None);
+    let six_pos = Element::new("y:EdgeLabel")
+        .with_attr("modelName", "six_pos")
+        .with_attr("modelPosition", "tail");
+    let polyline = Element::new("y:PolyLineEdge").with_child(six_pos);
+    let graphics = EdgeGraphics::from_element(&polyline).unwrap();
+    assert_eq!(graphics.labels[0].placed_on(&route, 20.0, 10.0), None);
+    // Nor are they moved to the Smart model when written.
+    let written = graphics.to_element();
+    let label = written.child("EdgeLabel").unwrap();
+    assert_eq!(
+        (
+            label.attr("modelName"),
+            label.attr("modelPosition"),
+            label.child("LabelModel")
+        ),
+        (Some("six_pos"), Some("tail"), None)
+    );
+    // Node labels aren't placed on edges.
     let (mut doc, keys) = fixture();
     let n1 = node_graphics(&mut doc, &keys, "n1");
     assert_eq!(n1.labels[0].placed_on(&route, 20.0, 10.0), None);
@@ -618,6 +765,21 @@ fn edge_labels_go_where_they_are_put() {
     label.place_on(&route, point(80.0, 10.4), 20.0, 10.0);
     let placed = label.placed_on(&route, 20.0, 10.0).unwrap();
     assert_eq!((placed.x, placed.y), (70.0, 5.0));
+    // And ones put less than a point past the end go to the end.
+    label.place_on(&route, point(185.3, 10.0), 20.0, 10.0);
+    let placed = label.placed_on(&route, 20.0, 10.0).unwrap();
+    assert_eq!((placed.x, placed.y), (175.0, 5.0));
+
+    // Labels whose distance was to their side, not center, go there too.
+    let parameter = [
+        ("position", "left"),
+        ("distance", "5.0"),
+        ("distanceToCenter", "false"),
+    ];
+    let mut label = smart_label(&parameter);
+    label.place_on(&route, point(120.0, -20.0), 20.0, 10.0);
+    let placed = label.placed_on(&route, 20.0, 10.0).unwrap();
+    assert_eq!((placed.x, placed.y), (110.0, -25.0));
 }
 
 #[test]
@@ -665,7 +827,11 @@ fn removing_a_bend_keeps_labels_on_their_segments() {
         Route::new(&path, source, target)
     };
     let three = route(vec![point(100.0, 10.0), point(100.0, 100.0)]);
-    let two = route(vec![point(100.0, 100.0)]);
+    // Without the first bend, and without the second.
+    let two = [
+        route(vec![point(100.0, 100.0)]),
+        route(vec![point(100.0, 10.0)]),
+    ];
     // Whether the center of `label` is on the segment at `index` of `route`.
     let on = |route: &Route, index: usize, label: &Label| {
         let placed = label.placed_on(route, 20.0, 10.0).unwrap();
@@ -676,16 +842,24 @@ fn removing_a_bend_keeps_labels_on_their_segments() {
         let along = ((center.x - from.x) * dx + (center.y - from.y) * dy) / dx.hypot(dy);
         across.abs() < 1e-9 && (0.0..=dx.hypot(dy)).contains(&along)
     };
-    for (segment, before, after) in [("0", 0, 0), ("1", 1, 0), ("2", 2, 1), ("-1", 2, 1)] {
+    for (segment, before, after) in [
+        ("0", 0, [0, 0]),
+        ("1", 1, [0, 1]),
+        ("2", 2, [1, 1]),
+        ("-1", 2, [1, 1]),
+    ] {
         let parameter = [
             ("segment", segment),
             ("position", "center"),
             ("ratio", "0.5"),
         ];
-        let mut label = smart_label(&parameter);
+        let label = smart_label(&parameter);
         assert!(on(&three, before, &label), "{segment}");
-        label.remove_bend(0, 3);
-        assert!(on(&two, after, &label), "{segment}");
+        for bend in 0..2 {
+            let mut label = label.clone();
+            label.remove_bend(bend, 3);
+            assert!(on(&two[bend], after[bend], &label), "{segment} {bend}");
+        }
     }
 }
 
@@ -700,6 +874,21 @@ fn group_nodes_edit_the_realizer_in_use() {
         pairs(&[(
             r#"<y:Geometry height="120.0" width="200.0" x="80.0" y="320.0"/>"#,
             r#"<y:Geometry height="120.0" width="240.0" x="80.0" y="320.0"/>"#
+        )])
+    );
+
+    // Closed, it uses its second realizer.
+    let closed = YED.replace(r#"<y:Realizers active="0">"#, r#"<y:Realizers active="1">"#);
+    let mut doc = GraphMl::parse(&closed).unwrap();
+    let mut n5 = node_graphics(&mut doc, &keys, "n5");
+    assert_eq!(n5.geometry, rect(80.0, 320.0, 50.0, 50.0));
+    n5.geometry.width = 60.0;
+    keys.set_node_graphics(node(&mut doc, "n5"), &n5);
+    assert_eq!(
+        changed_lines(&closed, &doc.to_xml()),
+        pairs(&[(
+            r#"<y:Geometry height="50.0" width="50.0" x="80.0" y="320.0"/>"#,
+            r#"<y:Geometry height="50.0" width="60.0" x="80.0" y="320.0"/>"#
         )])
     );
 }
@@ -720,6 +909,20 @@ fn changing_the_kind_rebuilds_the_element() {
     let data = node(&mut doc, "n1").data[0].element().unwrap();
     assert_eq!(data.name, "y:GenericNode");
     assert!(data.child("Shape").is_none());
+}
+
+#[test]
+fn generic_edges_keep_their_configuration() {
+    let (mut doc, keys) = fixture();
+    let mut e0 = edge_graphics(&mut doc, &keys, "e0");
+    e0.kind = EdgeKind::Generic("com.yworks.edge.framed".into());
+    keys.set_edge_graphics(edge(&mut doc, "e0"), &e0);
+    let data = edge(&mut doc, "e0").data[0].element().unwrap();
+    assert_eq!(
+        (data.name.as_str(), data.attr("configuration")),
+        ("y:GenericEdge", Some("com.yworks.edge.framed"))
+    );
+    assert_eq!(edge_graphics(&mut doc, &keys, "e0").kind, e0.kind);
 }
 
 #[test]

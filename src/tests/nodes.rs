@@ -1,4 +1,5 @@
 use super::*;
+use crate::style::Style;
 
 /// The solid border painted around the node filled with `fill` on the canvas.
 fn border(shapes: &[Shape], fill: Color32) -> Stroke {
@@ -474,6 +475,8 @@ fn picking_the_border_style_a_node_has_changes_nothing() {
     harness.click_at(listed);
     assert!(!Popup::is_any_open(&harness.ctx));
     assert_eq!(*harness.app.doc.graphml(), before);
+    // Nor is it remembered for new nodes, as setting it again would be.
+    assert_eq!(harness.app.settings.style, Style::default());
 }
 
 #[test]

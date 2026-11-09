@@ -256,7 +256,7 @@ fn grid_and_snap_lines_stay_as_set_for_new_and_opened_graphs() {
         snap_lines: false,
     };
     assert_eq!(harness.app.settings.view, options);
-    harness.app.open(Path::new(FIXTURE)).unwrap();
+    harness.open_fixture();
     assert!(grid_painted(&harness.run(vec![])));
     assert_eq!(harness.app.settings.view, options);
 }

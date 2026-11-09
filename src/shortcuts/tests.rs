@@ -157,6 +157,23 @@ fn alt_f_is_the_file_menu_shortcut() {
 }
 
 #[test]
+fn a_field_typed_in_keeps_alt_f() {
+    let ctx = Context::default();
+    let mut text = String::new();
+    // As when clicked into.
+    ctx.run_ui(RawInput::default(), |ui| {
+        ui.text_edit_singleline(&mut text).request_focus();
+    })
+    .drop_without_applying_deltas();
+    let (file_menu, f_left) = frame(&ctx, vec![key(Modifiers::ALT, Key::F)], |ctx| {
+        let file_menu = file_menu_pressed(ctx);
+        (file_menu, ctx.input(|i| i.key_pressed(Key::F)))
+    });
+    assert!(!file_menu);
+    assert!(f_left);
+}
+
+#[test]
 fn an_open_menu_keeps_the_keys() {
     let ctx = Context::default();
     frame(&ctx, vec![], |ctx| Popup::open_id(ctx, Id::unique("menu")));

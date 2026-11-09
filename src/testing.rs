@@ -1,6 +1,7 @@
 //! Helpers shared by tests.
 
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 
 use egui::accesskit;
@@ -205,6 +206,12 @@ pub struct ScratchDir(PathBuf);
 impl ScratchDir {
     pub fn new(test: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("drwr-{test}-{}", std::process::id()));
+        // Left by a killed run whose pid has come round again.
+        if let Err(err) = fs::remove_dir_all(&dir)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            panic!("couldn't clear {}: {err}", dir.display());
+        }
         fs::create_dir_all(&dir).unwrap();
         ScratchDir(dir)
     }

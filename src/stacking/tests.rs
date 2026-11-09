@@ -47,10 +47,17 @@ fn lower_passes_the_nearest_overlapping_node() {
 
 #[test]
 fn nothing_moves_without_an_overlapping_node_to_pass() {
-    // n0 and n1 only touch; n2 is out of the way.
-    let doc = boxes(&[(0.0, 0.0), (10.0, 0.0), (50.0, 0.0)]);
+    // n1 to n4 only touch n0, one on each side; n5 is out of the way.
+    let doc = boxes(&[
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (-10.0, 0.0),
+        (0.0, 10.0),
+        (0.0, -10.0),
+        (50.0, 0.0),
+    ]);
     assert_eq!(restack(raised, &doc, &["n0"]), None);
-    assert_eq!(restack(lowered, &doc, &["n2"]), None);
+    assert_eq!(restack(lowered, &doc, &["n5"]), None);
 
     let doc = boxes(&[(0.0, 0.0), (5.0, 5.0)]);
     assert_eq!(restack(raised, &doc, &["n1"]), None);
@@ -75,10 +82,10 @@ fn the_selected_nodes_keep_their_order() {
 
 #[test]
 fn selected_nodes_without_a_node_to_pass_stay() {
-    // n2 overlaps n1 only.
-    let doc = boxes(&[(0.0, 0.0), (20.0, 0.0), (25.0, 0.0)]);
-    let order = vec!["n0", "n2", "n1"];
-    assert_eq!(restack(raised, &doc, &["n0", "n1"]), Some(order));
+    // n0 and n1 are out of the way, and n3 overlaps n2 only.
+    let doc = boxes(&[(50.0, 0.0), (0.0, 0.0), (20.0, 0.0), (25.0, 0.0)]);
+    let order = vec!["n0", "n1", "n3", "n2"];
+    assert_eq!(restack(raised, &doc, &["n1", "n2"]), Some(order));
 }
 
 #[test]

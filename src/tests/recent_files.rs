@@ -65,6 +65,18 @@ fn files_opened_and_saved_are_listed_latest_first() {
     assert!(!harness.widget(&saved).is_disabled());
 }
 
+#[test]
+fn files_that_cant_be_opened_are_not_listed() {
+    let dir = ScratchDir::new("recent-unopened");
+    let notes = dir.path("notes.graphml");
+    std::fs::write(&notes, "notes").unwrap();
+    let mut harness = Harness::new();
+    harness.press(CTRL, Key::O);
+    harness.answer(Some(&notes));
+    assert!(harness.app.error.is_some());
+    assert!(harness.app.config.recent_files().is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn recent_files_show_the_home_folder_as_a_tilde() {

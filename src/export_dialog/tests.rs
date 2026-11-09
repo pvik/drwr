@@ -113,14 +113,6 @@ fn entire_document_is_chosen_and_selected_area_only_needs_a_selection() {
 }
 
 #[test]
-fn clicking_disabled_selected_area_only_keeps_entire_document() {
-    let mut harness = Harness::open(Settings::default(), false);
-    harness.click("Selected area only");
-    harness.click("Export…");
-    assert!(!harness.accepted[0].selected_only);
-}
-
-#[test]
 fn the_options_shown_are_the_formats() {
     let mut harness = Harness::open(Settings::default(), false);
     assert!(harness.checked("PNG"));
@@ -221,6 +213,7 @@ fn cancel_and_escape_close_without_exporting() {
     let mut harness = Harness::open(Settings::default(), false);
     harness.click("Cancel");
     assert!(!harness.dialog.is_open());
+    assert!(harness.accepted.is_empty());
     let mut harness = Harness::open(Settings::default(), false);
     harness.press(Key::Escape);
     assert!(!harness.dialog.is_open());

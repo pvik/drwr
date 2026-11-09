@@ -35,7 +35,7 @@ fn assert_scene_synced(doc: &mut Document) {
 fn undoing_every_step_restores_the_file_byte_for_byte() {
     let mut doc = fixture();
     let original = doc.graphml().to_xml();
-    let edits: [fn(&mut GraphMl); 9] = [
+    let edits: [fn(&mut GraphMl); 11] = [
         |g| document::move_items(g, &[node("n0"), node("n1")], 10.5, -3.25),
         |g| document::remove_items(g, &[node("n2")]),
         |g| {
@@ -51,12 +51,20 @@ fn undoing_every_step_restores_the_file_byte_for_byte() {
             };
             document::set_label(g, &label, "Changed", &crate::style::Style::default());
         },
-        // Brings the SVG drawing and its resource along.
+        // n0's copy, n6, keeps its corner radius.
         |g| {
             let copied = document::copy(g, &[node("n4"), node("n0")]).unwrap();
             document::paste(g, copied);
         },
         |g| document::remove_items(g, &[node("n0"), Item::Edge(0)]),
+        // Drops the SVG drawing with the last node drawing it.
+        |g| document::remove_items(g, &[node("n3")]),
+        // Brings it back with a copy from another file.
+        |g| {
+            let other = GraphMl::parse(FIXTURE).unwrap();
+            let copied = document::copy(&other, &[node("n3")]).unwrap();
+            document::paste(g, copied);
+        },
         // Drops the key again with the last box keeping a radius.
         |g| document::set_corner_radius(g, "n6", 0.0),
     ];
@@ -190,11 +198,14 @@ fn a_new_edit_leaves_nothing_to_redo() {
 fn edits_not_recorded_yet_are_undone_first() {
     let mut doc = fixture();
     let original = doc.graphml().clone();
+    assert!(!doc.can_undo());
     document::move_items(doc.graphml_mut(), &[node("n0")], 1.0, 0.0);
+    assert!(doc.can_undo(), "before a sync");
+    doc.sync();
+    assert!(doc.can_undo(), "once synced");
     record(&mut doc);
     let moved = doc.graphml().clone();
     document::move_items(doc.graphml_mut(), &[node("n1")], 1.0, 0.0);
-    assert!(doc.can_undo());
     doc.undo();
     assert_eq!(*doc.graphml(), moved);
     doc.undo();
@@ -282,10 +293,30 @@ fn undo_ends_a_run_of_nudges() {
     let mut doc = fixture();
     let n0 = Selection::node("n0");
     nudge(&mut doc, &n0);
+    doc.record(&n0, &Selection::default(), None);
+    doc.record(&Selection::default(), &n0, None);
+    nudge(&mut doc, &n0);
     nudge(&mut doc, &n0);
     doc.undo();
+    // Not into the step before the one undone, though its selection is the same.
     nudge(&mut doc, &n0);
     nudge(&mut doc, &n0);
+    assert_eq!(doc.undo.len(), 2);
+    doc.undo();
+    doc.undo();
+    assert_eq!(*doc.graphml(), *fixture().graphml());
+}
+
+#[test]
+fn merged_steps_undo_to_the_keys_from_before_them() {
+    let mut doc = fixture();
+    let n0 = Selection::node("n0");
+    let id = egui::Id::unique("radius");
+    // Adds the key corner radii are kept under, then drops it with yEd's.
+    for radius in [10.0, 12.0, 4.0] {
+        document::set_corner_radius(doc.graphml_mut(), "n0", radius);
+        doc.record(&n0, &n0, Some(Merge::Drag(id, 0.0)));
+    }
     assert_eq!(doc.undo.len(), 1);
     doc.undo();
     assert_eq!(*doc.graphml(), *fixture().graphml());
@@ -319,6 +350,54 @@ fn the_first_node_of_a_document_without_graphs_can_be_undone() {
     doc.redo();
     assert!(document::graphics_of(doc.graphml(), &id).is_some());
     assert_scene_synced(&mut doc);
+}
+
+#[test]
+fn edits_after_an_undo_are_undone_exactly() {
+    type Edit = fn(&mut GraphMl);
+    let undone: [(GraphMl, Edit); 3] = [
+        // Adds the key corner radii are kept under.
+        (GraphMl::parse(FIXTURE).unwrap(), |g| {
+            document::set_corner_radius(g, "n0", 10.0)
+        }),
+        (GraphMl::parse(FIXTURE).unwrap(), |g| {
+            document::remove_items(g, &[Item::Edge(0)])
+        }),
+        // Adds the graph.
+        (GraphMl::default(), |g| {
+            document::add_node(g, &rectangle());
+        }),
+    ];
+    for (original, edit) in undone {
+        let mut doc = Document::new(original.clone());
+        edit(doc.graphml_mut());
+        record(&mut doc);
+        doc.undo();
+        document::add_node(doc.graphml_mut(), &rectangle());
+        record(&mut doc);
+        assert_scene_synced(&mut doc);
+        doc.undo();
+        assert_eq!(*doc.graphml(), original);
+    }
+}
+
+#[test]
+fn removing_one_of_two_identical_edges_undoes_exactly() {
+    let mut graphml = GraphMl::parse(FIXTURE).unwrap();
+    // The same and without ids, as files from elsewhere than yEd may have.
+    let mut twin = graphml.graphs[0].edges[0].clone();
+    twin.id = None;
+    graphml.graphs[0].edges = vec![twin.clone(), twin];
+    let mut doc = Document::new(graphml.clone());
+    document::remove_items(doc.graphml_mut(), &[Item::Edge(1)]);
+    record(&mut doc);
+    assert_scene_synced(&mut doc);
+    let removed = doc.graphml().clone();
+    doc.undo();
+    assert_eq!(*doc.graphml(), graphml);
+    assert_scene_synced(&mut doc);
+    doc.redo();
+    assert_eq!(*doc.graphml(), removed);
 }
 
 #[test]
@@ -356,6 +435,19 @@ fn the_oldest_steps_go_once_the_history_is_too_large() {
         .x;
     let original = document::graphics_of(fixture().graphml(), "n0").unwrap();
     assert_eq!(moved, original.geometry.x + (20 - kept) as f64);
+}
+
+#[test]
+fn a_history_as_large_as_allowed_keeps_every_step() {
+    let mut doc = fixture();
+    let n0 = Selection::node("n0");
+    document::move_items(doc.graphml_mut(), &[node("n1")], 1.0, 0.0);
+    record(&mut doc);
+    nudge(&mut doc, &n0);
+    doc.limit = doc.undo.iter().map(|step| step.size).sum();
+    // Merges without growing, and checks the size again.
+    nudge(&mut doc, &n0);
+    assert_eq!(doc.undo.len(), 2);
 }
 
 #[test]
@@ -461,14 +553,17 @@ fn random_edits_undo_and_redo_exactly() {
             states.push(doc.graphml().to_xml());
             assert_eq!(doc.undo.len() + 1, states.len(), "seed {seed}");
         }
+        // Each also leaves the copy the next sync compares with up to date.
         for state in states.iter().rev().skip(1) {
             doc.undo().unwrap();
             assert_eq!(doc.graphml().to_xml(), *state, "seed {seed}");
+            assert!(doc.synced == doc.graphml, "seed {seed}");
         }
         assert_scene_synced(&mut doc);
         for state in &states[1..] {
             doc.redo().unwrap();
             assert_eq!(doc.graphml().to_xml(), *state, "seed {seed}");
+            assert!(doc.synced == doc.graphml, "seed {seed}");
         }
         assert_scene_synced(&mut doc);
     }

@@ -77,11 +77,14 @@ fn copies_take_the_selected_edges_between_copied_nodes() {
 
 #[test]
 fn copies_keep_the_resources_their_nodes_refer_to() {
-    let doc = fixture();
+    let mut doc = fixture();
     let copied = copy(&doc, &[node("n3")]).unwrap();
-    assert_eq!(resource_ids(&copied), ["1"]);
     assert_eq!(copied.data, doc.data);
 
+    // And only those.
+    yed::add_resource(&mut doc, "<svg/>");
+    let copied = copy(&doc, &[node("n3")]).unwrap();
+    assert_eq!(resource_ids(&copied), ["1"]);
     let copied = copy(&doc, &[node("n0")]).unwrap();
     assert_eq!(copied.data, []);
 }
@@ -117,6 +120,14 @@ fn pastes_go_beside_the_copies_already_in_place() {
     assert_eq!(pasted, [node("n8"), node("n9"), Item::Edge(3)]);
     assert_eq!(corner(&doc, "n8"), (120.0, 60.5));
     assert_eq!(GraphMl::parse(&doc.to_xml()).unwrap(), doc);
+
+    // Even if only some of them are in place.
+    let mut doc = fixture();
+    let copied = copy(&doc, &[node("n0"), node("n1")]).unwrap();
+    super::super::move_items(&mut doc, &[node("n0")], 50.0, 0.0);
+    paste(&mut doc, copied);
+    assert_eq!(corner(&doc, "n6"), (110.0, 50.5));
+    assert_eq!(corner(&doc, "n7"), (310.0, 55.5));
 }
 
 #[test]
@@ -161,10 +172,10 @@ fn pastes_into_another_document_bring_their_keys_and_resources() {
         edge_graphics_of(&doc, 0).unwrap().path.points,
         [point(240.0, 180.0)]
     );
-    assert_eq!(
-        doc.attributes.get("xmlns:y").map(String::as_str),
-        Some(yed::NAMESPACE)
-    );
+    // All the namespaces of the copy, for the prefixes in its data.
+    let mut namespaces = fixture().attributes;
+    namespaces.retain(|name, _| name.starts_with("xmlns"));
+    assert_eq!(doc.attributes, namespaces);
     assert_eq!(GraphMl::parse(&doc.to_xml()).unwrap(), doc);
 }
 
@@ -194,6 +205,25 @@ fn pasted_data_goes_under_the_documents_own_keys() {
 }
 
 #[test]
+fn pasted_keys_get_new_ids_if_theirs_are_taken() {
+    let mut doc = yed::new_document();
+    // Under d5, the id of n0's description in the copy.
+    doc.keys[5].attr_name = Some("notes".to_owned());
+    let keys = doc.keys.clone();
+    let copied = copy(&fixture(), &[node("n0")]).unwrap();
+    assert_eq!(paste(&mut doc, copied), [node("n0")]);
+    let data: Vec<_> = (doc.graphs[0].nodes[0].data.iter())
+        .map(|data| data.key.as_str())
+        .collect();
+    assert_eq!(data, ["d11", "d6"]);
+    assert_eq!(doc.keys[..keys.len()], keys);
+    let added: Vec<_> = (doc.keys[keys.len()..].iter())
+        .map(|key| (key.id.as_str(), key.attr_name.as_deref()))
+        .collect();
+    assert_eq!(added, [("d11", Some("description"))]);
+}
+
+#[test]
 fn pasted_resources_are_shared_if_the_same_and_renamed_if_not() {
     let mut doc = fixture();
     let copied = copy(&doc, &[node("n3")]).unwrap();
@@ -217,17 +247,39 @@ fn pasted_resources_are_shared_if_the_same_and_renamed_if_not() {
         original.elements().next().unwrap().children
     );
     assert_eq!(GraphMl::parse(&doc.to_xml()).unwrap(), doc);
+
+    // The same drawing under another id.
+    let text = FIXTURE
+        .replace(r#"refid="1""#, r#"refid="5""#)
+        .replace(r#"<y:Resource id="1">"#, r#"<y:Resource id="5">"#);
+    let mut doc = GraphMl::parse(&text).unwrap();
+    paste(&mut doc, copied);
+    assert_eq!(refids(&doc, "n6"), ["5"]);
+    assert_eq!(resource_ids(&doc), ["5"]);
 }
 
 #[test]
 fn pasted_groups_take_their_nested_nodes_along() {
     let mut doc = fixture();
+    // With an edge between two of them, which yEd keeps in the group.
+    let group = doc.graphs[0].nodes[5].graph.as_mut().unwrap();
+    let mut second = group.nodes[0].clone();
+    second.id = "n5::n1".to_owned();
+    group.nodes.push(second);
+    let mut edge = Edge::new("n5::n0", "n5::n1");
+    edge.id = Some("n5::e0".to_owned());
+    group.edges.push(edge);
     let copied = copy(&doc, &[node("n5")]).unwrap();
     assert_eq!(paste(&mut doc, copied), [node("n6")]);
     assert_eq!(corner(&doc, "n6"), (90.0, 330.0));
     let nested = doc.graphs[0].nodes[6].graph.as_ref().unwrap();
     assert_eq!(nested.id.as_deref(), Some("n6:"));
-    assert_eq!(ids(nested), (vec!["n6::n0"], vec![]));
+    assert_eq!(ids(nested), (vec!["n6::n0", "n6::n1"], vec!["n6::e0"]));
+    let edge = &nested.edges[0];
+    assert_eq!(
+        (edge.source.as_str(), edge.target.as_str()),
+        ("n6::n0", "n6::n1")
+    );
     let graphics = Keys::find(&doc).node_graphics(&nested.nodes[0]);
     let geometry = graphics.unwrap().unwrap().geometry;
     assert_eq!((geometry.x, geometry.y), (160.0, 390.0));

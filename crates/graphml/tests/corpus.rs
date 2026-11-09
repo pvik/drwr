@@ -32,6 +32,7 @@ fn corpus_round_trips() {
             graphics += check_graphics(&Keys::find(&doc), graph, file);
         }
     }
+    assert!(graphics > 0, "no yEd graphics in GRAPHML_CORPUS");
     eprintln!(
         "{} files and {graphics} graphics round-tripped",
         files.len()

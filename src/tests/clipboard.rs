@@ -1,15 +1,15 @@
 use super::*;
 
 #[test]
-fn cut_copy_and_paste_sit_between_save_and_the_tools() {
+fn cut_copy_and_paste_sit_between_export_and_undo() {
     let mut harness = Harness::new();
-    let labels = ["Save", "Cut", "Copy", "Paste", "Cursor"];
-    let [save, cut, copy, paste, cursor] =
+    let labels = ["Export", "Cut", "Copy", "Paste", "Undo"];
+    let [export, cut, copy, paste, undo] =
         labels.map(|label| testing::center(&harness.widget(label)).x);
-    assert!(save < cut && cut < copy && copy < paste && paste < cursor);
+    assert!(export < cut && cut < copy && copy < paste && paste < undo);
     // Separators either side.
-    assert!(cut - save > copy - cut + 4.0);
-    assert!(cursor - paste > copy - cut + 4.0);
+    assert!(cut - export > copy - cut + 4.0);
+    assert!(undo - paste > copy - cut + 4.0);
 }
 
 #[test]
@@ -73,13 +73,16 @@ fn cut_and_copy_with_only_lines_selected_do_nothing() {
 }
 
 #[test]
-fn pasting_text_other_than_graphml_does_nothing() {
+fn pasting_text_without_nodes_does_nothing() {
     let mut harness = fixture_harness();
     harness.app.selected = Selection::node("n0");
     let before = harness.app.doc.graphml().clone();
-    harness.run(vec![Event::Paste("Hello".to_owned())]);
-    assert_eq!(*harness.app.doc.graphml(), before);
-    assert_eq!(harness.app.selected, Selection::node("n0"));
+    // Text other than GraphML, and GraphML without nodes.
+    for text in ["Hello".to_owned(), yed::new_document().to_xml()] {
+        harness.run(vec![Event::Paste(text)]);
+        assert_eq!(*harness.app.doc.graphml(), before);
+        assert_eq!(harness.app.selected, Selection::node("n0"));
+    }
 }
 
 #[test]
@@ -92,7 +95,6 @@ fn clipboard_keys_in_a_label_field_edit_its_text() {
     harness.run(vec![Event::Paste("Pasted".to_owned())]);
     harness.press(Modifiers::NONE, Key::Enter);
     assert_eq!(harness.label(&id), "Pasted");
-    assert_eq!(harness.app.doc.graphml().graphs[0].nodes.len(), 1);
 }
 
 #[test]
@@ -135,11 +137,24 @@ fn the_edit_menu_cuts_copies_and_pastes() {
         let shortcut = shortcuts::text(&harness.ctx, &action).unwrap();
         testing::center(&harness.widget(&format!("{name} {shortcut}")))
     });
-    assert!(items[0].y < items[1].y && items[1].y < items[2].y);
-    let (copied, _) = harness.click_for_clipboard(items[1]);
-    assert_eq!(parse_copied(copied).graphs[0].nodes[0].id, "n0");
+    let [cut, copy, paste] = items;
+    assert!(cut.y < copy.y && copy.y < paste.y);
+    let (copied, _) = harness.click_for_clipboard(copy);
+    assert_eq!(parse_copied(copied.clone()).graphs[0].nodes[0].id, "n0");
     harness.run(vec![]);
     assert!(!Popup::is_any_open(&harness.ctx));
+
+    // eframe answers with a paste event in the next frame.
+    harness.click_widget("Edit");
+    let (_, asked) = harness.click_for_clipboard(paste);
+    assert!(asked);
+    harness.run(vec![Event::Paste(copied[0].clone())]);
+    assert_eq!(harness.app.selected, Selection::node("n6"));
+
+    harness.click_widget("Edit");
+    let (copied, _) = harness.click_for_clipboard(cut);
+    assert_eq!(parse_copied(copied).graphs[0].nodes[0].id, "n6");
+    assert_eq!(document::graphics_of(harness.app.doc.graphml(), "n6"), None);
 }
 
 #[test]

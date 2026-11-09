@@ -103,7 +103,11 @@ fn edges_have_a_line_color_and_no_fill() {
     let mut graphics = Graphics::Edge(EdgeGraphics::new(EdgeKind::PolyLine));
     let red = Some(Color::rgb(0xFF, 0x00, 0x00));
     ColorProperty::Line.set(&mut graphics, red);
-    ColorProperty::Fill.set(&mut graphics, red);
+    let lined = graphics.clone();
+    let blue = Some(Color::rgb(0x00, 0x00, 0xFF));
+    ColorProperty::Fill.set(&mut graphics, blue);
+    ColorProperty::Gradient.set(&mut graphics, blue);
+    assert_eq!(graphics, lined);
     assert_eq!(graphics.as_ref().stroke().color, red);
     assert_eq!(ColorProperty::Line.get(graphics.as_ref()), red);
     assert_eq!(ColorProperty::Fill.get(graphics.as_ref()), None);
@@ -787,7 +791,7 @@ fn removing_items_removes_edges_by_their_indexes_and_nodes_with_theirs() {
     add_edge(&mut doc, "n3", "n4", &graphics);
     assert_eq!(edge_ids(&doc), ["e0", "e1", "e2"]);
     // Each edge once, however many times it's listed.
-    remove_items(&mut doc, &[Item::Edge(2), Item::Edge(0), Item::Edge(2)]);
+    remove_items(&mut doc, &[Item::Edge(0), Item::Edge(2), Item::Edge(0)]);
     assert_eq!(edge_ids(&doc), ["e1"]);
     // e1 joins n2.
     remove_items(&mut doc, &[Item::Node("n2".to_owned())]);

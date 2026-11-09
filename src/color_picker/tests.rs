@@ -291,6 +291,7 @@ fn only_the_last_ten_colors_are_offered() {
 fn clicking_a_recent_color_picks_it() {
     let mut harness = Harness::new();
     harness.pick("#FF0000");
+    harness.picked.clear();
     harness.open(None);
     harness.click_recent(0, 1);
     assert!(!harness.no_color());
@@ -298,16 +299,17 @@ fn clicking_a_recent_color_picks_it() {
     assert!(harness.picker.is_open());
 
     harness.click("OK");
-    assert_eq!(harness.picked.last(), Some(&("fill", Some(RED))));
+    assert_eq!(harness.picked, [("fill", Some(RED))]);
 }
 
 #[test]
 fn double_clicking_a_recent_color_accepts_it() {
     let mut harness = Harness::new();
     harness.pick("#FF0000");
+    harness.picked.clear();
     harness.open(Some(ORANGE));
     harness.click_recent(0, 2);
-    assert_eq!(harness.picked.last(), Some(&("fill", Some(RED))));
+    assert_eq!(harness.picked, [("fill", Some(RED))]);
     assert!(!harness.picker.is_open());
 }
 

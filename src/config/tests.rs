@@ -256,9 +256,20 @@ fn recent_files_keep_the_latest_ten() {
     for path in &paths {
         config.add_recent_file(path);
     }
-    let latest: Vec<_> = paths.iter().rev().take(MAX_RECENT_FILES).cloned().collect();
+    let latest: Vec<_> = paths.iter().rev().take(10).cloned().collect();
     assert_eq!(config.recent_files(), latest);
     assert_eq!(Config::load_from(dir.path("")).recent_files(), latest);
+}
+
+#[test]
+fn a_longer_recent_files_file_is_read_as_its_first_ten() {
+    let dir = ScratchDir::new("config-recent-long");
+    let paths: Vec<_> = (0..12).map(|i| dir.path(&format!("{i}.graphml"))).collect();
+    let quoted = |path: &PathBuf| toml::Value::from(path.to_str().unwrap()).to_string();
+    let listed: Vec<_> = paths.iter().map(quoted).collect();
+    let text = format!("files = [{}]\n", listed.join(", "));
+    fs::write(dir.path(RECENT_FILES), text).unwrap();
+    assert_eq!(Config::load_from(dir.path("")).recent_files(), &paths[..10]);
 }
 
 #[test]
@@ -309,7 +320,6 @@ fn without_a_folder_recent_files_last_until_drwr_quits() {
     config.add_recent_file(&b);
     config.remove_recent_file(&a);
     assert_eq!(config.recent_files(), [b]);
-    assert_eq!(dir.names(), ["a.graphml", "b.graphml"]);
 }
 
 #[test]

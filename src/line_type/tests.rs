@@ -166,6 +166,59 @@ fn dashes_round_corners_are_mitered_in_one_piece() {
 }
 
 #[test]
+fn dashes_round_sharp_bends_are_capped_rather_than_spiking() {
+    // Right, then almost straight back.
+    let corner = pos2(10.0, 0.0);
+    let strips = [[pos2(0.0, 0.0), corner], [corner, pos2(0.0, 1.0)]];
+    let dash = dashes(&strips, &[[30.0, 2.0]], 1.0);
+    let mut mesh = Mesh::default();
+    add_curved_dash(&mut mesh, &dash, 1.0, 1.0, Color32::RED);
+
+    assert_eq!(mesh.vertices.len(), 12);
+    // Capped at two half widths, the faded sides, 1.5 out, reach 3 from the
+    // corner rather than the miter's 30.
+    let corner_vertices = mesh.vertices[4..8].iter();
+    let reach = corner_vertices.map(|vertex| vertex.pos.distance(corner));
+    let reach = reach.fold(0.0, f32::max);
+    assert!((reach - 3.0).abs() < 1e-4, "{reach}");
+}
+
+/// The quads `paint` paints in meshes, which dashes along straight lines are.
+fn painted_quads(paint: impl Fn(&Painter)) -> Vec<Rect> {
+    let ctx = egui::Context::default();
+    let output = ctx.run_ui(egui::RawInput::default(), |ui| paint(ui.painter()));
+    let quads = (output.shapes.iter())
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Mesh(mesh) => Some(mesh.vertices.as_chunks::<4>().0),
+            _ => None,
+        })
+        .flatten()
+        .map(|quad| Rect::from_points(&quad.map(|vertex| vertex.pos)))
+        .collect();
+    output.drop_without_applying_deltas();
+    quads
+}
+
+#[test]
+fn dashed_lines_turn_square_corners_without_a_notch_or_an_overlap() {
+    // Right, then down, 2 wide, with the first dash round the corner.
+    let points = [pos2(10.0, 10.0), pos2(16.0, 10.0), pos2(16.0, 30.0)];
+    let stroke = Stroke::new(2.0, Color32::RED);
+    let quads = painted_quads(|painter| {
+        paint_polyline(painter, &points, stroke, &LineType::Dashed);
+    });
+    // The strip before the corner takes it, so the two neither overlap nor
+    // leave a notch.
+    assert_eq!(
+        quads[..2],
+        [
+            Rect::from_min_max(pos2(10.0, 9.0), pos2(17.0, 11.0)),
+            Rect::from_min_max(pos2(15.0, 11.0), pos2(17.0, 12.0)),
+        ]
+    );
+}
+
+#[test]
 fn ellipses_are_drawn_as_polygons_clockwise_from_the_right() {
     let (center, radius) = (pos2(100.0, 50.0), vec2(75.0, 40.0));
     let points = ellipse_points(Rect::from_center_size(center, 2.0 * radius), 1.0);
@@ -312,8 +365,10 @@ fn rounded_rects_are_where_egui_puts_a_solid_outline() {
 fn corners_rounded_less_than_half_a_pixel_are_square() {
     let rect = Rect::from_min_size(Pos2::ZERO, vec2(100.0, 50.0));
     assert!(rounded_rect_points(rect, 0.0, Stroke::NONE, 1.0).is_empty());
-    assert!(rounded_rect_points(rect, 0.4, Stroke::NONE, 1.0).is_empty());
-    assert!(!rounded_rect_points(rect, 0.4, Stroke::NONE, 2.0).is_empty());
+    assert!(rounded_rect_points(rect, 0.49, Stroke::NONE, 1.0).is_empty());
+    assert!(!rounded_rect_points(rect, 0.5, Stroke::NONE, 1.0).is_empty());
+    // Half a pixel at 2 pixels a point.
+    assert!(!rounded_rect_points(rect, 0.25, Stroke::NONE, 2.0).is_empty());
 }
 
 #[test]

@@ -309,7 +309,7 @@ fn open_neither_restyles_the_file_nor_forgets_what_was_set() {
     harness.app.selected = Selection::node(id);
     harness.perform(Action::SetColor(ColorProperty::Fill, Some(RED)));
     harness.perform(Action::SetLineWidth(3.0));
-    harness.app.open(Path::new(FIXTURE)).unwrap();
+    harness.open_fixture();
     assert_eq!(
         *harness.app.doc.graphml(),
         GraphMl::read_file(FIXTURE).unwrap()

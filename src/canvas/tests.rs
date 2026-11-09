@@ -31,6 +31,8 @@ struct Harness {
     /// How soon the last frame asked for the next.
     repaint_delay: Duration,
     time: f64,
+    /// The longest side of a texture the GPU allows, if not egui's default.
+    max_texture_side: Option<usize>,
     /// The canvas's top-left corner on screen.
     origin: Pos2,
 }
@@ -51,6 +53,7 @@ impl Harness {
             cursor: CursorIcon::Default,
             repaint_delay: Duration::MAX,
             time: 0.0,
+            max_texture_side: None,
             origin: Pos2::ZERO,
         };
         let shapes = harness.frame(vec![]);
@@ -64,6 +67,7 @@ impl Harness {
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
             time: Some(self.time),
+            max_texture_side: self.max_texture_side,
             events,
             ..RawInput::default()
         };
@@ -103,6 +107,8 @@ impl Harness {
     /// Clicks a point relative to the canvas, returning what the frame with
     /// the release painted.
     fn click(&mut self, at: Vec2) -> Vec<Shape> {
+        // Too long since any earlier click to make this a double click.
+        self.time += 1.0;
         let at = self.origin + at;
         self.frame(vec![Event::PointerMoved(at)]);
         self.frame(vec![button(at, true)]);
@@ -111,6 +117,8 @@ impl Harness {
 
     /// Double-clicks a point relative to the canvas.
     fn double_click(&mut self, at: Vec2) {
+        // Too long since any earlier click to make this a triple click.
+        self.time += 1.0;
         let at = self.origin + at;
         self.frame(vec![Event::PointerMoved(at)]);
         for pressed in [true, false, true, false] {
@@ -576,14 +584,17 @@ fn the_circle_tool_draws_circles_as_big_as_the_longer_side_of_the_drag() {
 fn clicks_draw_nothing_even_if_they_slip() {
     for tool in [Tool::Box, Tool::Circle, Tool::Ellipse] {
         let mut harness = Harness::new(tool);
-        // Across whole numbers, and as far as a click can go.
+        // Across whole numbers, and diagonally.
         harness.drag(vec2(300.4, 200.4), vec2(300.6, 200.6));
         harness.drag(vec2(300.0, 200.0), vec2(304.0, 204.0));
         assert_eq!(harness.boxes(), [], "{tool:?}");
         assert_eq!(harness.ellipses(), [], "{tool:?}");
     }
-    // Any further is a drag.
+    // As far as a click can go, which only a circle shows, as other shapes
+    // that flat are dropped. Any further is a drag.
     let mut harness = Harness::new(Tool::Circle);
+    harness.drag(vec2(300.0, 200.0), vec2(306.0, 200.0));
+    assert_eq!(harness.ellipses(), []);
     harness.drag(vec2(300.0, 200.0), vec2(307.0, 200.0));
     assert_eq!(harness.ellipses(), [geometry(300.0, 200.0, 7.0, 7.0)]);
 }
@@ -633,13 +644,6 @@ fn corners_snap_to_whole_numbers() {
     let mut harness = Harness::new(Tool::Box);
     harness.drag(vec2(100.4, 49.6), vec2(250.7, 130.2));
     assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 151.0, 80.0)]);
-}
-
-#[test]
-fn other_tools_draw_no_boxes() {
-    let mut harness = Harness::new(Tool::Cursor);
-    harness.drag(vec2(100.0, 50.0), vec2(250.0, 130.0));
-    assert_eq!(harness.boxes(), []);
 }
 
 #[test]
@@ -844,38 +848,27 @@ fn the_node_is_resized_while_its_side_is_dragged() {
     assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 150.0, 80.0)]);
 }
 
-/// Where drags grab the node in [`NODE`] to resize it from its right side, and
-/// to move it from inside.
-const GRABS: [Vec2; 2] = [vec2(250.0, 90.0), vec2(175.0, 90.0)];
-
 #[test]
-fn escape_cancels_the_resize_or_move() {
-    for from in GRABS {
-        let mut harness = Harness::new(Tool::Cursor);
-        harness.add_selected_box();
-        let to = from + vec2(50.0, 0.0);
-        harness.drag_and_hold(from, to);
-        let painted = harness.press(Modifiers::NONE, Key::Escape);
-        harness.frame(vec![button(harness.origin + to, false)]);
+fn escape_cancels_the_resize() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_box();
+    // From the right side.
+    let (from, to) = (vec2(250.0, 90.0), vec2(300.0, 90.0));
+    harness.drag_and_hold(from, to);
+    let painted = harness.press(Modifiers::NONE, Key::Escape);
+    harness.frame(vec![button(harness.origin + to, false)]);
 
-        assert_eq!(
-            filled_rects(&painted, BOX_FILL),
-            [harness.node()],
-            "{from:?}"
-        );
-        assert_eq!(
-            harness.boxes(),
-            [geometry(100.0, 50.0, 150.0, 80.0)],
-            "{from:?}"
-        );
-    }
+    assert_eq!(filled_rects(&painted, BOX_FILL), [harness.node()]);
+    assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 150.0, 80.0)]);
 }
 
 #[test]
-fn switching_tools_mid_drag_drops_the_resize_or_move() {
-    for from in GRABS {
+fn switching_tools_mid_drag_drops_the_resize_move_or_selection_box() {
+    // From the selected node's right side, from inside it, and from the empty
+    // canvas.
+    for from in [vec2(250.0, 90.0), vec2(175.0, 90.0), vec2(300.0, 200.0)] {
         let mut harness = Harness::new(Tool::Cursor);
-        harness.add_selected_box();
+        let id = harness.add_selected_box();
         let to = from + vec2(50.0, 0.0);
         harness.drag_and_hold(from, to);
         harness.tool = Tool::Box;
@@ -889,12 +882,31 @@ fn switching_tools_mid_drag_drops_the_resize_or_move() {
             [harness.node()],
             "{from:?}"
         );
+        assert_eq!(filled_rects(&painted, SELECTION_BOX_FILL), [], "{from:?}");
         assert_eq!(
             harness.boxes(),
             [geometry(100.0, 50.0, 150.0, 80.0)],
             "{from:?}"
         );
+        assert_eq!(harness.selected, Selection::node(id), "{from:?}");
     }
+}
+
+#[test]
+fn switching_tools_mid_drag_drops_the_drag_of_a_bend() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    let bend = pos2(325.0, 20.0);
+    let index = harness.add_edge(&node, &other, &[bend]);
+    harness.selected = Selection::edge(index);
+    let to = bend.to_vec2() + vec2(0.0, 50.0);
+    harness.drag_and_hold(bend.to_vec2(), to);
+    harness.tool = Tool::Box;
+    harness.frame(vec![]);
+    harness.tool = Tool::Cursor;
+    harness.frame(vec![]);
+    harness.frame(vec![button(harness.origin + to, false)]);
+    assert_eq!(harness.bends(index), [yed_point(bend)]);
 }
 
 #[test]
@@ -1196,6 +1208,26 @@ fn borders_are_painted_at_their_width_across_the_outline() {
 const RED: Color32 = Color32::from_rgb(0xFF, 0x00, 0x00);
 
 #[test]
+fn nodes_without_a_fill_show_the_nodes_under_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let mut under = new_box(NODE.min, NODE.max);
+    under.fill.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+    document::add_node(harness.doc.graphml_mut(), &under);
+    let mut over = new_box(NODE.min - vec2(10.0, 10.0), NODE.max + vec2(10.0, 10.0));
+    over.fill.color = None;
+    document::add_node(harness.doc.graphml_mut(), &over);
+    let shapes = harness.frame(vec![]);
+
+    // The last fill painted over the middle of the node under.
+    let middle = harness.node().center();
+    let top = shapes.iter().rev().find_map(|shape| match shape {
+        Shape::Rect(rect) if rect.fill.a() > 0 && rect.rect.contains(middle) => Some(rect.fill),
+        _ => None,
+    });
+    assert_eq!(top, Some(RED));
+}
+
+#[test]
 fn ellipse_borders_are_painted_across_the_outline() {
     let mut harness = Harness::new(Tool::Cursor);
     let mut graphics = shape_between(ShapeType::Ellipse, NODE.min, NODE.max);
@@ -1245,16 +1277,21 @@ fn corner_radii_scale_with_the_zoom() {
 
 #[test]
 fn clicks_on_a_rounded_corner_miss_the_box() {
-    let mut harness = Harness::new(Tool::Cursor);
-    let id = harness.add_rounded_box(20.0);
-    let corner = NODE.min.to_vec2();
-    // Outside the rounding, though inside the bounds.
-    harness.click(corner + vec2(3.0, 3.0));
-    assert!(harness.selected.is_empty());
-    for at in [vec2(7.0, 7.0), vec2(0.5, 20.0), vec2(20.0, 0.5)] {
-        harness.selected = Selection::default();
-        harness.click(corner + at);
-        assert_eq!(harness.selected_node(), Some(id.as_str()), "{at:?}");
+    // Also zoomed in, which scales the rounding on screen.
+    for zoom in [1.0, 2.0] {
+        let mut harness = Harness::new(Tool::Cursor);
+        let id = harness.add_rounded_box(20.0);
+        harness.zoom(zoom);
+        let corner = NODE.min.to_vec2() * zoom;
+        // Outside the rounding, though inside the bounds.
+        harness.click(corner + vec2(3.0, 3.0) * zoom);
+        assert!(harness.selected.is_empty(), "{zoom}");
+        for at in [vec2(7.0, 7.0), vec2(0.5, 20.0), vec2(20.0, 0.5)] {
+            harness.selected = Selection::default();
+            harness.click(corner + at * zoom);
+            let message = format!("{zoom} {at:?}");
+            assert_eq!(harness.selected_node(), Some(id.as_str()), "{message}");
+        }
     }
 }
 
@@ -1680,6 +1717,8 @@ fn new_labels_are_painted_where_their_position_puts_them() {
     assert_near(text.center(), north.center());
     let editor = frame_around(&shapes, text);
     assert!(editor.max.y < node.min.y, "{editor:?}");
+    // The node's other label still shows.
+    assert_eq!(painted(&shapes, "Top left"), Some(top_left));
 }
 
 #[test]
@@ -1711,9 +1750,9 @@ fn labels_of_size_0_are_painted_at_size_1() {
     let mut tiny = Label::new("Tiny");
     tiny.font.size = 0;
     let id = harness.add_labelled_box(vec![tiny]);
-    assert!(painted(&harness.frame(vec![]), "Tiny").is_some());
+    assert_eq!(font_size(&harness.frame(vec![]), "Tiny"), 1.0);
     harness.edit(&id);
-    assert!(painted(&harness.frame(vec![]), "Tiny").is_some());
+    assert_eq!(font_size(&harness.frame(vec![]), "Tiny"), 1.0);
 }
 
 #[test]
@@ -1745,14 +1784,6 @@ fn double_clicking_a_node_asks_to_edit_its_label() {
     harness.double_click(vec2(400.0, 300.0));
     assert_eq!(harness.actions, []);
     assert!(harness.selected.is_empty());
-}
-
-#[test]
-fn double_clicking_with_the_box_tool_edits_no_labels() {
-    let mut harness = Harness::new(Tool::Box);
-    harness.add_labelled_box(vec![]);
-    harness.double_click(vec2(150.0, 60.0));
-    assert_eq!(harness.actions, []);
 }
 
 #[test]
@@ -1835,9 +1866,10 @@ fn dragging_in_the_editor_draws_or_moves_nothing() {
         let id = harness.add_labelled_box(vec![Label::new("Start")]);
         harness.selected = Selection::node(id.clone());
         harness.edit(&id);
-        // Across the editor, which is as wide as the node and in its middle.
+        // Across the editor, which is as wide as the node and in its middle,
+        // and not level, as a level drag would draw no box anyway.
         let middle = NODE.center().to_vec2();
-        harness.drag(middle - vec2(40.0, 0.0), middle + vec2(40.0, 0.0));
+        harness.drag(middle - vec2(40.0, 4.0), middle + vec2(40.0, 4.0));
         assert_eq!(harness.actions, [], "{tool:?}");
         assert!(harness.canvas.editor.is_some());
         assert!(harness.ctx.text_edit_focused());
@@ -1848,6 +1880,7 @@ fn dragging_in_the_editor_draws_or_moves_nothing() {
 #[test]
 fn the_label_edited_shows_only_in_its_editor() {
     let mut harness = Harness::new(Tool::Cursor);
+    harness.ctx.set_theme(egui::Theme::Dark);
     let id = harness.add_labelled_box(vec![Label::new("Start")]);
     harness.edit(&id);
     harness.type_text("Stop");
@@ -1861,6 +1894,31 @@ fn the_label_edited_shows_only_in_its_editor() {
     assert!(editor.width() >= NODE.width(), "{editor:?}");
     assert!(editor.height() < NODE.height(), "{editor:?}");
     assert_near(editor.center(), harness.node().center());
+    // White like the canvas, even in the dark theme.
+    let fill = shapes.iter().find_map(|shape| match shape {
+        Shape::Rect(rect) if rect.rect == editor => Some(rect.fill),
+        _ => None,
+    });
+    assert_eq!(fill, Some(BACKGROUND));
+}
+
+#[test]
+fn the_editor_has_room_for_the_next_letter_typed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let id = harness.add_labelled_box(vec![Label::new("Start")]);
+    harness.edit(&id);
+    harness.type_text("This label is much wider than its node");
+    harness.frame(vec![]);
+    // It goes on one line in the frame it's typed in, before the editor
+    // widens to fit.
+    let shapes = harness.type_text("s");
+    let rows = shapes.iter().find_map(|shape| match shape {
+        Shape::Text(shape) if shape.galley.text() == "This label is much wider than its nodes" => {
+            Some(shape.galley.rows.len())
+        }
+        _ => None,
+    });
+    assert_eq!(rows, Some(1));
 }
 
 #[test]
@@ -1907,7 +1965,8 @@ fn font_size(shapes: &[Shape], text: &str) -> f32 {
 fn the_wheel_zooms_in_and_out_about_the_pointer() {
     let mut harness = Harness::new(Tool::Cursor);
     harness.add_box(NODE.min, NODE.max);
-    let at = vec2(400.0, 300.0);
+    // Far from both the canvas's middle and its corner.
+    let at = vec2(150.0, 150.0);
     let painted = harness.wheel(at, 1.0);
 
     // As fast as egui zooms with Ctrl held: 40 points a notch, 200 an e-fold.
@@ -1991,21 +2050,6 @@ fn setting_the_zoom_keeps_the_middle_of_the_canvas_in_place() {
 }
 
 #[test]
-fn dragging_with_the_middle_button_pans_the_view() {
-    let mut harness = Harness::new(Tool::Cursor);
-    harness.add_box(NODE.min, NODE.max);
-    let (from, to) = (vec2(400.0, 300.0), vec2(430.0, 280.0));
-    let painted = harness.middle_drag(from, to);
-
-    assert_eq!(
-        filled_rects(&painted, BOX_FILL),
-        [harness.node().translate(to - from)]
-    );
-    // Only the view moved.
-    assert_eq!(harness.boxes(), [geometry(100.0, 50.0, 150.0, 80.0)]);
-}
-
-#[test]
 fn panning_by_a_distance_moves_the_view_that_far_on_screen() {
     let mut harness = Harness::new(Tool::Cursor);
     harness.add_box(NODE.min, NODE.max);
@@ -2049,32 +2093,49 @@ fn the_view_follows_the_pointer_while_panning() {
 
 #[test]
 fn middle_drags_pan_whatever_they_start_on() {
-    // Inside the selected node and on its right side, where primary drags
-    // would move or resize it, and where the node tools would draw.
+    // On the empty canvas, where primary drags would draw a selection box;
+    // inside the selected node and on its right side, where they would move
+    // or resize it; on the other node, which they would select; and where
+    // the other tools would draw.
     for (tool, from) in [
+        (Tool::Cursor, vec2(400.0, 300.0)),
         (Tool::Cursor, vec2(175.0, 90.0)),
         (Tool::Cursor, vec2(250.0, 90.0)),
+        (Tool::Cursor, vec2(475.0, 90.0)),
         (Tool::Box, vec2(400.0, 300.0)),
         (Tool::Circle, vec2(400.0, 300.0)),
-        (Tool::Line, vec2(400.0, 300.0)),
+        (Tool::Line, vec2(175.0, 90.0)),
     ] {
         let mut harness = Harness::new(tool);
-        harness.add_selected_box();
+        let id = harness.add_selected_box();
+        harness.add_box(OTHER.min, OTHER.max);
         let moved = vec2(30.0, 20.0);
         let painted = harness.middle_drag(from, from + moved);
 
+        let panned = [NODE, OTHER].map(|rect| rect.translate(harness.origin.to_vec2() + moved));
         assert_eq!(
             filled_rects(&painted, BOX_FILL),
-            [harness.node().translate(moved)],
+            panned,
             "{tool:?} {from:?}"
         );
         assert_eq!(
             harness.boxes(),
-            [geometry(100.0, 50.0, 150.0, 80.0)],
+            [yed_rect(NODE), yed_rect(OTHER)],
             "{tool:?} {from:?}"
         );
         assert_eq!(harness.ellipses(), [], "{tool:?} {from:?}");
+        assert_eq!(harness.selected, Selection::node(id), "{tool:?} {from:?}");
+        assert!(harness.canvas.edge_draw.is_none(), "{tool:?} {from:?}");
     }
+}
+
+#[test]
+fn middle_drags_from_off_the_canvas_pan_nothing() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    // From the margin round the canvas, as from the side panel.
+    let painted = harness.middle_drag(vec2(-4.0, -4.0), vec2(100.0, 100.0));
+    assert_eq!(filled_rects(&painted, BOX_FILL), [harness.node()]);
 }
 
 #[test]
@@ -2184,8 +2245,16 @@ fn the_selection_outline_keeps_its_size_when_zoomed() {
     harness.add_selected_box();
     harness.zoom(2.0);
     let shapes = harness.frame(vec![]);
+    let outlines: Vec<_> = (shapes.iter())
+        .filter_map(|shape| match shape {
+            Shape::Rect(rect) if rect.stroke.color == SELECTION.color => {
+                Some((rect.rect, rect.stroke))
+            }
+            _ => None,
+        })
+        .collect();
     let outline = harness.zoomed_node(2.0).expand(SELECTION_GAP);
-    assert_eq!(stroked_rects(&shapes, SELECTION.color), [outline]);
+    assert_eq!(outlines, [(outline, SELECTION)]);
 }
 
 #[test]
@@ -2316,6 +2385,9 @@ fn labels_are_laid_out_anew_once_the_zoom_strays_far() {
     harness.add_labelled_box(vec![Label::new("Start")]);
     harness.canvas.set_zoom(1.5);
     assert_eq!(font_size(&harness.frame(vec![]), "Start"), 18.0);
+    // Zoomed out as far.
+    harness.canvas.set_zoom(1.0);
+    assert_eq!(font_size(&harness.frame(vec![]), "Start"), 12.0);
 }
 
 /// The lines painted, as the points of open paths in `color`.
@@ -2470,11 +2542,16 @@ fn double_clicks_while_drawing_add_one_bend() {
 #[test]
 fn edges_start_only_on_nodes() {
     let mut harness = Harness::new(Tool::Line);
-    harness.add_two_boxes();
-    harness.drag(vec2(325.0, 250.0), vec2(475.0, 90.0));
-    harness.click(vec2(600.0, 90.0));
+    let (node, _) = harness.add_two_boxes();
+    harness.drag(vec2(325.0, 250.0), vec2(600.0, 250.0));
+    assert!(harness.canvas.edge_draw.is_none());
+    harness.click(vec2(325.0, 250.0));
+    assert!(harness.canvas.edge_draw.is_none());
+
+    harness.click(vec2(175.0, 90.0));
+    let source = harness.canvas.edge_draw.as_ref().map(|draw| &draw.source);
+    assert_eq!(source, Some(&node));
     assert_eq!(harness.edges(), []);
-    assert!(harness.selected.is_empty());
 }
 
 #[test]
@@ -2500,6 +2577,17 @@ fn switching_tools_drops_the_edge_being_drawn() {
     harness.tool = Tool::Cursor;
     harness.frame(vec![]);
     harness.tool = Tool::Line;
+    harness.click(vec2(475.0, 90.0));
+    assert_eq!(harness.edges(), []);
+}
+
+#[test]
+fn the_edge_being_drawn_is_dropped_once_its_node_is_gone() {
+    let mut harness = Harness::new(Tool::Line);
+    let (node, _) = harness.add_two_boxes();
+    harness.click(vec2(175.0, 90.0));
+    // As Delete does, which leaves the tool as it is.
+    document::remove_items(harness.doc.graphml_mut(), &[Item::Node(node)]);
     harness.click(vec2(475.0, 90.0));
     assert_eq!(harness.edges(), []);
 }
@@ -2637,6 +2725,26 @@ fn bends_are_added_between_the_bends_either_side() {
         point(475.0, 250.0),
     ];
     assert_eq!(harness.bends(0), bends);
+}
+
+#[test]
+fn bends_added_by_dragging_a_line_leave_its_labels_where_they_were() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    let index = harness.add_edge(&node, &other, &[]);
+    let route = Route::new(&yed::Path::default(), yed_rect(NODE), yed_rect(OTHER));
+    let mut label = Label::new_on_edge("Label");
+    label.place_on(&route, point(300.0, 60.0), 40.0, 20.0);
+    document::edit_edge_graphics(harness.doc.graphml_mut(), index, |graphics| {
+        graphics.labels.push(label);
+    });
+    harness.selected = Selection::edge(0);
+    let before = painted(&harness.frame(vec![]), "Label").unwrap();
+    harness.drag(vec2(350.0, 90.0), vec2(350.0, 200.0));
+
+    assert_eq!(harness.bends(0), [point(350.0, 200.0)]);
+    let after = painted(&harness.frame(vec![]), "Label").unwrap();
+    assert_near(after.center(), before.center());
 }
 
 #[test]
@@ -3222,12 +3330,34 @@ fn svg_nodes_show_their_drawing_stretched_to_fill_them() {
     assert_eq!(filled_rects(&painted, fill), []);
     assert_eq!(paths(&painted), [] as [&PathShape; 0]);
 
-    // Drawn anew at a new size, and only once the zoom settles.
-    harness.zoom(2.0);
-    harness.frame(vec![]);
-    assert_eq!(textures::sizes(&harness.canvas.textures), [[300, 160]]);
+    // Drawn anew at a new size, but only once the zoom settles.
+    harness.zoom(1.125);
+    assert_eq!(textures::sizes(&harness.canvas.textures), [[150, 80]]);
     let painted = harness.frame(vec![]);
-    assert_eq!(textured_rects(&painted), [harness.zoomed_node(2.0)]);
+    assert_eq!(textures::sizes(&harness.canvas.textures), [[169, 90]]);
+    assert_eq!(textured_rects(&painted), [harness.zoomed_node(1.125)]);
+}
+
+#[test]
+fn svg_nodes_shown_wider_than_a_texture_can_be_are_drawn_scaled_up() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.max_texture_side = Some(1024);
+    harness.zoom(zoom::MAX);
+    // Shown 2000 by 400.
+    harness.add_svg(RING, Rect::from_min_size(Pos2::ZERO, vec2(500.0, 100.0)));
+    harness.frame(vec![]);
+    assert_eq!(textures::sizes(&harness.canvas.textures), [[1024, 205]]);
+}
+
+#[test]
+fn svg_nodes_shown_huge_are_drawn_in_at_most_8_million_pixels() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.max_texture_side = Some(8192);
+    harness.zoom(zoom::MAX);
+    // Shown 4000 by 2400, within the side limit but 9.6 million pixels.
+    harness.add_svg(RING, Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 600.0)));
+    harness.frame(vec![]);
+    assert_eq!(textures::sizes(&harness.canvas.textures), [[3651, 2191]]);
 }
 
 #[test]
@@ -3452,14 +3582,14 @@ fn snapping_reaches_as_far_on_screen_at_any_zoom() {
 fn a_moved_selection_snaps_by_whichever_node_lines_up() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
-    let third = harness.add_box(pos2(700.0, 400.0), pos2(750.0, 450.0));
+    let third = harness.add_box(pos2(702.0, 300.0), pos2(752.0, 350.0));
     harness.selected = Selection::of([Item::Node(node), Item::Node(other)]);
-    // The other box's middle ends up 2 above the third's.
-    drag_node_by(&mut harness, vec2(5.0, 333.0));
+    // Only the other box lines up: its left ends up 2 left of the third's.
+    drag_node_by(&mut harness, vec2(300.0, 0.0));
     let boxes = harness.boxes();
-    assert_eq!(boxes[0], geometry(105.0, 385.0, 150.0, 80.0));
-    assert_eq!(boxes[1], geometry(405.0, 385.0, 150.0, 80.0));
-    assert_eq!(boxes[2].x, 700.0, "{third} stays");
+    assert_eq!(boxes[0], geometry(402.0, 50.0, 150.0, 80.0));
+    assert_eq!(boxes[1], geometry(702.0, 50.0, 150.0, 80.0));
+    assert_eq!(boxes[2].x, 702.0, "{third} stays");
 }
 
 #[test]
@@ -3483,8 +3613,10 @@ fn resized_sides_snap_into_line_with_other_nodes() {
 fn proportional_resizes_snap_by_the_side_that_moves_least() {
     let mut harness = Harness::new(Tool::Cursor);
     harness.add_box(pos2(300.0, 300.0), pos2(400.0, 400.0));
+    harness.add_box(pos2(600.0, 100.0), pos2(650.0, 213.0));
     let id = harness.add_selected_box();
-    // Twice as big would put its right in line with the other box's.
+    // By its right, 2 short of the first box's, rather than its bottom, 4
+    // short of the second's: twice as big.
     harness.holding(Modifiers::SHIFT, |harness| {
         harness.drag(vec2(250.0, 130.0), vec2(398.0, 208.0));
     });
@@ -3515,16 +3647,31 @@ fn drawn_circles_stay_round_while_snapping() {
 }
 
 #[test]
+fn drawn_circles_snap_by_the_side_that_moves_least() {
+    let mut harness = Harness::new(Tool::Circle);
+    harness.add_box(OTHER.min, OTHER.max);
+    harness.add_box(pos2(600.0, 300.0), pos2(650.0, 351.0));
+    // Its right 3 short of the first box's, its bottom 4 short of the
+    // second's.
+    harness.drag(vec2(400.0, 200.0), vec2(547.0, 290.0));
+    assert_eq!(harness.ellipses(), [geometry(400.0, 200.0, 150.0, 150.0)]);
+}
+
+#[test]
 fn dragged_bends_snap_into_line_with_their_neighbours_and_nodes() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
-    harness.add_edge(&node, &other, &[pos2(300.0, 200.0)]);
+    let index = harness.add_edge(&node, &other, &[pos2(300.0, 200.0)]);
+    // At (135, 120), in line with no node's side or middle.
+    document::edit_edge_graphics(harness.doc.graphml_mut(), index, |graphics| {
+        graphics.path.source = point(-40.0, 30.0);
+    });
     harness.selected = Selection::edge(0);
-    // 3 right of the port before it, at the middle of its node.
-    harness.drag(vec2(300.0, 200.0), vec2(178.0, 205.0));
-    assert_eq!(harness.bends(0), [point(175.0, 205.0)]);
+    // 3 right of the port before it.
+    harness.drag(vec2(300.0, 200.0), vec2(138.0, 205.0));
+    assert_eq!(harness.bends(0), [point(135.0, 205.0)]);
     // 2 below the other box's bottom.
-    harness.drag(vec2(175.0, 205.0), vec2(320.0, 132.0));
+    harness.drag(vec2(135.0, 205.0), vec2(320.0, 132.0));
     assert_eq!(harness.bends(0), [point(320.0, 130.0)]);
 }
 
@@ -3537,22 +3684,25 @@ fn bends_added_by_dragging_a_line_snap() {
     // Above the middle of the other box, 4 right of it.
     harness.drag(vec2(320.0, 90.0), vec2(479.0, 20.0));
     assert_eq!(harness.bends(0), [point(475.0, 20.0)]);
+    // From the line up to that bend, to 3 below it.
+    harness.drag(vec2(325.0, 55.0), vec2(300.0, 23.0));
+    assert_eq!(harness.bends(0), [point(300.0, 20.0), point(475.0, 20.0)]);
 }
 
 #[test]
 fn bends_drawn_with_the_line_tool_snap() {
     let mut harness = Harness::new(Tool::Line);
     harness.add_two_boxes();
-    // From the box's middle, to 4 below it, then 3 left of the other's.
+    // From the box's middle, to 4 below it, then 3 right of that bend.
     harness.click(vec2(175.0, 90.0));
     let held = harness.frame(vec![Event::PointerMoved(
         harness.origin + vec2(300.0, 94.0),
     )]);
     assert_eq!(guides(&held).len(), 1);
     harness.click(vec2(300.0, 94.0));
-    harness.click(vec2(472.0, 300.0));
+    harness.click(vec2(303.0, 300.0));
     harness.click(vec2(475.0, 90.0));
-    assert_eq!(harness.bends(0), [point(300.0, 90.0), point(475.0, 300.0)]);
+    assert_eq!(harness.bends(0), [point(300.0, 90.0), point(300.0, 300.0)]);
 }
 
 #[test]

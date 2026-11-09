@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use egui::accesskit::Toggled;
 
 use super::*;
@@ -26,7 +28,29 @@ impl Harness {
     /// Picks `path` in the export's file dialog, then waits for the file.
     fn export_to(&mut self, path: &Path) {
         self.answer(Some(path));
-        self.app.finish_exports(true);
+        self.wait_for_exports();
+    }
+
+    /// Runs frames until the app has seen its exports finish.
+    fn wait_for_exports(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.app.exports.is_empty() {
+            assert!(Instant::now() < deadline, "the exports never finished");
+            std::thread::sleep(Duration::from_millis(1));
+            self.run(vec![]);
+        }
+    }
+
+    /// Runs a frame, returning the size the export dialog gives the PNG.
+    fn png_size(&mut self) -> String {
+        let shapes = self.run(vec![]);
+        let size = shapes.iter().find_map(|shape| match shape {
+            Shape::Text(text) if text.galley.text().ends_with(" px") => {
+                Some(text.galley.text().to_owned())
+            }
+            _ => None,
+        });
+        size.expect("the export dialog shows the PNG's size")
     }
 
     /// Closes the export dialog with `key`, or by clicking Cancel if `None`.
@@ -101,12 +125,13 @@ fn export_waits_while_a_file_dialog_is_open() {
 #[test]
 fn exporting_asks_where_suggesting_the_graphs_name_and_folder() {
     let mut harness = fixture_harness();
+    let opened = harness.app.file.clone().unwrap();
     harness.export_with(&[]);
     assert!(!harness.app.export_dialog.is_open());
     let request = Request::Export {
         format: Format::Png,
         name: "yed.png".to_owned(),
-        folder: Path::new(FIXTURE).parent().map(Path::to_path_buf),
+        folder: opened.parent().map(Path::to_path_buf),
     };
     assert_eq!(harness.app.file_dialog.request(), Some(&request));
 
@@ -125,6 +150,7 @@ fn exporting_asks_where_suggesting_the_graphs_name_and_folder() {
 fn exports_are_written_where_picked_and_change_nothing_else() {
     let dir = ScratchDir::new("export-written");
     let mut harness = fixture_harness();
+    let opened = harness.app.file.clone();
     harness.export_with(&[]);
     harness.export_to(&dir.path("picked.png"));
     assert!(
@@ -140,7 +166,7 @@ fn exports_are_written_where_picked_and_change_nothing_else() {
     assert!(svg.contains(">DB</tspan>"), "{svg}");
 
     assert_eq!(dir.names(), ["picked.png", "picked.svg"]);
-    assert_eq!(harness.app.file.as_deref(), Some(Path::new(FIXTURE)));
+    assert_eq!(harness.app.file, opened);
     assert!(!harness.app.modified);
     assert_eq!(harness.app.error, None);
 }
@@ -194,7 +220,7 @@ fn a_name_without_an_extension_asks_before_replacing_that_file() {
         harness.export_to(&dir.path("plan"));
         assert!(harness.painted(question));
         harness.answer_prompt(answer);
-        harness.app.finish_exports(true);
+        harness.wait_for_exports();
         assert!(!harness.painted(question));
         let bytes = std::fs::read(&file).unwrap();
         assert_eq!(bytes.starts_with(PNG), replaced, "{answer}");
@@ -263,13 +289,19 @@ fn the_export_button_exports_the_label_typed_first() {
     let dir = ScratchDir::new("export-typed");
     let mut harness = Harness::new();
     type_in_label_field(&mut harness, "Start");
-    harness.type_text("Typed");
+    // Wider than the box, so the PNG's size grows with it.
+    let typed = "Typed well past both sides of the box";
+    harness.type_text(typed);
     harness.click_widget("Export");
+    let size = harness.png_size();
+    harness.close_export_dialog(None);
+    harness.press(CTRL, Key::E);
+    assert_eq!(harness.png_size(), size);
     harness.click_widget("SVG");
     harness.click_widget("Export…");
     harness.export_to(&dir.path("typed.svg"));
     let svg = read_to_string(&dir.path("typed.svg"));
-    assert!(svg.contains(">Typed</tspan>"), "{svg}");
+    assert!(svg.contains(&format!(">{typed}</tspan>")), "{svg}");
 }
 
 #[test]
@@ -299,7 +331,7 @@ fn the_status_bar_says_exporting_while_a_file_is_written() {
     harness.app.exports.push(blocked_export(finished));
     assert!(harness.painted("Exporting…"));
     finish.send(()).unwrap();
-    harness.app.finish_exports(true);
+    harness.wait_for_exports();
     assert!(harness.painted("Ready"));
 }
 
@@ -308,9 +340,10 @@ fn closing_the_window_waits_for_the_exports() {
     let mut harness = Harness::new();
     let (finish, finished) = std::sync::mpsc::channel();
     harness.app.exports.push(blocked_export(finished));
-    // Once the window has started closing.
+    // Once the window has started closing. Only a stalled test thread could
+    // let the export end first, which hides a close that doesn't wait.
     let sender = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
         finish.send(()).unwrap();
     });
     assert!(!harness.close_window());

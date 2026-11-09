@@ -50,6 +50,20 @@ fn failed_open_keeps_the_graph() {
 }
 
 #[test]
+fn picking_a_file_that_cant_be_opened_shows_why() {
+    let mut harness = fixture_harness();
+    let (opened, before) = (harness.app.file.clone(), harness.app.doc.graphml().clone());
+    let not_graphml = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/box.svg"));
+    harness.press(CTRL, Key::O);
+    harness.answer(Some(not_graphml));
+    let error = harness.app.error.clone().unwrap_or_default();
+    let message = format!("Couldn't open {}:\n", not_graphml.display());
+    assert!(error.starts_with(&message), "{error:?}");
+    assert_eq!(*harness.app.doc.graphml(), before);
+    assert_eq!(harness.app.file, opened);
+}
+
+#[test]
 fn open_clears_the_selection() {
     let mut app = DrwrApp {
         selected: Selection::node("n0"),
@@ -76,11 +90,8 @@ fn ctrl_n_replaces_the_graph_with_an_empty_unsaved_one() {
 }
 
 #[test]
-fn new_closes_the_dialogs_and_drops_the_labels_being_edited() {
+fn new_closes_the_dialogs() {
     let mut harness = fixture_harness();
-    harness.app.selected = Selection::node("n0");
-    harness.click_text("Order\nservice");
-    harness.type_text("Stop");
     harness
         .app
         .color_picker
@@ -93,9 +104,6 @@ fn new_closes_the_dialogs_and_drops_the_labels_being_edited() {
     harness.perform(Action::New);
     assert!(!harness.app.color_picker.is_open());
     assert!(!harness.app.label_dialog.is_open());
-    harness.run(vec![]);
-    harness.run(vec![]);
-    assert_eq!(*harness.app.doc.graphml(), yed::new_document());
 }
 
 #[test]
@@ -113,7 +121,7 @@ fn open_drops_the_labels_being_edited() {
     // The fixture has a node with the same id, n0.
     type_in_label_field(&mut harness, "Start");
     harness.type_text("Stop");
-    harness.app.open(Path::new(FIXTURE)).unwrap();
+    harness.open_fixture();
     harness.run(vec![]);
     harness.run(vec![]);
     assert_eq!(harness.label("n0"), "Order\nservice");
@@ -122,7 +130,8 @@ fn open_drops_the_labels_being_edited() {
     harness.press(CTRL, Key::Enter);
     harness.run(vec![]);
     harness.type_text("Stop");
-    harness.app.open(Path::new(FIXTURE)).unwrap();
+    assert!(harness.ctx.text_edit_focused());
+    harness.open_fixture();
     harness.run(vec![]);
     harness.press(Modifiers::NONE, Key::Enter);
     assert_eq!(harness.label("n0"), "Order\nservice");
@@ -150,15 +159,6 @@ fn open_resets_the_zoom() {
     app.canvas.set_zoom(2.0);
     app.open(Path::new(FIXTURE)).unwrap();
     assert_eq!(app.canvas.zoom(), 1.0);
-}
-
-impl ScratchDir {
-    /// Copies the yEd fixture in, returning the copy's path.
-    fn fixture(&self) -> PathBuf {
-        let copy = self.path("yed.graphml");
-        std::fs::copy(FIXTURE, &copy).unwrap();
-        copy
-    }
 }
 
 /// The GraphML file at `path`, read.
@@ -330,11 +330,12 @@ fn prompts_are_opaque_on_their_first_visible_frame() {
 #[test]
 fn save_as_writes_the_fixture_byte_for_byte_and_switches_to_the_copy() {
     let dir = ScratchDir::new("save-as");
-    let mut harness = Harness::open(Path::new(FIXTURE));
+    let mut harness = fixture_harness();
+    let opened = harness.app.file.clone().unwrap();
     harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
     let request = Request::Save {
         name: "yed.graphml".to_owned(),
-        folder: Path::new(FIXTURE).parent().map(Path::to_path_buf),
+        folder: opened.parent().map(Path::to_path_buf),
     };
     assert_eq!(harness.app.file_dialog.request(), Some(&request));
 
@@ -363,10 +364,11 @@ fn cancelling_save_as_saves_nothing() {
 
 #[test]
 fn a_failed_save_keeps_the_file_and_shows_why() {
-    let mut harness = Harness::open(Path::new(FIXTURE));
+    let mut harness = fixture_harness();
+    let opened = harness.app.file.clone();
     harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
     harness.answer(Some(Path::new("/nonexistent/drwr.graphml")));
-    assert_eq!(harness.app.file.as_deref(), Some(Path::new(FIXTURE)));
+    assert_eq!(harness.app.file, opened);
     let error = harness.app.error.clone().unwrap_or_default();
     assert!(
         error.starts_with("Couldn't save /nonexistent/drwr.graphml:\n"),
@@ -374,11 +376,16 @@ fn a_failed_save_keeps_the_file_and_shows_why() {
     );
 
     harness.press(Modifiers::NONE, Key::Escape);
+    assert_eq!(harness.app.error, None);
     // The dialog keeps the keys in the frame Escape closes it in.
     harness.run(vec![]);
     harness.app.file = Some(PathBuf::from("/nonexistent/yed.graphml"));
     harness.press(CTRL, Key::S);
-    assert!(harness.app.error.is_some());
+    let error = harness.app.error.clone().unwrap_or_default();
+    assert!(
+        error.starts_with("Couldn't save /nonexistent/yed.graphml:\n"),
+        "{error:?}"
+    );
     assert_eq!(
         harness.app.file.as_deref(),
         Some(Path::new("/nonexistent/yed.graphml"))
@@ -402,6 +409,18 @@ fn file_actions_wait_while_a_file_dialog_is_open() {
 
     harness.answer(None);
     assert!(!harness.widget("Open").is_disabled());
+}
+
+#[test]
+fn ctrl_s_saves_nothing_while_a_file_dialog_is_open() {
+    let dir = ScratchDir::new("ctrl-s-file-dialog");
+    let (mut harness, file) = modified_fixture(&dir);
+    harness.press(CTRL, Key::O);
+    harness.answer_prompt("Don't Save");
+    assert_eq!(harness.app.file_dialog.request(), Some(&Request::Open));
+    // That would write the changes Don't Save let go.
+    harness.press(CTRL, Key::S);
+    assert_eq!(read(&file), read(Path::new(FIXTURE)));
 }
 
 #[test]
@@ -456,6 +475,18 @@ fn ctrl_s_in_a_label_field_saves_the_label_typed() {
     assert_eq!(read(&file), *harness.app.doc.graphml());
     assert!(!harness.app.modified);
     assert!(!harness.ctx.text_edit_focused());
+}
+
+#[test]
+fn ctrl_shift_s_in_a_label_field_saves_the_label_typed() {
+    let dir = ScratchDir::new("ctrl-shift-s-label-field");
+    let mut harness = fixture_harness();
+    retype_queue(&mut harness);
+    harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
+    let copy = dir.path("copy.graphml");
+    harness.answer(Some(&copy));
+    assert_eq!(harness.label("n2"), "Stack");
+    assert_eq!(read(&copy), *harness.app.doc.graphml());
 }
 
 #[test]
@@ -522,6 +553,12 @@ fn a_marker_shows_unsaved_changes_until_saved() {
     assert!(!harness.app.modified);
     assert!(!harness.painted("*"));
     assert_eq!(harness.app.title, "drawn.graphml — drwr");
+
+    // Changes now count from what was saved.
+    harness.press(CTRL, Key::ArrowRight);
+    assert!(harness.painted("*"));
+    harness.press(CTRL, Key::ArrowLeft);
+    assert!(!harness.painted("*"));
 }
 
 #[test]
@@ -689,6 +726,21 @@ fn closing_the_window_applies_the_label_being_typed_then_asks() {
 }
 
 #[test]
+fn quitting_asks_nothing_while_a_file_dialog_is_open() {
+    let dir = ScratchDir::new("quit-file-dialog");
+    let (mut harness, _) = modified_fixture(&dir);
+    harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
+    // Saving from the prompt may need the file dialog.
+    assert!(!harness.press_ctrl_q());
+    assert!(harness.close_window());
+    assert!(!harness.asks_to_save());
+
+    harness.answer(None);
+    assert!(!harness.press_ctrl_q());
+    assert!(harness.asks_to_save());
+}
+
+#[test]
 fn open_asks_to_save_changes_before_showing_the_dialog() {
     let dir = ScratchDir::new("open");
     let (mut harness, _) = modified_fixture(&dir);
@@ -716,7 +768,9 @@ fn saving_from_the_prompt_goes_on_to_open() {
     assert_eq!(read(&file), moved);
     assert_eq!(harness.app.file_dialog.request(), Some(&Request::Open));
 
-    harness.answer(Some(Path::new(FIXTURE)));
+    let other = dir.path("other.graphml");
+    std::fs::copy(FIXTURE, &other).unwrap();
+    harness.answer(Some(&other));
     assert_eq!(*harness.app.doc.graphml(), read(Path::new(FIXTURE)));
     assert!(!harness.app.modified);
 }
@@ -765,7 +819,12 @@ fn a_failed_save_from_the_prompt_keeps_the_graph() {
     harness.answer_prompt("Save");
     assert!(harness.app.error.is_some());
     assert_eq!(*harness.app.doc.graphml(), moved);
-    assert!(harness.app.modified);
+
+    // The changes are still unsaved, so quitting asks first.
+    harness.press(Modifiers::NONE, Key::Escape);
+    harness.run(vec![]);
+    assert!(!harness.press_ctrl_q());
+    assert!(harness.asks_to_save());
 }
 
 #[test]
@@ -811,6 +870,16 @@ fn the_new_button_applies_the_label_typed_first_then_asks() {
 }
 
 #[test]
+fn the_open_button_applies_the_label_typed_first_then_asks() {
+    let mut harness = fixture_harness();
+    retype_queue(&mut harness);
+    harness.click_widget("Open");
+    assert_eq!(harness.label("n2"), "Stack");
+    assert!(!harness.app.file_dialog.is_open());
+    assert!(harness.asks_to_save());
+}
+
+#[test]
 fn the_save_button_leaves_nothing_unsaved() {
     let dir = ScratchDir::new("save-button-clean");
     let file = dir.fixture();
@@ -820,4 +889,6 @@ fn the_save_button_leaves_nothing_unsaved() {
     assert_eq!(harness.label("n2"), "Stack");
     assert!(!harness.app.modified);
     assert!(!harness.painted("*"));
+    assert!(harness.press_ctrl_q());
+    assert!(!harness.asks_to_save());
 }

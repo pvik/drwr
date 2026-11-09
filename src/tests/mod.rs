@@ -15,6 +15,8 @@ mod svg_nodes;
 mod undo;
 mod view;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use eframe::App as _;
 use egui::{
     Color32, Event, Key, Modifiers, Popup, Pos2, RawInput, Rect, Shape, Stroke, Vec2, vec2,
@@ -22,7 +24,7 @@ use egui::{
 use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
 
 use super::*;
-use crate::testing::{self, CTRL, button};
+use crate::testing::{self, CTRL, ScratchDir, button};
 
 impl DrwrApp {
     /// The id of the selected node.
@@ -45,6 +47,9 @@ struct Harness {
     ctx: egui::Context,
     frame: eframe::Frame,
     app: DrwrApp,
+    /// Holds the copy of the fixture opened, so that saves can't reach the
+    /// original.
+    fixture: Option<ScratchDir>,
 }
 
 impl Harness {
@@ -61,9 +66,20 @@ impl Harness {
             ctx,
             frame: eframe::Frame::_new_kittest(),
             app,
+            fixture: None,
         };
         harness.run(vec![]);
         harness
+    }
+
+    /// Opens a fresh copy of the yEd fixture.
+    fn open_fixture(&mut self) {
+        static COPIES: AtomicUsize = AtomicUsize::new(0);
+        let dir = self.fixture.get_or_insert_with(|| {
+            let copy = COPIES.fetch_add(1, Ordering::Relaxed);
+            ScratchDir::new(&format!("fixture-{copy}"))
+        });
+        self.app.open(&dir.fixture()).unwrap();
     }
 
     /// Runs a frame with `input`, as eframe does.
@@ -358,10 +374,14 @@ impl Harness {
         field.expect("the first label's field is empty")
     }
 
-    /// Opens the GraphML file at `path`.
+    /// Opens the GraphML file at `path`, or a copy of it if it's the fixture.
     fn open(path: &Path) -> Self {
         let mut harness = Harness::new();
-        harness.app.open(path).unwrap();
+        if path == Path::new(FIXTURE) {
+            harness.open_fixture();
+        } else {
+            harness.app.open(path).unwrap();
+        }
         harness.run(vec![]);
         harness
     }
@@ -429,7 +449,10 @@ impl Harness {
     /// release asked of the window. The prompt sits below the toolbar, whose
     /// Save button has the same label as the unsaved-changes prompt's.
     fn answer_prompt(&mut self, label: &str) -> Vec<egui::ViewportCommand> {
-        let lowest = (self.widgets().iter())
+        let widgets = self.widgets();
+        let modal = self.ctx.memory(|memory| memory.top_modal_layer());
+        assert!(modal.is_some(), "no prompt is open to answer {label:?}");
+        let lowest = (widgets.iter())
             .filter(|widget| widget.label() == Some(label))
             .map(testing::center)
             .max_by(|a, b| a.y.total_cmp(&b.y));
@@ -479,6 +502,7 @@ fn click_border_width(harness: &mut Harness) -> String {
     let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
     harness.click(vec2(150.0, 60.0));
     harness.click_text("1");
+    assert!(harness.ctx.text_edit_focused());
     id
 }
 
@@ -503,15 +527,25 @@ fn type_in_label_field(harness: &mut Harness, text: &str) -> String {
     // The side panel is painted first, so this is its field, not the canvas.
     harness.click_text(text);
     harness.press(CTRL, Key::A);
+    assert!(harness.ctx.text_edit_focused());
     id
 }
 
 const RED: yed::Color = yed::Color::rgb(0xFF, 0x00, 0x00);
 
-/// Opens the yEd fixture: its edge e0 runs from n0 to n1 through two bends
-/// and has a label, and e1 joins n2 and n3.
+/// Opens a copy of the yEd fixture: its edge e0 runs from n0 to n1 through
+/// two bends and has a label, and e1 joins n2 and n3.
 fn fixture_harness() -> Harness {
     Harness::open(Path::new(FIXTURE))
+}
+
+impl ScratchDir {
+    /// Copies the yEd fixture in, returning the copy's path.
+    fn fixture(&self) -> PathBuf {
+        let copy = self.path("yed.graphml");
+        std::fs::copy(FIXTURE, &copy).unwrap();
+        copy
+    }
 }
 
 fn bend(x: f64, y: f64) -> yed::Point {

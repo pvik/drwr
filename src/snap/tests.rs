@@ -164,16 +164,22 @@ fn a_guide_spans_what_lines_up_along_it() {
 
 #[test]
 fn what_lines_up_along_one_line_shows_one_guide() {
-    let mut targets = one_node();
-    targets.add_node(rect(0.0, 300.0, 100.0, 50.0));
-    let guides = targets.guides(&lines_of(rect(0.0, 100.0, 60.0, 20.0)));
+    let (above, below) = (rect(0.0, 0.0, 100.0, 50.0), rect(0.0, 300.0, 100.0, 50.0));
     let guide = Guide {
         axis: Axis::X,
         at: 0.0,
         from: 0.0,
         to: 350.0,
     };
-    assert_eq!(guides, [guide]);
+    // Whichever node comes first.
+    for nodes in [[above, below], [below, above]] {
+        let mut targets = Targets::new(5.0);
+        for node in nodes {
+            targets.add_node(node);
+        }
+        let guides = targets.guides(&lines_of(rect(0.0, 100.0, 60.0, 20.0)));
+        assert_eq!(guides, [guide]);
+    }
 }
 
 #[test]

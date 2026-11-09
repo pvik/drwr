@@ -94,6 +94,8 @@ fn only_embedded_images_are_drawn() {
         format!(r#"<image width="10" height="10" href="data:image/svg+xml;base64,{encoded}"/>"#);
     assert!(SvgImage::parse(&svg(&embedded)).is_ok());
     let icon = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/box.svg");
+    // Or it would draw nothing however it's linked.
+    assert!(std::path::Path::new(icon).is_file(), "{icon}");
     let linked = format!(r#"<image width="10" height="10" href="{icon}"/>"#);
     assert!(SvgImage::parse(&svg(&linked)).is_err());
 }
@@ -128,6 +130,11 @@ fn first_drawn_is_where_a_line_from_outside_meets_it() {
         (met - vec2(corner, 1.0 - corner)).length() < 0.01,
         "{met:?}"
     );
+    // Right at its edge, not up to a step of the search past it.
+    let (from, to) = (vec2(1.0, 0.2), vec2(0.5, 0.5));
+    let met = ring.first_drawn(from, to).unwrap();
+    assert!(ring.draws_at(met), "{met:?}");
+    assert!(!ring.draws_at(met + (from - to) * 1e-4), "{met:?}");
     // Through the hole only.
     let hole = ring.first_drawn(vec2(0.5, 0.5), vec2(0.6, 0.5));
     assert_eq!(hole, None);

@@ -8,25 +8,22 @@ fn zoom_reads_in_whole_percents() {
     assert_eq!(text(4.0), "400%");
 }
 
+/// How the levels `step` goes through from `zoom` read. Twenty at most, so
+/// that a step going nowhere fails rather than hangs.
+fn steps(zoom: f32, step: fn(f32) -> Option<f32>) -> Vec<String> {
+    let levels = std::iter::successors(step(zoom), |&zoom| step(zoom));
+    levels.take(20).map(text).collect()
+}
+
 #[test]
 fn zooming_in_and_out_steps_through_the_levels() {
-    let mut zoom = 1.0;
-    let mut zoomed_in = Vec::new();
-    while let Some(next) = step_in(zoom) {
-        zoomed_in.push(text(next));
-        zoom = next;
-    }
+    let zoomed_in = steps(1.0, step_in);
     assert_eq!(zoomed_in, ["125%", "150%", "200%", "300%", "400%"]);
 
-    let mut zoomed_out = Vec::new();
-    while let Some(next) = step_out(zoom) {
-        zoomed_out.push(text(next));
-        zoom = next;
-    }
     let expected = [
         "300%", "200%", "150%", "125%", "100%", "75%", "50%", "30%", "20%", "15%", "10%",
     ];
-    assert_eq!(zoomed_out, expected);
+    assert_eq!(steps(4.0, step_out), expected);
 }
 
 #[test]

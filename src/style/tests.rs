@@ -91,6 +91,7 @@ fn fills_and_corner_radii_are_remembered_only_from_nodes() {
 fn labels_get_each_font_part_and_the_text_color_last_set() {
     let mut style = Style::default();
     style.set_font(&FontPart::Family("Monospaced".to_owned()));
+    style.set_font(&FontPart::Style(FontStyle::Bold));
     style.set_font(&FontPart::Size(20));
     style.set_color(&Selection::node("n0"), ColorProperty::Text(0), Some(RED));
     // Text can't have no color.
@@ -99,7 +100,7 @@ fn labels_get_each_font_part_and_the_text_color_last_set() {
     let font = Font {
         family: "Monospaced".to_owned(),
         size: 20,
-        style: FontStyle::Plain,
+        style: FontStyle::Bold,
     };
     assert_eq!(label.font, font);
     assert_eq!(label.text_color, RED);

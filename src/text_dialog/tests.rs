@@ -112,3 +112,16 @@ fn opening_an_open_dialog_changes_nothing() {
     harness.click("OK");
     assert_eq!(harness.accepted, [("label", "Start".to_owned())]);
 }
+
+#[test]
+fn long_texts_scroll_leaving_the_buttons_in_the_window() {
+    let mut harness = Harness::new();
+    harness.open(&["Line"; 100].join("\n"));
+    let ok = |harness: &Harness| harness.driver.widget("OK").bounds().unwrap();
+    let shown = ok(&harness);
+    for _ in 0..10 {
+        harness.frame(vec![]);
+    }
+    assert_eq!(ok(&harness), shown);
+    assert!(shown.y1 <= 600.0, "{shown:?}");
+}

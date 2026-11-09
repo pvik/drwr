@@ -29,6 +29,7 @@ fn inserted_svgs_go_selected_in_the_middle_of_the_view_at_their_size() {
     let dir = ScratchDir::new("insert-svg");
     let file = svg_file(&dir, "disc.svg", DISC);
     let mut harness = Harness::new();
+    harness.perform(Action::SetZoom(2.0));
     harness.perform(Action::PanBy(-300.0, 40.0));
     let id = insert(&mut harness, &file).unwrap();
     let graphics = harness.graphics(&id);
@@ -39,14 +40,15 @@ fn inserted_svgs_go_selected_in_the_middle_of_the_view_at_their_size() {
         Some(DISC)
     );
     // As big as what it draws, as yEd makes it.
-    let corner = (harness.app.canvas.view_center() - vec2(15.0, 15.0)).round();
-    let expected = yed::Rect {
-        x: corner.x.into(),
-        y: corner.y.into(),
-        width: 30.0,
-        height: 30.0,
-    };
-    assert_eq!(graphics.geometry, expected);
+    let geometry = graphics.geometry;
+    assert_eq!((geometry.width, geometry.height), (30.0, 30.0));
+    // At 200%, the pan moved the middle of the view 150 left and 20 down.
+    let middle = canvas(&harness.run(vec![])).size() / 2.0 + vec2(-150.0, 20.0);
+    let placed = vec2(geometry.x as f32, geometry.y as f32) + vec2(15.0, 15.0);
+    // Off by at most the rounding to whole points.
+    let off = (placed - middle).abs().max_elem();
+    assert!(off <= 0.5, "{placed:?} {middle:?}");
+    assert_eq!((geometry.x.fract(), geometry.y.fract()), (0.0, 0.0));
     assert!(harness.app.modified);
 
     // One step undoes it, SVG and all.

@@ -95,6 +95,54 @@ fn pixel(pixmap: &Pixmap, at: Pos2) -> [u8; 4] {
     [color.red(), color.green(), color.blue(), color.alpha()]
 }
 
+/// A 150×80 box at (100, 50) labelled `label`, as SVG with its text as text,
+/// then as outlines.
+fn export_label(label: yed::Label) -> [String; 2] {
+    let mut graphml = yed::new_document();
+    let mut node = shape(ShapeType::Rectangle, 100.0, 50.0, 150.0, 80.0);
+    node.labels = vec![label];
+    document::add_node(&mut graphml, &node);
+    let drawing = drawing(&graphml, None);
+    [false, true].map(|outlines| {
+        let settings = Settings {
+            outlines,
+            ..Settings::default()
+        };
+        svg(&drawing, settings)
+    })
+}
+
+/// Where each `<tspan>` of `svg` puts its row: its `x` and its baseline.
+fn rows(svg: &str) -> Vec<Pos2> {
+    let number = |text: &str| text.parse::<f32>().unwrap();
+    (svg.split(r#"<tspan x=""#).skip(1))
+        .map(|tspan| {
+            let (x, rest) = tspan.split_once(r#"" y=""#).unwrap();
+            pos2(number(x), number(rest.split_once('"').unwrap().0))
+        })
+        .collect()
+}
+
+/// The points of a `<path>` element's data, its control points included.
+fn points(path: &str) -> Vec<Pos2> {
+    let d = path.strip_prefix(r#"<path d=""#).unwrap();
+    let numbers: Vec<f32> = (d.split_once('"').unwrap().0)
+        .split(|c: char| c.is_ascii_alphabetic() || c == ' ')
+        .filter(|number| !number.is_empty())
+        .map(|number| number.parse().unwrap())
+        .collect();
+    numbers.chunks(2).map(|xy| pos2(xy[0], xy[1])).collect()
+}
+
+/// What the outlines in `path` of two rows of capitals cover, row by row,
+/// the first row's on `baseline`.
+fn row_bounds(path: &str, baseline: f32) -> [Rect; 2] {
+    let (first, second): (Vec<_>, Vec<_>) = points(path)
+        .into_iter()
+        .partition(|point| point.y <= baseline + 0.5);
+    [first, second].map(|points| Rect::from_points(&points))
+}
+
 #[test]
 fn svg_draws_what_the_canvas_draws() {
     let (graphml, ..) = two_nodes();
@@ -156,7 +204,7 @@ fn svg_with_margin(drawing: &Drawing, margin: u32) -> String {
 }
 
 #[test]
-fn labels_and_arrowheads_outside_nodes_count_toward_the_page() {
+fn labels_arrowheads_and_miters_count_toward_the_page() {
     let mut graphml = yed::new_document();
     let mut node = shape(ShapeType::Rectangle, 0.0, 0.0, 10.0, 10.0);
     node.labels = vec![yed::Label::new("A label wider than its node")];
@@ -165,13 +213,19 @@ fn labels_and_arrowheads_outside_nodes_count_toward_the_page() {
     assert!(bounds.width() > 50.0, "{bounds:?}");
 
     let (mut graphml, a, b) = two_nodes();
-    // Sideways, so the arrowhead reaches past the circle's top.
-    let mut arrow = EdgeGraphics::new(EdgeKind::PolyLine);
-    arrow.arrows.source = yed::Arrow::Standard;
-    arrow.line.width = 3.0;
-    arrow.path.points = vec![yed::Point { x: 340.0, y: 0.0 }];
-    document::add_edge(&mut graphml, &b, &a, &arrow);
-    assert!(drawing(&graphml, None).bounds.min.y < 0.0);
+    // The arrowhead is wider than the line and goes on past its end.
+    let line = drawing(&graphml, Some(&Selection::edge(0))).bounds;
+    let sides = [line.min.x, line.min.y, line.max.x, line.max.y].map(svg::num);
+    assert_eq!(sides, ["250", "86", "300", "94"]);
+
+    // Bent sharply at (340, 0), a line 3 wide reaches 1.3 above the bend
+    // with its sides, and 2.5 with its miter.
+    let mut bent = EdgeGraphics::new(EdgeKind::PolyLine);
+    bent.line.width = 3.0;
+    bent.path.points = vec![yed::Point { x: 340.0, y: 0.0 }];
+    document::add_edge(&mut graphml, &b, &a, &bent);
+    let top = drawing(&graphml, None).bounds.min.y;
+    assert!(top < -2.4, "{top}");
 }
 
 #[test]
@@ -309,18 +363,102 @@ fn png_text_is_drawn() {
 
 #[test]
 fn svg_text_can_be_outlines() {
-    let (graphml, ..) = two_nodes();
-    let drawing = drawing(&graphml, None);
-    let outlined = Settings {
-        outlines: true,
-        ..Settings::default()
+    let [text, outlined] = export_label(yed::Label::new("A"));
+    assert!(elements(&outlined, "text").is_empty(), "{outlined}");
+    let [glyph] = elements(&outlined, "path").try_into().unwrap();
+    assert!(glyph.ends_with(r##"Z" fill="#000000"/>"##), "{glyph}");
+    // Where the text is: in the middle of its row, on its baseline, and as
+    // tall as a capital of a 12 point font.
+    let [row] = rows(&text).try_into().unwrap();
+    let bounds = Rect::from_points(&points(glyph));
+    assert!(
+        (bounds.center().x - row.x).abs() < 0.1,
+        "{bounds:?} {row:?}"
+    );
+    assert!((bounds.max.y - row.y).abs() < 0.1, "{bounds:?} {row:?}");
+    assert!((8.0..9.0).contains(&bounds.height()), "{bounds:?}");
+    usvg::Tree::from_str(&outlined, &usvg::Options::default()).expect("the SVG is valid");
+}
+
+#[test]
+fn each_row_of_a_label_is_drawn_below_the_last() {
+    let [text, outlined] = export_label(yed::Label::new("HAH\nHAMMAH"));
+    let [top, bottom] = rows(&text).try_into().unwrap();
+    // A row's height lower, both in the middle of the box.
+    let gap = bottom.y - top.y;
+    assert!((12.0..18.0).contains(&gap), "{gap}");
+    assert_eq!([top.x, bottom.x], [175.0; 2]);
+    let [path] = elements(&outlined, "path").try_into().unwrap();
+    for (row, bounds) in [top, bottom].iter().zip(row_bounds(path, top.y)) {
+        assert!((bounds.max.y - row.y).abs() < 0.1, "{bounds:?} {row:?}");
+        assert!((bounds.center().x - 175.0).abs() < 0.1, "{bounds:?}");
+    }
+}
+
+#[test]
+fn rows_line_up_as_their_label_is_aligned() {
+    for (alignment, anchor) in [
+        (yed::Alignment::Left, ""),
+        (yed::Alignment::Center, r#" text-anchor="middle""#),
+        (yed::Alignment::Right, r#" text-anchor="end""#),
+    ] {
+        let mut label = yed::Label::new("HAH\nHAMMAH");
+        label.alignment = alignment.clone();
+        let [text, outlined] = export_label(label);
+        let [element] = elements(&text, "text").try_into().unwrap();
+        let attributes = format!(r#"font-size="12"{anchor} fill"#);
+        assert!(element.contains(&attributes), "{element}");
+        let [short, long] = rows(&text).try_into().unwrap();
+        assert!(
+            (short.x - long.x).abs() < 0.02,
+            "{alignment:?} {short:?} {long:?}"
+        );
+        // Both rows start and end with an H, so their outlines line up as they do.
+        let [path] = elements(&outlined, "path").try_into().unwrap();
+        let side = |rect: Rect| match alignment {
+            yed::Alignment::Left => rect.min.x,
+            yed::Alignment::Right => rect.max.x,
+            _ => rect.center().x,
+        };
+        let [short, long] = row_bounds(path, short.y).map(side);
+        assert!((short - long).abs() < 0.1, "{alignment:?} {short} {long}");
+    }
+}
+
+#[test]
+fn text_keeps_its_color() {
+    let mut label = yed::Label::new("HAH");
+    label.text_color = Color {
+        a: 0x80,
+        ..Color::rgb(0, 0x80, 0)
     };
-    let svg = svg(&drawing, outlined);
-    assert!(elements(&svg, "text").is_empty(), "{svg}");
-    let glyphs = elements(&svg, "path").into_iter().last().unwrap();
-    assert!(glyphs.starts_with(r#"<path d="M"#), "{glyphs}");
-    assert!(glyphs.ends_with(r##"Z" fill="#000000"/>"##), "{glyphs}");
-    usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("the SVG is valid");
+    let fill = r##" fill="#008000" fill-opacity="0.5""##;
+    let [text, outlined] = export_label(label);
+    let [text] = elements(&text, "text").try_into().unwrap();
+    assert!(text.contains(&format!("{fill} xml:space")), "{text}");
+    let [glyphs] = elements(&outlined, "path").try_into().unwrap();
+    assert!(glyphs.ends_with(&format!("{fill}/>")), "{glyphs}");
+}
+
+#[test]
+fn text_is_bold_or_italic_as_its_font() {
+    // As text only: egui's own fonts have no bold or italic faces to outline.
+    for (style, attributes) in [
+        (yed::FontStyle::Plain, ""),
+        (yed::FontStyle::Bold, r#" font-weight="bold""#),
+        (yed::FontStyle::Italic, r#" font-style="italic""#),
+        (
+            yed::FontStyle::BoldItalic,
+            r#" font-weight="bold" font-style="italic""#,
+        ),
+    ] {
+        let mut label = yed::Label::new("x");
+        label.font.style = style;
+        let [text, _] = export_label(label);
+        let [element] = elements(&text, "text").try_into().unwrap();
+        let expected = format!(r#"font-size="12"{attributes} text-anchor"#);
+        assert!(element.contains(&expected), "{element}");
+    }
 }
 
 #[test]
@@ -350,17 +488,6 @@ fn font_families_name_the_drawn_family_then_a_generic_one() {
     assert_eq!(
         family("DejaVu Serif", yed::FontStyle::Plain),
         r#"<text font-family="'DejaVu Serif', 'Ubuntu Light', serif""#
-    );
-    let mut graphml = yed::new_document();
-    let mut node = shape(ShapeType::Rectangle, 0.0, 0.0, 10.0, 10.0);
-    let mut label = yed::Label::new("x");
-    label.font.style = yed::FontStyle::BoldItalic;
-    node.labels = vec![label];
-    document::add_node(&mut graphml, &node);
-    let svg = svg(&drawing(&graphml, None), Settings::default());
-    assert!(
-        svg.contains(r#" font-weight="bold" font-style="italic""#),
-        "{svg}"
     );
 }
 

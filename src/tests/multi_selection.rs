@@ -92,13 +92,16 @@ fn the_side_panel_shows_what_the_selected_lines_share() {
         "End arrow",   "",
         "Label",       "...", "",
     ]);
-    // Neither checked nor not where they differ, and then set on both.
+    // Neither checked nor not where they differ, and then set on both. As one
+    // had it already, taken off both too.
     let [start, end] = harness.checkboxes().try_into().unwrap();
     assert_eq!(start.toggled(), Some(egui::accesskit::Toggled::False));
     assert_eq!(end.toggled(), Some(egui::accesskit::Toggled::Mixed));
-    harness.click_at(testing::center(&end));
-    for index in [0, 1] {
-        assert_eq!(harness.edge(index).arrows.target, yed::Arrow::Standard);
+    for arrow in [yed::Arrow::Standard, yed::Arrow::None] {
+        harness.click_at(testing::center(&end));
+        for index in [0, 1] {
+            assert_eq!(harness.edge(index).arrows.target, arrow, "{index}");
+        }
     }
 }
 
@@ -154,6 +157,8 @@ fn colors_picked_in_the_side_panel_go_to_every_selected_node() {
         .expect("a button is beside Fill");
     harness.click_at(swatch);
     assert!(harness.painted("Fill color"));
+    // On the first's color, in the hex field.
+    assert!(harness.painted("#FFCC00"));
     harness.run(vec![Event::Text("#FF0000".to_owned())]);
     harness.press(Modifiers::NONE, Key::Enter);
     assert_eq!(harness.graphics(&left).fill.color, Some(RED));
@@ -198,9 +203,28 @@ fn the_label_dialog_sets_every_selected_label_once_changed() {
     assert_eq!(labels(&harness), ["Left", ""]);
     harness.click_text("...");
     harness.run(vec![]);
+    // Blank, as they differ, so this adds to nothing.
+    harness.press(Modifiers::NONE, Key::End);
     harness.type_text("Both");
     harness.click_text("OK");
     assert_eq!(labels(&harness), ["Both", "Both"]);
+}
+
+#[test]
+fn ctrl_enter_edits_no_label_while_several_items_are_selected() {
+    let mut harness = Harness::new();
+    let graphml = harness.app.doc.graphml_mut();
+    let left = document::add_node(graphml, &labelled_box("Left"));
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    harness.app.selected = Selection::of([node(&left), node(&right)]);
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    assert!(!harness.ctx.text_edit_focused());
+    // Unlike with one.
+    harness.app.selected = Selection::node(left);
+    harness.press(CTRL, Key::Enter);
+    harness.run(vec![]);
+    assert!(harness.ctx.text_edit_focused());
 }
 
 #[test]
@@ -242,6 +266,39 @@ fn only_boxes_together_have_a_corner_radius() {
     assert_eq!(rows(&harness.side_panel(), "Corner radius"), ["0"]);
     harness.app.selected = Selection::of(items);
     assert_eq!(rows(&harness.side_panel(), "Corner radius"), [""; 0]);
+}
+
+#[test]
+fn corner_radii_set_in_the_side_panel_go_to_every_selected_box() {
+    let mut harness = Harness::new();
+    let graphml = harness.app.doc.graphml_mut();
+    let mut round = box_at(300.0, 0.0);
+    round.kind = NodeKind::Shape(ShapeType::RoundRectangle);
+    let ids = [new_box(), round].map(|graphics| document::add_node(graphml, &graphics));
+    harness.app.selected = Selection::of([node(&ids[0]), node(&ids[1])]);
+    // Blank, as they're 0 and 4.
+    assert_eq!(rows(&harness.side_panel(), "Corner radius"), [""]);
+    // After the border width.
+    harness.click_number_field(1);
+    harness.type_text("10");
+    harness.press(Modifiers::NONE, Key::Enter);
+    let radii = ids.map(|id| document::corner_radius(harness.app.doc.graphml(), &id));
+    assert_eq!(radii, [Some(10.0); 2]);
+}
+
+#[test]
+fn label_positions_picked_in_the_side_panel_go_to_every_selected_node() {
+    let mut harness = Harness::new();
+    let graphml = harness.app.doc.graphml_mut();
+    let left = document::add_node(graphml, &labelled_box("Left"));
+    let mut right = labelled_box("Right");
+    right.geometry.x = 400.0;
+    let right = document::add_node(graphml, &right);
+    harness.app.selected = Selection::of([node(&left), node(&right)]);
+    harness.click_text("Center");
+    harness.click_text("North");
+    let positions = [&left, &right].map(|id| harness.graphics(id).labels[0].position());
+    assert_eq!(positions, [Some(yed::LabelPosition::North); 2]);
 }
 
 #[test]

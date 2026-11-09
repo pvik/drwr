@@ -53,6 +53,10 @@ fn refuses_a_read_only_file() {
     let mut permissions = fs::metadata(&path).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(&path, permissions).unwrap();
+    // As root, which may write to it anyway.
+    if OpenOptions::new().write(true).open(&path).is_ok() {
+        return;
+    }
     let err = write_text(&path, "new").unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     assert_eq!(read(&path), "old");
@@ -61,15 +65,16 @@ fn refuses_a_read_only_file() {
 
 #[cfg(unix)]
 #[test]
-fn keeps_a_private_file_private() {
+fn keeps_the_files_mode() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = ScratchDir::new("atomic-private");
+    let dir = ScratchDir::new("atomic-mode");
     let path = dir.path("plan.graphml");
     fs::write(&path, "old").unwrap();
-    fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
+    // With execute bits, which no new file gets, whatever the umask.
+    fs::set_permissions(&path, Permissions::from_mode(0o751)).unwrap();
     write_text(&path, "new").unwrap();
     let mode = fs::metadata(&path).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(mode & 0o777, 0o751);
 }
 
 #[cfg(unix)]

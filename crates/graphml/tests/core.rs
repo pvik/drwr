@@ -138,13 +138,13 @@ fn text_is_decoded_and_escaped_again() {
 #[test]
 fn attribute_values_are_normalized_and_escaped_again() {
     let doc = GraphMl::parse(
-        "<graphml><graph><node id=\"a&#10;b\t&quot;c&quot; &lt;&gt;\"/></graph></graphml>",
+        "<graphml><graph><node id=\"a&#10;b\t&quot;c&quot; &lt;&gt;&#9;&#13;\"/></graph></graphml>",
     )
     .unwrap();
-    assert_eq!(doc.graphs[0].nodes[0].id, "a\nb \"c\" <>");
+    assert_eq!(doc.graphs[0].nodes[0].id, "a\nb \"c\" <>\t\r");
     assert!(
         doc.to_xml()
-            .contains(r#"<node id="a&#10;b &quot;c&quot; &lt;&gt;"/>"#)
+            .contains(r#"<node id="a&#10;b &quot;c&quot; &lt;&gt;&#9;&#13;"/>"#)
     );
 }
 

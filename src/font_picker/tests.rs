@@ -78,7 +78,8 @@ impl Harness {
         Popup::is_any_open(&self.driver.ctx)
     }
 
-    /// The families listed in view, top to bottom.
+    /// The families laid out, top to bottom: those in view, then the next
+    /// one, which `ScrollArea::show_rows` adds below the view.
     fn listed(&self) -> Vec<&str> {
         let mut rows: Vec<_> = self.rows().collect();
         rows.sort_by(|a, b| a.bounds().unwrap().y0.total_cmp(&b.bounds().unwrap().y0));
@@ -160,9 +161,12 @@ fn arrows_move_the_highlight_within_the_families_listed() {
     assert_eq!(harness.highlighted(), Some("Serif"));
     harness.press(Key::ArrowUp);
     assert_eq!(harness.highlighted(), Some("Noto Serif"));
-    // The arrows moved no cursor through the field.
-    harness.type_text("x");
-    assert!(harness.shows("x"));
+    // The arrows moved no cursor through the field, where ArrowUp would
+    // have put the "e" first.
+    harness.type_text("s");
+    harness.press(Key::ArrowUp);
+    harness.type_text("e");
+    assert!(harness.shows("se"));
 }
 
 #[test]
@@ -230,6 +234,8 @@ fn enter_picks_nothing_when_nothing_matches() {
     assert!(harness.shows("No matches"));
     harness.press(Key::Enter);
     assert!(harness.is_open());
+    // Still there to type in.
+    assert!(harness.driver.ctx.text_edit_focused());
     assert_eq!(harness.picked, Vec::<String>::new());
 }
 
@@ -290,8 +296,8 @@ fn moving_the_highlight_scrolls_only_as_far_as_it_takes() {
     assert_eq!(harness.highlighted(), Some("Family 40"));
     // At the top, the rest below it.
     let listed = harness.listed();
+    assert_eq!(listed.first(), Some(&"Family 40"), "{listed:?}");
     assert!(listed.contains(&"Family 50"), "{listed:?}");
-    assert!(!listed.contains(&"Family 38"), "{listed:?}");
 }
 
 #[test]

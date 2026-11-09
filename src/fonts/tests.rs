@@ -98,6 +98,8 @@ fn only_label_families_are_provided() {
         FontFamily::Proportional,
         FontFamily::Monospace,
         FontFamily::Name("Hack".into()),
+        // As a label's, but without the prefix.
+        FontFamily::Name("plain:Hack".into()),
     ] {
         assert!(fonts.fonts_for_family(&family).is_empty(), "{family:?}");
     }

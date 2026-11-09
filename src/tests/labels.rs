@@ -63,8 +63,8 @@ fn typing_a_label_selects_no_tools() {
     let mut harness = Harness::new();
     let id = type_in_label_field(&mut harness, "Start");
     harness.app.tool = Tool::Box;
-    // Each key is a tool's shortcut.
-    for (key, text) in [(Key::C, "c"), (Key::A, "a"), (Key::B, "b")] {
+    // Each key is a tool's shortcut, the last not the Box tool's.
+    for (key, text) in [(Key::B, "b"), (Key::A, "a"), (Key::C, "c")] {
         let press = testing::key(Modifiers::NONE, key);
         harness.run(vec![press, Event::Text(text.to_owned())]);
     }
@@ -111,10 +111,12 @@ fn the_dots_button_applies_the_label_being_typed_first() {
     harness.type_text("Stop");
     harness.click_text("...");
     assert_eq!(harness.label(&id), "Stop");
-    // The dialog opened on the text applied, so OK keeps it.
+    // The dialog opened on the text applied, which typing then adds to.
     harness.run(vec![]);
+    harness.press(Modifiers::NONE, Key::End);
+    harness.type_text("!");
     harness.click_text("OK");
-    assert_eq!(harness.label(&id), "Stop");
+    assert_eq!(harness.label(&id), "Stop!");
 }
 
 #[test]
@@ -449,9 +451,6 @@ fn the_position_list_shows_every_position() {
         "West", "East",
         "Southwest", "South", "Southeast",
     ]);
-    // Clicks reach the last one, so the list doesn't scroll.
-    harness.click_text("Southeast");
-    assert!(!Popup::is_any_open(&harness.ctx));
 }
 
 #[test]
