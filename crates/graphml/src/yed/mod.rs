@@ -44,8 +44,14 @@ impl Keys {
     }
 
     /// Like [`Keys::find`], but declares the keys first if they're missing,
-    /// along with the `y` namespace prefix new graphics use.
+    /// along with the GraphML and `y` namespaces yEd needs.
     pub fn ensure(doc: &mut GraphMl) -> Self {
+        // A prefixed document has GraphML's namespace on its prefix.
+        if doc.prefix.is_none() {
+            doc.attributes
+                .entry("xmlns".to_owned())
+                .or_insert_with(|| crate::NAMESPACE.to_owned());
+        }
         doc.attributes
             .entry("xmlns:y".to_owned())
             .or_insert_with(|| NAMESPACE.to_owned());
@@ -133,7 +139,7 @@ fn set_graphics(data: &mut Vec<Data>, key: &Option<String>, element: Element) {
     }
 }
 
-/// An empty document with the namespaces and keys a new yEd file has.
+/// An empty document with the namespaces, keys and resources of a new yEd file.
 pub fn new_document() -> GraphMl {
     GraphMl::parse(EMPTY_DOCUMENT).expect("the template is valid GraphML")
 }
@@ -151,4 +157,7 @@ const EMPTY_DOCUMENT: &str = r#"<graphml xmlns="http://graphml.graphdrawing.org/
   <key attr.name="description" attr.type="string" for="edge" id="d9"/>
   <key for="edge" id="d10" yfiles.type="edgegraphics"/>
   <graph edgedefault="directed" id="G"/>
+  <data key="d7">
+    <y:Resources/>
+  </data>
 </graphml>"#;

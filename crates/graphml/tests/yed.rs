@@ -794,6 +794,9 @@ fn new_graphics_look_like_yeds() {
       </data>
     </edge>
   </graph>
+  <data key="d7">
+    <y:Resources/>
+  </data>
 </graphml>
 "##;
     assert_eq!(doc.to_xml(), expected);
@@ -836,13 +839,14 @@ fn new_edge_labels_look_like_yeds() {
 }
 
 #[test]
-fn ensure_declares_missing_keys_and_namespace() {
+fn ensure_declares_missing_keys_and_namespaces() {
     let mut doc =
         GraphMl::parse(r#"<graphml><key id="d0" for="node" attr.name="label"/><graph/></graphml>"#)
             .unwrap();
     assert_eq!(Keys::find(&doc), Keys::default());
     let keys = Keys::ensure(&mut doc);
     assert_eq!(Keys::find(&doc), keys);
+    assert_eq!(doc.attributes["xmlns"], graphml::NAMESPACE);
     assert_eq!(doc.attributes["xmlns:y"], NAMESPACE);
     let declared: Vec<_> = doc
         .keys
@@ -863,6 +867,16 @@ fn ensure_declares_missing_keys_and_namespace() {
             ("d2", KeyDomain::Edge, Some("edgegraphics")),
         ]
     );
+
+    // A prefix stands for GraphML's namespace already.
+    let mut prefixed =
+        GraphMl::parse(r#"<g:graphml xmlns:g="http://graphml.graphdrawing.org/xmlns"/>"#).unwrap();
+    Keys::ensure(&mut prefixed);
+    assert_eq!(prefixed.attributes.get("xmlns"), None);
+    // yEd's files have everything already.
+    let (mut doc, keys) = fixture();
+    assert_eq!(Keys::ensure(&mut doc), keys);
+    assert_eq!(doc.to_xml(), YED);
 }
 
 #[test]

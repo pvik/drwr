@@ -9,7 +9,7 @@ fn rectangle() -> NodeGraphics {
 }
 
 #[test]
-fn adding_to_an_empty_document_adds_a_graph_and_keys() {
+fn adding_to_an_empty_document_adds_a_graph_keys_and_namespaces() {
     let mut doc = GraphMl::default();
     assert_eq!(add_node(&mut doc, &rectangle()), "n0");
 
@@ -23,6 +23,9 @@ fn adding_to_an_empty_document_adds_a_graph_and_keys() {
     assert_eq!(read.len(), 1);
     assert_eq!(read[0].0, "n0");
     assert_eq!(read[0].1.to_element(), rectangle().to_element());
+    // Which yEd needs to read the file.
+    assert_eq!(doc.attributes["xmlns"], graphml::NAMESPACE);
+    assert_eq!(doc.attributes["xmlns:y"], yed::NAMESPACE);
 }
 
 #[test]

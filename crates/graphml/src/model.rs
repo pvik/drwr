@@ -27,6 +27,9 @@ macro_rules! keyword_enum {
     };
 }
 
+/// The GraphML namespace, the default one in yEd's files.
+pub const NAMESPACE: &str = "http://graphml.graphdrawing.org/xmlns";
+
 /// A GraphML document: the `<graphml>` root and everything in it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphMl {
