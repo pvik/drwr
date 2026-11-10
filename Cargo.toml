@@ -12,6 +12,9 @@ edition = "2024"
 # Embeds SVG nodes' drawings in exports. usvg uses it, so it builds nothing new.
 base64 = "0.22.1"
 directories = "6.0.0"
+# fs::canonicalize, minus the \\?\ it puts before Windows paths where that's
+# safe, as Recent Files shows them.
+dunce = "1.0.5"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_extras = { version = "0.37.0", features = ["svg"] }

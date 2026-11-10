@@ -93,7 +93,7 @@ fn recent_files_outlast_a_restart() {
     let dir = ScratchDir::new("settings-recent");
     let file = dir.path("a.graphml");
     std::fs::copy(FIXTURE, &file).unwrap();
-    let file = std::fs::canonicalize(file).unwrap();
+    let file = dunce::canonicalize(file).unwrap();
     start(&dir).app.open(&file).unwrap();
     assert_eq!(start(&dir).app.config.recent_files(), [file]);
 }

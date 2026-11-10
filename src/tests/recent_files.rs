@@ -8,7 +8,7 @@ use crate::testing::ScratchDir;
 fn copy_fixture(dir: &ScratchDir, name: &str) -> PathBuf {
     let path = dir.path(name);
     std::fs::copy(FIXTURE, &path).unwrap();
-    std::fs::canonicalize(path).unwrap()
+    dunce::canonicalize(path).unwrap()
 }
 
 /// The label of the File > Recent Files item for `path`.
@@ -55,7 +55,7 @@ fn files_opened_and_saved_are_listed_latest_first() {
     let mut harness = Harness::open(&opened);
     harness.press(CTRL.plus(Modifiers::SHIFT), Key::S);
     harness.answer(Some(&dir.path("saved.graphml")));
-    let saved = std::fs::canonicalize(dir.path("saved.graphml")).unwrap();
+    let saved = dunce::canonicalize(dir.path("saved.graphml")).unwrap();
     let listed = [saved.clone(), opened.clone()];
     assert_eq!(harness.app.config.recent_files(), listed);
 

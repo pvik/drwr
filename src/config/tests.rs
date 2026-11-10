@@ -229,7 +229,7 @@ fn files(dir: &ScratchDir, names: &[&str]) -> Vec<PathBuf> {
     let paths = names.iter().map(|name| {
         let path = dir.path(name);
         fs::write(&path, "").unwrap();
-        fs::canonicalize(path).unwrap()
+        dunce::canonicalize(path).unwrap()
     });
     paths.collect()
 }
@@ -325,9 +325,13 @@ fn without_a_folder_recent_files_last_until_drwr_quits() {
 #[test]
 fn the_recent_files_file_lists_paths() {
     let dir = ScratchDir::new("config-recent-text");
-    let [a, b] = files(&dir, &["a.graphml", "b \"c\".graphml"])
-        .try_into()
-        .unwrap();
+    #[cfg(not(windows))]
+    let name = "b \"c\".graphml";
+    // Windows names can't hold double quotes, but its paths' backslashes
+    // need escaping too.
+    #[cfg(windows)]
+    let name = "b 'c'.graphml";
+    let [a, b] = files(&dir, &["a.graphml", name]).try_into().unwrap();
     let mut config = Config::load_from(dir.path(""));
     config.add_recent_file(&a);
     config.add_recent_file(&b);
@@ -336,6 +340,23 @@ fn the_recent_files_file_lists_paths() {
     assert_eq!(
         text,
         format!("files = [\n    {},\n    {},\n]\n", quoted(&b), quoted(&a))
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn recent_files_are_listed_without_windows_verbatim_prefix() {
+    let dir = ScratchDir::new("config-recent-plain");
+    let path = dir.path("a.graphml");
+    fs::write(&path, "").unwrap();
+    let mut config = Config::load_from(dir.path(""));
+    config.add_recent_file(&path);
+    // As fs::canonicalize has it, Recent Files would show \\?\C:\….
+    let listed = config.recent_files()[0].to_str().unwrap();
+    assert!(!listed.starts_with(r"\\?\"), "{listed}");
+    assert_eq!(
+        fs::canonicalize(listed).unwrap(),
+        fs::canonicalize(path).unwrap()
     );
 }
 
