@@ -30,6 +30,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
 toml = "1.2.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Has quitting ask about unsaved changes. eframe uses them, so they build
+# nothing new.
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow"] }
+
 [target.'cfg(windows)'.dependencies]
 # Attaches Windows release builds to the console they're started from. eframe
 # uses it, so it builds nothing new.

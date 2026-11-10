@@ -118,6 +118,12 @@ impl Config {
         }
     }
 
+    /// Whether `settings` are as last written, or found.
+    #[cfg(any(target_os = "macos", test))]
+    pub fn has_written(&self, settings: &Settings) -> bool {
+        *settings == self.saved
+    }
+
     fn write_settings(&mut self, settings: &Settings) {
         if let Some(folder) = &self.folder {
             write(&folder.join(SETTINGS), settings);
