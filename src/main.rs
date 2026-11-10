@@ -1,3 +1,9 @@
+// Windows release builds open no console window beside the app's.
+#![cfg_attr(
+    all(windows, not(debug_assertions), not(test)),
+    windows_subsystem = "windows"
+)]
+
 mod action;
 mod atomic_file;
 mod canvas;
@@ -66,6 +72,13 @@ const NAME: &str = "drwr";
 const MAX_SVG_SIZE: f32 = 100.0;
 
 fn main() -> eframe::Result {
+    // Without a console of their own, Windows release builds print to the one
+    // they were started from, if any.
+    #[cfg(all(windows, not(debug_assertions)))]
+    unsafe {
+        use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
     match cli::parse(std::env::args_os().skip(1)) {
         Ok(cli::Command::Run { file }) => {
             let mut app = DrwrApp::new(Fonts::system(), Config::load());

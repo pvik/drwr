@@ -26,3 +26,8 @@ rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
 toml = "1.2.1"
+
+[target.'cfg(windows)'.dependencies]
+# Attaches Windows release builds to the console they're started from. eframe
+# uses it, so it builds nothing new.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
