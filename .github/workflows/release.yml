@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    # Commits that change only docs, CI or tests leave the app as it was.
+    paths:
+      - 'src/**'
+      - '!src/tests/**'
+      - '!src/**/tests.rs'
+      - '!src/testing.rs'
+      - 'crates/**'
+      - '!crates/*/tests/**'
+      - '!crates/**/tests.rs'
+      - 'assets/**'
+      - 'build.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # Unlike the implicit default, also on Windows and with pipefail.
+    shell: bash
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest Ubuntu runner, so the binary also runs with older glibcs.
+          - { name: linux-x86_64, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin }
+          - { name: macos-arm64, os: macos-latest, target: aarch64-apple-darwin }
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            # Links the C runtime in, as not every Windows has vcruntime140.dll.
+            rustflags: -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      PACKAGE: drwr-${{ matrix.name }}
+      TARGET: ${{ matrix.target }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --no-self-update --target ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package for Linux
+        if: runner.os == 'Linux'
+        run: |
+          mkdir "$PACKAGE"
+          cp "target/$TARGET/release/drwr" LICENSE.md README.md "$PACKAGE"
+          tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
+
+      - name: Package for macOS
+        if: runner.os == 'macOS'
+        run: |
+          contents=drwr.app/Contents
+          mkdir -p "$contents/MacOS" "$contents/Resources"
+          cp "target/$TARGET/release/drwr" "$contents/MacOS"
+          cp LICENSE.md "$contents/Resources"
+          version=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "drwr") | .version')
+          /usr/libexec/PlistBuddy \
+            -c "Add :CFBundleExecutable string drwr" \
+            -c "Add :CFBundleIdentifier string io.github.pvik.drwr" \
+            -c "Add :CFBundleName string drwr" \
+            -c "Add :CFBundlePackageType string APPL" \
+            -c "Add :CFBundleShortVersionString string $version" \
+            -c "Add :CFBundleVersion string $version" \
+            -c "Add :NSHighResolutionCapable bool true" \
+            "$contents/Info.plist"
+          # Apple silicon runs no unsigned code, so sign it ad hoc.
+          codesign --force --sign - drwr.app
+          ditto -c -k --keepParent drwr.app "$PACKAGE.zip"
+
+      - name: Package for Windows
+        if: runner.os == 'Windows'
+        run: |
+          mkdir "$PACKAGE"
+          cp "target/$TARGET/release/drwr.exe" LICENSE.md README.md "$PACKAGE"
+          7z a "$PACKAGE.zip" "$PACKAGE"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PACKAGE }}
+          path: ${{ env.PACKAGE }}.*
+          if-no-files-found: error
+
+  release:
+    needs: [test, build]
+    # Manual runs on other branches only build.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Look for an unreleased version
+        id: version
+        run: |
+          tag=v$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "drwr") | .version')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          tagged=$(git ls-remote --tags origin "refs/tags/$tag")
+          if [ -n "$tagged" ]; then
+            echo "$tag is already tagged, so there's nothing to release."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.version.outputs.new == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        if: steps.version.outputs.new == 'true'
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          sha256sum -- * > SHA256SUMS
+          gh release create "$TAG" --target "$GITHUB_SHA" --generate-notes -- *
