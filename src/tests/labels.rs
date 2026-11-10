@@ -88,6 +88,22 @@ fn ctrl_arrows_in_a_label_field_move_the_text_cursor() {
 }
 
 #[test]
+fn option_and_cmd_arrows_in_a_label_field_move_the_text_cursor_on_macs() {
+    let mut harness = Harness::mac();
+    let id = type_in_label_field(&mut harness, "Start");
+    harness.type_text("One two");
+    // Back a word, as Macs keep Ctrl+arrows for switching spaces.
+    harness.press(Modifiers::ALT, Key::ArrowLeft);
+    harness.type_text("big ");
+    // To the start, rather than moving the node.
+    harness.press(CMD, Key::ArrowLeft);
+    harness.type_text("A ");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.label(&id), "A One big two");
+    assert_eq!(harness.graphics(&id).geometry, new_box().geometry);
+}
+
+#[test]
 fn the_dots_button_edits_the_label_in_a_dialog() {
     let mut harness = Harness::new();
     let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));

@@ -232,3 +232,16 @@ fn text_reads_like_the_shortcut() {
     let grid = text(&ctx, &Action::ToggleGridLines);
     assert_eq!(grid.as_deref(), Some("Ctrl+'"));
 }
+
+#[test]
+fn text_reads_like_the_shortcut_on_macs() {
+    let ctx = Context::default();
+    ctx.set_os(OperatingSystem::Mac);
+    // Egui spells out Cmd if its fonts lack ⌘, which it can tell only once a
+    // frame has loaded them.
+    frame(&ctx, vec![], |_| {});
+    assert_eq!(text(&ctx, &Action::Open).as_deref(), Some("Cmd+O"));
+    assert_eq!(text(&ctx, &Action::SaveAs).as_deref(), Some("Shift+Cmd+S"));
+    let grid = text(&ctx, &Action::ToggleGridLines);
+    assert_eq!(grid.as_deref(), Some("Cmd+'"));
+}
