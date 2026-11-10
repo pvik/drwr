@@ -65,6 +65,20 @@ fn a_change_soon_after_another_is_written_a_second_later() {
 }
 
 #[test]
+fn quitting_at_once_waits_for_settings_to_be_written_and_changes_saved() {
+    let dir = ScratchDir::new("settings-quit");
+    let mut harness = start(&dir);
+    assert!(harness.app.can_quit_at_once());
+    harness.press(CTRL, Key::Quote);
+    harness.press(CTRL, Key::Quote);
+    assert!(!harness.app.can_quit_at_once());
+    harness.wait(config::SAVE_INTERVAL);
+    assert!(harness.app.can_quit_at_once());
+    harness.draw_box();
+    assert!(!harness.app.can_quit_at_once());
+}
+
+#[test]
 fn the_new_item_style_and_export_settings_outlast_a_restart() {
     let dir = ScratchDir::new("settings-style");
     let mut harness = start(&dir);
@@ -93,7 +107,7 @@ fn recent_files_outlast_a_restart() {
     let dir = ScratchDir::new("settings-recent");
     let file = dir.path("a.graphml");
     std::fs::copy(FIXTURE, &file).unwrap();
-    let file = std::fs::canonicalize(file).unwrap();
+    let file = dunce::canonicalize(file).unwrap();
     start(&dir).app.open(&file).unwrap();
     assert_eq!(start(&dir).app.config.recent_files(), [file]);
 }

@@ -18,13 +18,14 @@ mod view;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use eframe::App as _;
+use egui::os::OperatingSystem;
 use egui::{
     Color32, Event, Key, Modifiers, Popup, Pos2, RawInput, Rect, Shape, Stroke, Vec2, vec2,
 };
 use graphml::yed::{self, NodeGraphics, NodeKind, ShapeType};
 
 use super::*;
-use crate::testing::{self, CTRL, ScratchDir, button};
+use crate::testing::{self, CMD, CTRL, ScratchDir, button};
 
 impl DrwrApp {
     /// The id of the selected node.
@@ -57,9 +58,20 @@ impl Harness {
         Harness::with_config(Config::default())
     }
 
+    /// The app as on macOS, where shortcuts take Cmd and text fields take
+    /// the Mac's keys.
+    fn mac() -> Self {
+        let harness = Harness::new();
+        harness.ctx.set_os(OperatingSystem::Mac);
+        harness
+    }
+
     /// The app keeping its settings and recent files with `config`.
     fn with_config(config: Config) -> Self {
         let ctx = egui::Context::default();
+        // So that keys and shortcut labels work as on Linux wherever tests
+        // run, with `Harness::mac` for macOS's.
+        ctx.set_os(OperatingSystem::Nix);
         let app = DrwrApp::new(Fonts::default(), config);
         app.init(&ctx);
         let mut harness = Harness {
@@ -223,6 +235,11 @@ impl Harness {
 
     fn press(&mut self, modifiers: Modifiers, key: Key) {
         self.run(vec![testing::key(modifiers, key)]);
+    }
+
+    /// Ctrl, or Cmd as on macOS.
+    fn command(&self) -> Modifiers {
+        if self.ctx.os().is_mac() { CMD } else { CTRL }
     }
 
     /// Does `act` with Ctrl held.
@@ -526,7 +543,7 @@ fn type_in_label_field(harness: &mut Harness, text: &str) -> String {
     harness.click(vec2(150.0, 60.0));
     // The side panel is painted first, so this is its field, not the canvas.
     harness.click_text(text);
-    harness.press(CTRL, Key::A);
+    harness.press(harness.command(), Key::A);
     assert!(harness.ctx.text_edit_focused());
     id
 }

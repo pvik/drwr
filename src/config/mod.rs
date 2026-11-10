@@ -118,6 +118,12 @@ impl Config {
         }
     }
 
+    /// Whether `settings` are as last written, or found.
+    #[cfg(any(target_os = "macos", test))]
+    pub fn has_written(&self, settings: &Settings) -> bool {
+        *settings == self.saved
+    }
+
     fn write_settings(&mut self, settings: &Settings) {
         if let Some(folder) = &self.folder {
             write(&folder.join(SETTINGS), settings);
@@ -134,7 +140,7 @@ impl Config {
     /// Puts the file at `path` first in the recent files.
     pub fn add_recent_file(&mut self, path: &Path) {
         // So that a file reached by two paths is listed once.
-        let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         // TOML strings can't hold the others.
         if path.to_str().is_none() {
             return;

@@ -121,6 +121,15 @@ fn dragging_the_selected_node_moves_it() {
 }
 
 #[test]
+fn cmd_arrows_move_the_selected_node_on_macs() {
+    let mut harness = Harness::mac();
+    let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));
+    harness.click(vec2(150.0, 60.0));
+    harness.press(CMD, Key::ArrowRight);
+    assert_eq!(harness.graphics(&id).geometry.x, 101.0);
+}
+
+#[test]
 fn ctrl_arrows_move_the_selected_node() {
     let mut harness = Harness::new();
     let id = document::add_node(harness.app.doc.graphml_mut(), &labelled_box("Start"));

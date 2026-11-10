@@ -1,3 +1,9 @@
+// Windows release builds open no console window beside the app's.
+#![cfg_attr(
+    all(windows, not(debug_assertions), not(test)),
+    windows_subsystem = "windows"
+)]
+
 mod action;
 mod atomic_file;
 mod canvas;
@@ -15,6 +21,8 @@ mod fonts;
 mod history;
 mod label_position;
 mod line_type;
+#[cfg(target_os = "macos")]
+mod macos;
 mod menu;
 mod prompt;
 mod scene;
@@ -66,6 +74,13 @@ const NAME: &str = "drwr";
 const MAX_SVG_SIZE: f32 = 100.0;
 
 fn main() -> eframe::Result {
+    // Without a console of their own, Windows release builds print to the one
+    // they were started from, if any.
+    #[cfg(all(windows, not(debug_assertions)))]
+    unsafe {
+        use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
     match cli::parse(std::env::args_os().skip(1)) {
         Ok(cli::Command::Run { file }) => {
             let mut app = DrwrApp::new(Fonts::system(), Config::load());
@@ -94,6 +109,8 @@ fn run_gui(app: DrwrApp) -> eframe::Result {
         NAME,
         eframe::NativeOptions::default(),
         Box::new(|cc| {
+            #[cfg(target_os = "macos")]
+            macos::ask_before_quitting();
             app.init(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
@@ -298,6 +315,16 @@ impl DrwrApp {
         self.modified = *self.doc.graphml() != self.saved;
         self.checked = self.doc.version();
         self.modified
+    }
+
+    /// Whether quitting right away would lose nothing: no changes are unsaved
+    /// or being typed, no export is being written, and no settings wait to be.
+    #[cfg(any(target_os = "macos", test))]
+    fn can_quit_at_once(&self) -> bool {
+        !self.modified
+            && !self.typing
+            && self.exports.is_empty()
+            && self.config.has_written(&self.settings)
     }
 
     /// Updates whether the graph is modified, if it changed since that was
@@ -958,6 +985,8 @@ impl eframe::App for DrwrApp {
             ui.ctx().request_repaint_after_secs(wait as f32);
         }
         self.typing = ui.ctx().text_edit_focused();
+        #[cfg(target_os = "macos")]
+        macos::set_can_quit_at_once(self.can_quit_at_once());
     }
 }
 

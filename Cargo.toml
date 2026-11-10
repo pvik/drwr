@@ -12,6 +12,9 @@ edition = "2024"
 # Embeds SVG nodes' drawings in exports. usvg uses it, so it builds nothing new.
 base64 = "0.22.1"
 directories = "6.0.0"
+# fs::canonicalize, minus the \\?\ it puts before Windows paths where that's
+# safe, as Recent Files shows them.
+dunce = "1.0.5"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_extras = { version = "0.37.0", features = ["svg"] }
@@ -26,3 +29,14 @@ rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
 toml = "1.2.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Has quitting ask about unsaved changes. eframe uses them, so they build
+# nothing new.
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow"] }
+
+[target.'cfg(windows)'.dependencies]
+# Attaches Windows release builds to the console they're started from. eframe
+# uses it, so it builds nothing new.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }

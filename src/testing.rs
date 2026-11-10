@@ -12,6 +12,8 @@ use egui::{
 
 /// Ctrl as egui-winit reports it outside macOS.
 pub const CTRL: Modifiers = Modifiers::CTRL.plus(Modifiers::COMMAND);
+/// Cmd as egui-winit reports it on macOS.
+pub const CMD: Modifiers = Modifiers::MAC_CMD.plus(Modifiers::COMMAND);
 
 /// A press of `key` with `modifiers` held.
 pub fn key(modifiers: Modifiers, key: Key) -> Event {
