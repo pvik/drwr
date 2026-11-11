@@ -1,4 +1,5 @@
-//! Embeds the short commit hash (or `unknown`) for `drwr -version`.
+//! Embeds the short commit hash (or `unknown`) for `drwr -version` and the
+//! About dialog.
 
 use std::process::Command;
 
