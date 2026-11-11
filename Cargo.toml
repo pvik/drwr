@@ -5,8 +5,9 @@ default-members = [".", "crates/graphml"]
 
 [package]
 name = "drwr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
+homepage = "https://pvik.github.io/drwr/"
 
 [dependencies]
 # Embeds SVG nodes' drawings in exports. usvg uses it, so it builds nothing new.
