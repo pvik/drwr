@@ -196,6 +196,201 @@ fn points_show_guides_to_the_points_they_line_up_with() {
     assert_eq!(guides, [guide]);
 }
 
+/// Targets reaching 5 points, with nodes in `rects`.
+fn nodes(rects: &[Rect]) -> Targets {
+    let mut targets = Targets::new(5.0);
+    for &rect in rects {
+        targets.add_node(rect);
+    }
+    targets
+}
+
+fn block(rect: Rect) -> Vec<Feature> {
+    Feature::block(&[rect])
+}
+
+/// A row of nodes 0 to 100 and 300 to 400 along x, 50 high.
+fn two_apart() -> Targets {
+    nodes(&[rect(0.0, 0.0, 100.0, 50.0), rect(300.0, 0.0, 100.0, 50.0)])
+}
+
+#[test]
+fn blocks_snap_halfway_between_the_nodes_beside_them() {
+    let targets = two_apart();
+    // 3 left of halfway.
+    assert_eq!(
+        targets.snap(&block(rect(147.0, 10.0, 100.0, 30.0))),
+        [Some(3.0), None]
+    );
+    let gaps = EqualGaps {
+        axis: Axis::X,
+        gaps: vec![[100.0, 150.0], [250.0, 300.0]],
+        band: [10.0, 40.0],
+        start: 0.0,
+    };
+    let snapped = block(rect(150.0, 10.0, 100.0, 30.0));
+    assert_eq!(targets.equal_gaps(&snapped), [gaps]);
+}
+
+#[test]
+fn blocks_snap_as_far_past_a_node_as_it_is_past_the_next() {
+    // 2 further from the second node than it is from the first.
+    let targets = nodes(&[rect(0.0, 0.0, 100.0, 50.0), rect(150.0, 0.0, 100.0, 50.0)]);
+    assert_eq!(
+        targets.snap(&block(rect(302.0, 0.0, 60.0, 50.0))),
+        [Some(-2.0), None]
+    );
+    let gaps = EqualGaps {
+        axis: Axis::X,
+        gaps: vec![[100.0, 150.0], [250.0, 300.0]],
+        band: [0.0, 50.0],
+        start: 0.0,
+    };
+    let snapped = block(rect(300.0, 0.0, 60.0, 50.0));
+    assert_eq!(targets.equal_gaps(&snapped), [gaps]);
+    // And the other way, 2 nearer.
+    let targets = nodes(&[rect(300.0, 0.0, 100.0, 50.0), rect(450.0, 0.0, 100.0, 50.0)]);
+    assert_eq!(
+        targets.snap(&block(rect(192.0, 0.0, 60.0, 50.0))),
+        [Some(-2.0), None]
+    );
+}
+
+#[test]
+fn columns_space_too() {
+    let targets = nodes(&[rect(0.0, 0.0, 50.0, 100.0), rect(0.0, 300.0, 50.0, 100.0)]);
+    assert_eq!(
+        targets.snap(&block(rect(10.0, 147.0, 30.0, 100.0))),
+        [None, Some(3.0)]
+    );
+}
+
+#[test]
+fn a_block_of_several_boxes_spaces_as_one() {
+    let boxes = [rect(147.0, 10.0, 40.0, 30.0), rect(207.0, 20.0, 40.0, 30.0)];
+    assert_eq!(two_apart().snap(&Feature::block(&boxes)), [Some(3.0), None]);
+}
+
+#[test]
+fn only_nodes_overlapping_the_block_across_are_beside_it() {
+    // The second node is below it.
+    let targets = nodes(&[rect(0.0, 0.0, 100.0, 50.0), rect(300.0, 100.0, 100.0, 50.0)]);
+    assert_eq!(
+        targets.snap(&block(rect(147.0, 10.0, 100.0, 30.0))),
+        [None, None]
+    );
+    // Beside a taller block, but not beside each other.
+    let targets = nodes(&[rect(0.0, 0.0, 100.0, 50.0), rect(300.0, 150.0, 100.0, 50.0)]);
+    assert_eq!(
+        targets.snap(&block(rect(147.0, 0.0, 100.0, 200.0))),
+        [None, None]
+    );
+    // Its top only touches their bottoms.
+    assert_eq!(
+        two_apart().snap(&block(rect(147.0, 50.0, 100.0, 30.0))),
+        [None, None]
+    );
+}
+
+#[test]
+fn only_the_nearest_nodes_count() {
+    let mut targets = two_apart();
+    // Between the block and the node right of it.
+    targets.add_node(rect(260.0, 0.0, 20.0, 50.0));
+    assert_eq!(
+        targets.snap(&block(rect(147.0, 10.0, 100.0, 30.0))),
+        [None, None]
+    );
+}
+
+#[test]
+fn touching_nodes_make_no_gaps() {
+    let targets = nodes(&[rect(0.0, 0.0, 100.0, 50.0), rect(100.0, 0.0, 100.0, 50.0)]);
+    let touching = block(rect(200.0, 0.0, 50.0, 50.0));
+    assert_eq!(
+        targets.snap(&block(rect(202.0, 0.0, 50.0, 50.0))),
+        [None, None]
+    );
+    assert_eq!(targets.equal_gaps(&touching), []);
+}
+
+#[test]
+fn the_nearest_of_gaps_and_lines_wins() {
+    let moved = rect(147.0, 32.0, 100.0, 6.0);
+    let features = [lines_of(moved), block(moved)].concat();
+    // Below, its left side 2 right of the block's, nearer than halfway.
+    let mut targets = two_apart();
+    targets.add_node(rect(149.0, 200.0, 30.0, 30.0));
+    assert_eq!(targets.snap(&features), [Some(2.0), None]);
+    // 4 right, further.
+    let mut targets = two_apart();
+    targets.add_node(rect(151.0, 200.0, 30.0, 30.0));
+    assert_eq!(targets.snap(&features), [Some(3.0), None]);
+}
+
+#[test]
+fn a_run_takes_in_every_equal_gap_along_the_row() {
+    let row = [0.0, 150.0, 300.0].map(|x| rect(x, 0.0, 100.0, 50.0));
+    let mut targets = nodes(&row);
+    // Nearer the first node than the gaps.
+    targets.add_node(rect(-70.0, 0.0, 60.0, 50.0));
+    let gaps = EqualGaps {
+        axis: Axis::X,
+        gaps: vec![[100.0, 150.0], [250.0, 300.0], [400.0, 450.0]],
+        band: [0.0, 50.0],
+        start: 0.0,
+    };
+    let snapped = block(rect(450.0, 0.0, 60.0, 50.0));
+    assert_eq!(targets.equal_gaps(&snapped), [gaps]);
+}
+
+#[test]
+fn a_run_goes_both_ways_from_halfway() {
+    let row = [0.0, 150.0, 400.0, 550.0].map(|x| rect(x, 0.0, 100.0, 50.0));
+    let gaps = EqualGaps {
+        axis: Axis::X,
+        gaps: vec![
+            [100.0, 150.0],
+            [250.0, 300.0],
+            [350.0, 400.0],
+            [500.0, 550.0],
+        ],
+        band: [0.0, 50.0],
+        start: 0.0,
+    };
+    let snapped = block(rect(300.0, 0.0, 50.0, 50.0));
+    assert_eq!(nodes(&row).equal_gaps(&snapped), [gaps]);
+}
+
+#[test]
+fn unequal_gaps_either_side_make_a_run_each() {
+    let row = [(0.0, 100.0), (150.0, 100.0), (380.0, 100.0), (500.0, 100.0)];
+    let targets = nodes(&row.map(|(x, width)| rect(x, 0.0, width, 50.0)));
+    let run = |gaps: Vec<[f64; 2]>| EqualGaps {
+        axis: Axis::X,
+        gaps,
+        band: [0.0, 50.0],
+        start: 0.0,
+    };
+    let snapped = block(rect(300.0, 0.0, 60.0, 50.0));
+    assert_eq!(
+        targets.equal_gaps(&snapped),
+        [
+            run(vec![[100.0, 150.0], [250.0, 300.0]]),
+            run(vec![[360.0, 380.0], [480.0, 500.0]]),
+        ]
+    );
+}
+
+#[test]
+fn nodes_in_a_run_all_overlap_one_band() {
+    // The first node is beside the block, but not beside the second node.
+    let targets = nodes(&[rect(0.0, 60.0, 100.0, 40.0), rect(150.0, 0.0, 100.0, 40.0)]);
+    let tall = |x: f64| block(rect(x, 0.0, 60.0, 100.0));
+    assert_eq!(targets.snap(&tall(302.0)), [None, None]);
+    assert_eq!(targets.equal_gaps(&tall(300.0)), []);
+}
+
 fn point(x: f64, y: f64) -> Point {
     Point { x, y }
 }
