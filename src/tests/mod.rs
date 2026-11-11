@@ -1,3 +1,4 @@
+mod about;
 mod clipboard;
 mod edges;
 mod export;

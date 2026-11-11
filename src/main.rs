@@ -4,6 +4,7 @@
     windows_subsystem = "windows"
 )]
 
+mod about_dialog;
 mod action;
 mod atomic_file;
 mod canvas;
@@ -150,6 +151,8 @@ struct DrwrApp {
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelEdit>,
     export_dialog: ExportDialog,
+    /// Whether the About dialog is open.
+    about: bool,
     /// The exports writing their files in the background.
     exports: Vec<Writing>,
     /// The question waiting for an answer.
@@ -663,6 +666,7 @@ impl DrwrApp {
                 | Action::Save
                 | Action::SaveAs
                 | Action::Export
+                | Action::About
                 | Action::Quit),
             ) => {
                 ctx.memory_mut(|memory| memory.stop_text_input());
@@ -701,6 +705,7 @@ impl DrwrApp {
                 self.file_dialog
                     .open(purpose, Request::InsertSvg, ctx, frame);
             }
+            Action::About => self.about = true,
             Action::Quit => self.close_graph(CloseFor::Quit, ctx, frame),
             Action::Undo => self.step(Document::undo),
             Action::Redo => self.step(Document::redo),
@@ -972,6 +977,7 @@ impl eframe::App for DrwrApp {
         if let Some(accepted) = self.export_dialog.show(ui.ctx()) {
             self.ask_where_to_export(accepted, ui.ctx(), frame);
         }
+        about_dialog::show(ui.ctx(), &mut self.about);
         self.record();
         self.update_modified();
         if std::mem::take(&mut self.close_requested) {

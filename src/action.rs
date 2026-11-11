@@ -19,6 +19,8 @@ pub enum Action {
     /// Asks for an SVG file, which is added as a node in the middle of the
     /// view.
     InsertSvg,
+    /// Opens the About dialog, which shows the version and commit.
+    About,
     Quit,
     /// Undoes the last change to the graph, selecting what was selected
     /// before it.

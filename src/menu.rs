@@ -38,8 +38,14 @@ pub fn show(
                 ui.separator();
                 let export = items(ui, [("Export…", Action::Export, enabled.file)]);
                 ui.separator();
-                let quit = items(ui, [("Quit", Action::Quit, true)]);
-                clicked = open.or(recent).or(save).or(export).or(quit);
+                let app = items(
+                    ui,
+                    [
+                        ("About drwr", Action::About, true),
+                        ("Quit", Action::Quit, true),
+                    ],
+                );
+                clicked = open.or(recent).or(save).or(export).or(app);
             });
             if shortcuts::file_menu_pressed(ui.ctx()) {
                 Popup::open_id(ui.ctx(), Popup::default_response_id(&file.response));
