@@ -206,9 +206,9 @@ fn svg_content(realizer: &Element) -> Option<&Element> {
 /// A new node element with the parts yEd always writes.
 fn template(name: &str) -> Element {
     let border = Element::new("y:BorderStyle");
-    // yEd leaves it out on SVG nodes.
+    // yEd leaves it out on SVG and generic nodes.
     let border = match name {
-        "SVGNode" => border,
+        "SVGNode" | "GenericNode" => border,
         _ => border.with_attr("raised", "false"),
     };
     let element = Element::new(format!("y:{name}"))

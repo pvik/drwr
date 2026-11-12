@@ -909,6 +909,9 @@ fn changing_the_kind_rebuilds_the_element() {
     let data = node(&mut doc, "n1").data[0].element().unwrap();
     assert_eq!(data.name, "y:GenericNode");
     assert!(data.child("Shape").is_none());
+    // As yEd writes generic nodes.
+    let border = data.child("BorderStyle").unwrap();
+    assert_eq!(border.attr("raised"), None);
 }
 
 #[test]

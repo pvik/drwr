@@ -1,0 +1,11 @@
+[package]
+name = "drawio"
+version = "0.1.0"
+edition = "2024"
+description = "Read draw.io diagrams as GraphML with yEd graphics"
+
+[dependencies]
+# Both are built for drwr already: base64 directly, flate2 through usvg.
+base64 = "0.22.1"
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+graphml = { path = "../graphml" }

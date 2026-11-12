@@ -1,7 +1,7 @@
 [workspace]
-members = ["crates/graphml"]
-# Plain `cargo test`/`cargo clippy` should cover the library too.
-default-members = [".", "crates/graphml"]
+members = ["crates/drawio", "crates/graphml"]
+# Plain `cargo test`/`cargo clippy` should cover the libraries too.
+default-members = [".", "crates/drawio", "crates/graphml"]
 
 [package]
 name = "drwr"

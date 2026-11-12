@@ -29,6 +29,17 @@ impl GraphMl {
     }
 }
 
+impl Element {
+    /// Parses any XML document into its root element.
+    pub fn parse(text: &str) -> Result<Self, Error> {
+        let mut parser = Parser::new(text);
+        let root = parser.root("no root element")?;
+        let element = parser.element(root)?;
+        parser.end(&element.name)?;
+        Ok(element)
+    }
+}
+
 struct Parser<'a> {
     reader: Reader<&'a [u8]>,
     text: &'a str,
@@ -102,29 +113,41 @@ impl<'a> Parser<'a> {
     }
 
     fn document(mut self) -> Result<GraphMl, Error> {
-        let root = loop {
-            match self.event()? {
-                (offset, Event::Start(start)) => break Tag::new(start, false, offset, false),
-                (offset, Event::Empty(start)) => break Tag::new(start, true, offset, false),
-                (_, Event::Comment(comment)) => self.comments.push(comment.xml10_content().into()),
-                (_, Event::Decl(_) | Event::DocType(_) | Event::PI(_)) => {}
-                (_, Event::Text(text)) if is_whitespace(&text) => {}
-                (offset, Event::Eof) => return Err(self.error(offset, "no <graphml> element")),
-                (offset, _) => return Err(self.error(offset, "unexpected text")),
-            }
-        };
+        let root = self.root("no <graphml> element")?;
         if root.local_name() != "graphml" {
             let message = format!("expected <graphml>, found <{}>", root.name());
             return Err(self.error(root.offset, message));
         }
         let doc = self.graphml(root)?;
+        self.end("graphml")?;
+        Ok(doc)
+    }
+
+    /// Reads up to the root element, keeping the comments before it.
+    fn root(&mut self, missing: &str) -> Result<Tag<'a>, Error> {
         loop {
             match self.event()? {
-                (_, Event::Eof) => return Ok(doc),
+                (offset, Event::Start(start)) => return Ok(Tag::new(start, false, offset, false)),
+                (offset, Event::Empty(start)) => return Ok(Tag::new(start, true, offset, false)),
+                (_, Event::Comment(comment)) => self.comments.push(comment.xml10_content().into()),
+                (_, Event::Decl(_) | Event::DocType(_) | Event::PI(_)) => {}
+                (_, Event::Text(text)) if is_whitespace(&text) => {}
+                (offset, Event::Eof) => return Err(self.error(offset, missing)),
+                (offset, _) => return Err(self.error(offset, "unexpected text")),
+            }
+        }
+    }
+
+    /// Reads past the root element `name`, after which only comments may follow.
+    fn end(&mut self, name: &str) -> Result<(), Error> {
+        loop {
+            match self.event()? {
+                (_, Event::Eof) => return Ok(()),
                 (_, Event::Comment(_) | Event::PI(_)) => {}
                 (_, Event::Text(text)) if is_whitespace(&text) => {}
                 (offset, _) => {
-                    return Err(self.error(offset, "unexpected content after </graphml>"));
+                    let message = format!("unexpected content after </{name}>");
+                    return Err(self.error(offset, message));
                 }
             }
         }

@@ -1,5 +1,6 @@
 use graphml::{
-    AttrType, Direction, EdgeDefault, Error, GraphMl, KeyDomain, Position, xml::XmlNode,
+    AttrType, Direction, EdgeDefault, Error, GraphMl, KeyDomain, Position,
+    xml::{Element, XmlNode},
 };
 
 const YED: &str = include_str!("fixtures/yed.graphml");
@@ -301,5 +302,25 @@ fn error_messages_include_the_position() {
     assert_eq!(
         err.to_string(),
         "line 2, column 3: unexpected <node> in <graphml>"
+    );
+}
+
+#[test]
+fn any_xml_document_parses_into_its_root_element() {
+    let text = "<?xml version=\"1.0\"?>\n<!-- c -->\n<a x=\"1&#10;2\">\n  <b>t &amp; u</b>\n</a>\n";
+    let root = Element::parse(text).unwrap();
+    assert_eq!((root.name.as_str(), root.attr("x")), ("a", Some("1\n2")));
+    let b = root.child("b").unwrap();
+    assert_eq!(b.text(), "t & u");
+    assert_eq!(root.children.len(), 1);
+
+    let error = |text| match Element::parse(text) {
+        Err(Error::Parse { position, message }) => (position, message),
+        other => panic!("expected a parse error, got {other:?}"),
+    };
+    assert_eq!(error("<!-- c -->"), at(1, 11, "no root element"));
+    assert_eq!(
+        error("<a/>\n<b/>"),
+        at(2, 1, "unexpected content after </a>")
     );
 }
