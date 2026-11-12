@@ -38,11 +38,15 @@ fn failed_open_keeps_the_graph() {
 
     let not_graphml = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/box.svg");
     let err = app.open(Path::new(not_graphml)).unwrap_err();
-    assert!(matches!(err, graphml::Error::Parse { .. }), "{err:?}");
+    let parse = err.downcast_ref::<graphml::Error>();
+    assert!(
+        matches!(parse, Some(graphml::Error::Parse { .. })),
+        "{err:?}"
+    );
 
     let missing = Path::new("/nonexistent/drwr.graphml");
     let err = app.open(missing).unwrap_err();
-    assert!(matches!(err, graphml::Error::Io(_)), "{err:?}");
+    assert!(err.is::<std::io::Error>(), "{err:?}");
 
     assert_eq!(*app.doc.graphml(), before);
     assert_eq!(app.file.as_deref(), Some(Path::new(FIXTURE)));

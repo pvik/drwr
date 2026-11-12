@@ -1,5 +1,6 @@
 mod about;
 mod clipboard;
+mod drawio_files;
 mod edges;
 mod export;
 mod files;
@@ -69,11 +70,15 @@ impl Harness {
 
     /// The app keeping its settings and recent files with `config`.
     fn with_config(config: Config) -> Self {
+        Harness::with_app(DrwrApp::new(Fonts::default(), config))
+    }
+
+    /// Shows `app` from its first frame on.
+    fn with_app(app: DrwrApp) -> Self {
         let ctx = egui::Context::default();
         // So that keys and shortcut labels work as on Linux wherever tests
         // run, with `Harness::mac` for macOS's.
         ctx.set_os(OperatingSystem::Nix);
-        let app = DrwrApp::new(Fonts::default(), config);
         app.init(&ctx);
         let mut harness = Harness {
             ctx,

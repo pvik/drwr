@@ -3,10 +3,11 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::export::Format;
 
-/// A native dialog asking for a GraphML file to open, an SVG file to insert,
-/// or where to save or export to, for a target of type `T`, which tells the
-/// caller what the file is for. It runs on its own thread, because a Wayland compositor may
-/// disconnect an app whose UI thread stops reading events.
+/// A native dialog asking for a GraphML or draw.io file to open, an SVG file
+/// to insert, or where to save or export to, for a target of type `T`, which
+/// tells the caller what the file is for. It runs on its own thread, because
+/// a Wayland compositor may disconnect an app whose UI thread stops reading
+/// events.
 pub struct FileDialog<T> {
     asked: Option<Asked<T>>,
 }
@@ -115,25 +116,16 @@ fn show(
     ctx: &egui::Context,
     parent: &eframe::Frame,
 ) {
-    let (title, filter, extension, saved) = match request {
-        Request::Open => ("Open", "GraphML", "graphml", None),
-        Request::InsertSvg => ("Insert SVG", "SVG", "svg", None),
-        Request::Save { name, folder } => ("Save As", "GraphML", "graphml", Some((name, folder))),
-        Request::Export {
-            format,
-            name,
-            folder,
-        } => (
-            "Export",
-            format.name(),
-            format.extension(),
-            Some((name, folder)),
-        ),
+    let (title, saved) = match request {
+        Request::Open => ("Open", None),
+        Request::InsertSvg => ("Insert SVG", None),
+        Request::Save { name, folder } => ("Save As", Some((name, folder))),
+        Request::Export { name, folder, .. } => ("Export", Some((name, folder))),
     };
-    let mut dialog = rfd::FileDialog::new()
-        .set_title(title)
-        .add_filter(filter, &[extension])
-        .set_parent(parent);
+    let mut dialog = rfd::FileDialog::new().set_title(title).set_parent(parent);
+    for (name, extensions) in filters(request) {
+        dialog = dialog.add_filter(name, &extensions);
+    }
     if let Some((name, folder)) = saved {
         dialog = dialog.set_file_name(name);
         if let Some(folder) = folder {
@@ -152,6 +144,21 @@ fn show(
         let _ = sender.send(picked);
         ctx.request_repaint();
     });
+}
+
+/// The kinds of file the dialog for `request` offers, each a name and its
+/// extensions, the first chosen to begin with.
+fn filters(request: &Request) -> Vec<(&'static str, Vec<&'static str>)> {
+    match request {
+        Request::Open => vec![
+            ("Diagrams", vec!["graphml", "drawio", "dio", "xml"]),
+            ("GraphML", vec!["graphml"]),
+            ("draw.io", vec!["drawio", "dio", "xml"]),
+        ],
+        Request::InsertSvg => vec![("SVG", vec!["svg"])],
+        Request::Save { .. } => vec![("GraphML", vec!["graphml"])],
+        Request::Export { format, .. } => vec![(format.name(), vec![format.extension()])],
+    }
 }
 
 #[cfg(test)]

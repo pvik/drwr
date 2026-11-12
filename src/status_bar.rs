@@ -8,9 +8,17 @@ use crate::tool::Tool;
 pub const NOT_SAVED: &str = "<Not Saved>";
 
 /// Shows the status bar along the bottom of the window: what `tool` does,
-/// unless the drawing is `exporting`, and the file, with a '*' after it if
-/// the graph is `modified`.
-pub fn show(ui: &mut egui::Ui, tool: Tool, exporting: bool, file: Option<&Path>, modified: bool) {
+/// unless the drawing is `exporting`, and the file, or else the draw.io file
+/// the graph was `imported` from, with a '*' after it if the graph is
+/// `modified`.
+pub fn show(
+    ui: &mut egui::Ui,
+    tool: Tool,
+    exporting: bool,
+    file: Option<&Path>,
+    imported: Option<&Path>,
+    modified: bool,
+) {
     egui::Panel::bottom("status_bar").show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(if exporting {
@@ -19,7 +27,11 @@ pub fn show(ui: &mut egui::Ui, tool: Tool, exporting: bool, file: Option<&Path>,
                 status(tool)
             });
             ui.separator();
-            let file = file.map_or(NOT_SAVED.into(), Path::to_string_lossy);
+            let file = match (file, imported) {
+                (Some(file), _) => file.to_string_lossy(),
+                (None, Some(imported)) => format!("{} (imported)", imported.display()).into(),
+                (None, None) => NOT_SAVED.into(),
+            };
             let marker = WidgetText::from(if modified { "*" } else { "" }).into_galley(
                 ui,
                 None,

@@ -56,3 +56,24 @@ fn opening_an_open_dialog_keeps_its_target_and_request() {
     dialog.answer(Some(PathBuf::from("/tmp/plan")));
     assert_eq!(dialog.picked(), Some((1, PathBuf::from("/tmp/plan"))));
 }
+
+#[test]
+fn open_offers_graphml_and_drawio_files_together_first_and_save_only_graphml() {
+    let diagrams = ["graphml", "drawio", "dio", "xml"];
+    let drawio = ["drawio", "dio", "xml"];
+    assert_eq!(
+        filters(&Request::Open),
+        [
+            ("Diagrams", diagrams.to_vec()),
+            ("GraphML", vec!["graphml"]),
+            ("draw.io", drawio.to_vec()),
+        ]
+    );
+    assert_eq!(filters(&save_request()), [("GraphML", vec!["graphml"])]);
+    let export = Request::Export {
+        format: Format::Svg,
+        name: "plan.svg".to_owned(),
+        folder: None,
+    };
+    assert_eq!(filters(&export), [("SVG", vec!["svg"])]);
+}

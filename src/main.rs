@@ -25,6 +25,8 @@ mod line_type;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+mod notes_dialog;
+mod page_dialog;
 mod prompt;
 mod scene;
 mod selection;
@@ -60,6 +62,8 @@ use file_dialog::{FileDialog, Request};
 use fonts::Fonts;
 use graphml::{GraphMl, yed};
 use history::{Document, Merge};
+use notes_dialog::Notes;
+use page_dialog::PageDialog;
 use scene::Scene;
 use selection::Selection;
 use side_panel::SidePanel;
@@ -125,6 +129,8 @@ struct DrwrApp {
     doc: Document,
     /// Where the graph is saved, as an absolute path; `None` if it isn't.
     file: Option<PathBuf>,
+    /// The draw.io file the graph was converted from, until it's saved.
+    imported: Option<PathBuf>,
     /// The graph as last opened, saved or made new.
     saved: GraphMl,
     /// Whether the graph differs from `saved`, as of version `checked` of it.
@@ -151,6 +157,10 @@ struct DrwrApp {
     color_picker: ColorPicker<ColorProperty>,
     label_dialog: TextDialog<LabelEdit>,
     export_dialog: ExportDialog,
+    /// Asks which page of the draw.io file at the path to open.
+    page_dialog: PageDialog<(PathBuf, drawio::File)>,
+    /// What converting the draw.io file just opened couldn't carry over.
+    import_notes: Option<Notes>,
     /// Whether the About dialog is open.
     about: bool,
     /// The exports writing their files in the background.
@@ -243,13 +253,48 @@ impl DrwrApp {
         ctx.options_mut(|options| options.zoom_with_keyboard = false);
     }
 
-    /// Replaces the graph with the GraphML file at `path`, or keeps it on error.
-    fn open(&mut self, path: &Path) -> Result<(), graphml::Error> {
+    /// Replaces the graph with the GraphML file at `path`, or with a page of
+    /// the draw.io file there, asking first which if it has several. Keeps
+    /// the graph on error.
+    fn open(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let path = std::path::absolute(path)?;
-        let graphml = GraphMl::read_file(&path)?;
+        let text = std::fs::read_to_string(&path)?;
+        if drawio::is_drawio(&text) {
+            let file = drawio::File::parse(&text)?;
+            if let [page] = file.pages() {
+                self.import(page, path);
+            } else {
+                let pages = file.pages().iter().map(|page| page.name().to_owned());
+                let pages = pages.collect();
+                let name = file_name(&path).into_owned();
+                (self.page_dialog).open((path, file), name, pages);
+            }
+            return Ok(());
+        }
+        let graphml = GraphMl::parse(&text)?;
         self.config.add_recent_file(&path);
         self.replace_graph(graphml, Some(path));
         Ok(())
+    }
+
+    /// Replaces the graph with `page` of the draw.io file at `path`, as
+    /// GraphML, which has no file until it's saved.
+    fn import(&mut self, page: &drawio::Page, path: PathBuf) {
+        let drawio::Import {
+            mut graphml,
+            corner_radii,
+            notes,
+        } = page.to_graphml();
+        // Before it's opened, so that it opens unmodified.
+        for (id, radius) in corner_radii {
+            document::set_corner_radius(&mut graphml, &id, radius);
+        }
+        self.config.add_recent_file(&path);
+        self.replace_graph(graphml, None);
+        if !notes.is_empty() {
+            self.import_notes = Some(Notes::new(file_name(&path).into_owned(), notes));
+        }
+        self.imported = Some(path);
     }
 
     /// Opens the file at `path`, or shows why it can't.
@@ -299,6 +344,8 @@ impl DrwrApp {
         self.saved = graphml.clone();
         self.doc = Document::new(graphml);
         self.file = file;
+        self.imported = None;
+        self.import_notes = None;
         self.modified = false;
         self.checked = self.doc.version();
         self.selected = Selection::default();
@@ -373,10 +420,19 @@ impl DrwrApp {
         Some(self.file.as_deref()?.file_name()?.to_string_lossy())
     }
 
-    /// Titles the window with the file's name, marked if the graph is
-    /// modified, when that changes.
+    /// The graph's file, or else the draw.io file it was converted from.
+    fn source(&self) -> Option<&Path> {
+        self.file.as_deref().or(self.imported.as_deref())
+    }
+
+    /// Titles the window with the file's name, or the draw.io file's marked
+    /// as imported, marked if the graph is modified, when that changes.
     fn update_title(&mut self, ctx: &egui::Context) {
-        let name = self.file_name().unwrap_or(status_bar::NOT_SAVED.into());
+        let name = match (self.file_name(), &self.imported) {
+            (Some(name), _) => name,
+            (None, Some(imported)) => format!("{} (imported)", file_name(imported)).into(),
+            (None, None) => status_bar::NOT_SAVED.into(),
+        };
         let marker = if self.modified { "*" } else { "" };
         let title = format!("{name}{marker} — {NAME}");
         if title != self.title {
@@ -421,7 +477,8 @@ impl DrwrApp {
         }
     }
 
-    /// Asks where to save the graph, suggesting its file, then saves it there
+    /// Asks where to save the graph, suggesting its file, or a GraphML file
+    /// beside the draw.io file it was converted from, then saves it there
     /// and closes it for `then`, if anything.
     fn ask_where_to_save(
         &mut self,
@@ -429,10 +486,14 @@ impl DrwrApp {
         ctx: &egui::Context,
         frame: &eframe::Frame,
     ) {
-        let name = self.file_name().unwrap_or("untitled.graphml".into());
-        let folder = self.file.as_deref().and_then(Path::parent);
+        let name = match (self.file_name(), &self.imported) {
+            (Some(name), _) => name.into_owned(),
+            (None, Some(imported)) => format!("{}.graphml", file_stem(imported)),
+            (None, None) => "untitled.graphml".to_owned(),
+        };
+        let folder = self.source().and_then(Path::parent);
         let request = Request::Save {
-            name: name.into_owned(),
+            name,
             folder: folder.map(Path::to_path_buf),
         };
         (self.file_dialog).open(FilePurpose::Save(then), request, ctx, frame);
@@ -473,6 +534,7 @@ impl DrwrApp {
         }
         self.config.add_recent_file(&path);
         self.file = Some(path);
+        self.imported = None;
         self.saved = self.doc.graphml().clone();
         self.modified = false;
         self.checked = self.doc.version();
@@ -492,7 +554,8 @@ impl DrwrApp {
     }
 
     /// Asks where to export the drawing as the export dialog was `accepted`,
-    /// suggesting the graph's name and folder, then exports it there.
+    /// suggesting the name and folder of the graph's file, or of the draw.io
+    /// file it was converted from, then exports it there.
     fn ask_where_to_export(
         &mut self,
         accepted: Accepted,
@@ -507,9 +570,8 @@ impl DrwrApp {
         let only = selected_only.then_some(&self.selected);
         let drawing = Drawing::of(ctx, self.doc.scene(), only);
         let format = settings.format;
-        let file = self.file.as_deref();
-        let stem = file.and_then(Path::file_stem);
-        let stem = stem.map_or("untitled".into(), |stem| stem.to_string_lossy());
+        let file = self.source();
+        let stem = file.map_or("untitled".into(), file_stem);
         let request = Request::Export {
             format,
             name: format!("{stem}.{}", format.extension()),
@@ -576,7 +638,8 @@ impl DrwrApp {
     fn show_prompt(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         match self.prompt.clone() {
             Some(Prompt::Unsaved(close_for)) => {
-                let Some(answer) = unsaved_dialog::show(ctx, self.file.as_deref()) else {
+                let (file, imported) = (self.file.as_deref(), self.imported.as_deref());
+                let Some(answer) = unsaved_dialog::show(ctx, file, imported) else {
                     return;
                 };
                 self.prompt = None;
@@ -858,6 +921,16 @@ impl DrwrApp {
     }
 }
 
+/// The name of the file at `path`.
+fn file_name(path: &Path) -> Cow<'_, str> {
+    path.file_name().unwrap_or_default().to_string_lossy()
+}
+
+/// The name of the file at `path` without its extension.
+fn file_stem(path: &Path) -> Cow<'_, str> {
+    path.file_stem().unwrap_or_default().to_string_lossy()
+}
+
 /// Why exporting to `path` failed.
 fn export_error(path: &Path, err: &str) -> String {
     format!("Couldn't export {}:\n{err}", path.display())
@@ -865,8 +938,7 @@ fn export_error(path: &Path, err: &str) -> String {
 
 /// Asks whether to replace the file at `path`. Returns the answer once given.
 fn ask_to_replace(ctx: &egui::Context, path: &Path) -> Option<bool> {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let question = format!("{name} already exists. Replace it?");
+    let question = format!("{} already exists. Replace it?", file_name(path));
     prompt::ask(ctx, &question, &[("Replace", true), ("Cancel", false)])
 }
 
@@ -938,6 +1010,7 @@ impl eframe::App for DrwrApp {
             self.tool,
             exporting,
             self.file.as_deref(),
+            self.imported.as_deref(),
             self.modified,
         );
         let side =
@@ -978,6 +1051,10 @@ impl eframe::App for DrwrApp {
             self.ask_where_to_export(accepted, ui.ctx(), frame);
         }
         about_dialog::show(ui.ctx(), &mut self.about);
+        if let Some(((path, file), page)) = self.page_dialog.show(ui.ctx()) {
+            self.import(&file.pages()[page], path);
+        }
+        notes_dialog::show(ui.ctx(), &mut self.import_notes);
         self.record();
         self.update_modified();
         if std::mem::take(&mut self.close_requested) {
