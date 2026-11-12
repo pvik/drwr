@@ -731,7 +731,7 @@ impl Canvas {
         let mut targets = Targets::new(f64::from(SNAP_REACH) / zoom);
         let visible = shown.painter.clip_rect();
         for node in 0..shown.scene.nodes.len() {
-            if shown.is_drawn(node) && !skip(node) && shown.node_rect(node).intersects(visible) {
+            if !skip(node) && shown.node_rect(node).intersects(visible) {
                 targets.add_node(shown.geometry(node));
             }
         }
@@ -1147,7 +1147,7 @@ impl Canvas {
             return (delta, Vec::new());
         };
         let features = |[dx, dy]: [f64; 2]| {
-            let nodes = (0..scene.nodes.len()).filter(|&node| moving(node) && shown.is_drawn(node));
+            let nodes = (0..scene.nodes.len()).filter(|&node| moving(node));
             let lines = nodes.flat_map(|node| {
                 let mut rect = shown.geometry(node);
                 (rect.x, rect.y) = (rect.x + dx, rect.y + dy);

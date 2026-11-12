@@ -759,13 +759,27 @@ fn ellipses_are_resized_by_the_handles_on_their_bounds() {
 }
 
 #[test]
-fn nodes_the_canvas_cannot_draw_cannot_be_clicked() {
-    let mut harness = Harness::new(Tool::Cursor);
-    let mut uml = NodeGraphics::new(NodeKind::Other("UMLClassNode".to_owned()));
-    uml.geometry = geometry(100.0, 50.0, 150.0, 80.0);
-    document::add_node(harness.doc.graphml_mut(), &uml);
-    harness.click(vec2(150.0, 100.0));
-    assert!(harness.selected.is_empty());
+fn nodes_of_kinds_without_a_shape_are_square_boxes() {
+    let yellow = Color32::from_rgb(0xFF, 0xCC, 0x00);
+    for kind in [
+        NodeKind::Other("UMLClassNode".to_owned()),
+        NodeKind::Generic("com.yworks.flowchart.process".to_owned()),
+        NodeKind::Shape(ShapeType::Hexagon),
+    ] {
+        let mut harness = Harness::new(Tool::Cursor);
+        let mut graphics = NodeGraphics::new(kind.clone());
+        graphics.geometry = yed_rect(NODE);
+        graphics.border.color = Some(yed::Color::rgb(0xFF, 0x00, 0x00));
+        graphics.labels = vec![Label::new("Order")];
+        let id = document::add_node(harness.doc.graphml_mut(), &graphics);
+        let shapes = harness.frame(vec![]);
+        assert_eq!(filled_rects(&shapes, yellow), [harness.node()], "{kind:?}");
+        assert_eq!(stroked_rects(&shapes, RED), [harness.node()], "{kind:?}");
+        assert!(painted(&shapes, "Order").is_some(), "{kind:?}");
+        // Where a rounded corner would leave it out.
+        harness.click(vec2(101.0, 51.0));
+        assert_eq!(harness.selected, Selection::node(id), "{kind:?}");
+    }
 }
 
 #[test]
@@ -3011,9 +3025,15 @@ fn dragging_from_the_empty_canvas_selects_the_nodes_and_edges_inside_the_box() {
     harness.add_edge(&node, &uml, &[]);
     harness.selected = Selection::edge(1);
     // Round the first two and the edge between them, but only across the
-    // third. Nodes the canvas can't draw, and their edges, aren't selected.
+    // third. A node of a kind with no shape of its own is boxed like a box.
     harness.drag(vec2(50.0, 20.0), vec2(600.0, 300.0));
-    let boxed = [Item::Node(node), Item::Node(other), Item::Edge(0)];
+    let boxed = [
+        Item::Node(node),
+        Item::Node(other),
+        Item::Node(uml),
+        Item::Edge(0),
+        Item::Edge(2),
+    ];
     assert_eq!(harness.selected, Selection::of(boxed));
     assert_eq!(harness.boxes()[..2], [yed_rect(NODE), yed_rect(OTHER)]);
     // A box round nothing selects nothing.

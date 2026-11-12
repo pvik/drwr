@@ -139,9 +139,9 @@ impl Canvas {
 }
 
 impl Shown<'_> {
-    /// Paints a node with its labels, except the one at index `hidden`, unless
-    /// it's a kind the canvas can't draw yet. `corner_radius` rounds the
-    /// corners of a box, and an SVG node shows `image` from `textures`.
+    /// Paints a node with its labels, except the one at index `hidden`.
+    /// `corner_radius` rounds the corners of a box, and an SVG node shows
+    /// `image` from `textures`.
     fn paint_node(
         &self,
         graphics: &NodeGraphics,
@@ -150,9 +150,6 @@ impl Shown<'_> {
         textures: &Textures,
         hidden: Option<usize>,
     ) {
-        let Some(outline) = shape(graphics, corner_radius) else {
-            return;
-        };
         let painter = self.painter;
         let rect = egui_rect(graphics.geometry, self.to_screen);
         let fill = graphics.fill.color.map_or(Color32::TRANSPARENT, color32);
@@ -161,7 +158,7 @@ impl Shown<'_> {
             Stroke::new(border.width as f32 * self.to_screen.scaling, color32(color))
         });
         // Like yEd, which centers borders on the outline, over the fill.
-        match outline {
+        match shape(graphics, corner_radius) {
             Outline::Rect(radius) => {
                 let radius = radius * self.to_screen.scaling;
                 let ppp = painter.pixels_per_point();

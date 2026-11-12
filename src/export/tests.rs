@@ -293,6 +293,41 @@ fn rounded_boxes_flat_shapes_and_line_types() {
 }
 
 #[test]
+fn nodes_of_kinds_without_a_shape_are_square_boxes() {
+    let mut graphml = yed::new_document();
+    let mut uml = NodeGraphics::new(NodeKind::Other("UMLClassNode".to_owned()));
+    uml.geometry = yed::Rect {
+        x: 100.0,
+        y: 50.0,
+        width: 150.0,
+        height: 80.0,
+    };
+    uml.fill.color = Some(RED);
+    uml.labels = vec![yed::Label::new("A")];
+    let uml = document::add_node(&mut graphml, &uml);
+    let circle = shape(ShapeType::Ellipse, 300.0, 50.0, 80.0, 80.0);
+    let circle = document::add_node(&mut graphml, &circle);
+    let line = EdgeGraphics::new(EdgeKind::PolyLine);
+    document::add_edge(&mut graphml, &circle, &uml, &line);
+
+    let svg = svg(&drawing(&graphml, None), Settings::default());
+    assert_eq!(
+        elements(&svg, "rect")[1],
+        r##"<rect x="100" y="50" width="150" height="80" fill="#FF0000" stroke="#000000" stroke-width="1"/>"##
+    );
+    // The arrowhead's tip where the line meets the box's side.
+    assert_eq!(
+        elements(&svg, "path"),
+        [
+            r##"<path d="M300 90L257 90" fill="none" stroke="#000000" stroke-width="1"/>"##,
+            r##"<path d="M250 90L260 86L257 90L260 94Z" fill="#000000"/>"##
+        ]
+    );
+    let [text] = elements(&svg, "text").try_into().unwrap();
+    assert!(text.ends_with(">A</tspan></text>"), "{text}");
+}
+
+#[test]
 fn colors_keep_their_alpha() {
     let mut graphml = yed::new_document();
     let mut node = shape(ShapeType::Rectangle, 0.0, 0.0, 10.0, 10.0);

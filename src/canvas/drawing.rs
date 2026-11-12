@@ -108,9 +108,7 @@ impl Drawing {
     /// Adds a node and its labels, as the canvas paints them.
     fn add_node(&mut self, shown: Shown, node: &SceneNode) {
         let graphics = &node.graphics;
-        let Some(outline) = shape(graphics, node.radius) else {
-            return;
-        };
+        let outline = shape(graphics, node.radius);
         let rect = egui_rect(graphics.geometry, TSTransform::IDENTITY);
         if outline == Outline::Svg {
             if let Some(image) = node.image.clone()

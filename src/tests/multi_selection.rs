@@ -346,9 +346,10 @@ fn delete_removes_everything_selected() {
 }
 
 /// Drags a box round the fixture's n0 and n1 and the bends of e0 between
-/// them, round the SVG node n3, and round n2, which the canvas doesn't draw,
+/// them, and round the SVG node n3, but not n2, moved out of the way first,
 /// so that e1 between n2 and n3 isn't selected.
 fn drag_box_round_e0(harness: &mut Harness) {
+    document::move_items(harness.app.doc.graphml_mut(), &[node("n2")], 0.0, 200.0);
     harness.drag(vec2(50.0, 5.0), vec2(400.0, 300.0));
 }
 

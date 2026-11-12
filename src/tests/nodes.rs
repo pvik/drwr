@@ -90,6 +90,17 @@ fn the_side_panel_shows_the_clicked_node() {
 }
 
 #[test]
+fn the_fixtures_nodes_of_kinds_without_a_shape_show_and_select_as_boxes() {
+    let mut harness = fixture_harness();
+    // A flowchart GenericNode, a UMLClassNode and a group node.
+    for (text, id) in [("Queue", "n2"), ("Order", "n4"), ("Backend", "n5")] {
+        harness.canvas_text(text);
+        harness.click_text(text);
+        assert_eq!(harness.app.selected_node(), Some(id), "{text}");
+    }
+}
+
+#[test]
 fn dragging_a_side_resizes_the_selected_node() {
     let mut harness = Harness::new();
     let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());

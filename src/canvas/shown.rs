@@ -41,8 +41,8 @@ pub struct Shown<'a> {
     pub text_zoom: f32,
 }
 
-/// The shape the canvas draws `node` as, if it can draw it.
-fn outline(node: &SceneNode) -> Option<Outline> {
+/// The shape the canvas draws `node` as.
+fn outline(node: &SceneNode) -> Outline {
     shape(&node.graphics, node.radius)
 }
 
@@ -91,8 +91,7 @@ impl Shown<'_> {
         }
     }
 
-    /// Whether `pos` on screen is inside the node at index `node`, or its
-    /// bounds if the canvas can't draw it.
+    /// Whether `pos` on screen is inside the node at index `node`.
     fn inside(&self, node: usize, pos: Pos2) -> bool {
         let outline = outline(&self.scene.nodes[node]);
         inside(outline, self.node_rect(node), self.to_screen.scaling, pos)
@@ -132,14 +131,9 @@ impl Shown<'_> {
             .map(|(segment, _)| EdgePart::Line(segment))
     }
 
-    /// Whether the canvas draws the node at index `node`.
-    pub fn is_drawn(&self, node: usize) -> bool {
-        outline(&self.scene.nodes[node]).is_some()
-    }
-
-    /// Whether the node at index `node` is drawn, and inside `rect` on screen.
+    /// Whether the node at index `node` is inside `rect` on screen.
     pub fn in_box(&self, node: usize, rect: Rect) -> bool {
-        self.is_drawn(node) && rect.contains_rect(self.node_rect(node))
+        rect.contains_rect(self.node_rect(node))
     }
 
     /// Whether `edge` is inside `rect` on screen: both its nodes, by
@@ -152,13 +146,12 @@ impl Shown<'_> {
             && bends.all(|bend| rect.contains(bend))
     }
 
-    /// The index of the topmost node the canvas draws at `pos` on screen, of
-    /// those `only` has if it's given.
+    /// The index of the topmost node at `pos` on screen, of those `only` has
+    /// if it's given.
     pub fn node_at(&self, pos: Pos2, only: Option<&Selection>) -> Option<usize> {
         let nodes = self.scene.nodes.iter().enumerate().rev();
-        let drawn = nodes.filter(|(_, node)| outline(node).is_some());
         let mut wanted =
-            drawn.filter(|(_, node)| only.is_none_or(|only| only.contains_node(&node.id)));
+            nodes.filter(|(_, node)| only.is_none_or(|only| only.contains_node(&node.id)));
         let (index, _) = wanted.find(|&(index, _)| self.inside(index, pos))?;
         Some(index)
     }
@@ -203,7 +196,7 @@ impl Shown<'_> {
         let node = &self.scene.nodes[index];
         let rect = self.node_rect(index);
         match (outline(node), &node.image) {
-            (Some(Outline::Svg), Some(image)) => NodeCut::Image { rect, image },
+            (Outline::Svg, Some(image)) => NodeCut::Image { rect, image },
             (outline, _) => NodeCut::Outline {
                 outline,
                 rect,
@@ -237,7 +230,7 @@ enum NodeCut<'a> {
     Free,
     /// Its outline filling `rect`, at `zoom` screen points a graph point.
     Outline {
-        outline: Option<Outline>,
+        outline: Outline,
         rect: Rect,
         zoom: f32,
     },
@@ -282,28 +275,28 @@ pub enum Outline {
     Svg,
 }
 
-/// The shape the canvas draws a node as, if it's a kind it can draw yet.
-/// `corner_radius` rounds the corners of a box; see
-/// [`crate::document::corner_radius`].
-pub fn shape(graphics: &NodeGraphics, corner_radius: Option<f64>) -> Option<Outline> {
+/// The shape the canvas draws a node as: a box with square corners for the
+/// kinds it has no shape for yet. `corner_radius` rounds the corners of a
+/// box; see [`crate::document::corner_radius`].
+pub fn shape(graphics: &NodeGraphics, corner_radius: Option<f64>) -> Outline {
     match &graphics.kind {
         NodeKind::Shape(ShapeType::Rectangle | ShapeType::RoundRectangle) => {
-            Some(Outline::Rect(corner_radius.unwrap_or_default() as f32))
+            Outline::Rect(corner_radius.unwrap_or_default() as f32)
         }
-        NodeKind::Shape(ShapeType::Ellipse) => Some(Outline::Ellipse),
-        NodeKind::Svg { .. } => Some(Outline::Svg),
-        _ => None,
+        NodeKind::Shape(ShapeType::Ellipse) => Outline::Ellipse,
+        NodeKind::Svg { .. } => Outline::Svg,
+        _ => Outline::Rect(0.0),
     }
 }
 
-/// Whether a point is inside `outline` filling `rect`, or in `rect` for a
-/// node the canvas can't draw, at `zoom` screen points a graph point. An SVG
-/// node's drawing counts as all of `rect`, so clicks on its gaps hit it.
-fn inside(outline: Option<Outline>, rect: Rect, zoom: f32, pos: Pos2) -> bool {
+/// Whether a point is inside `outline` filling `rect`, at `zoom` screen
+/// points a graph point. An SVG node's drawing counts as all of `rect`, so
+/// clicks on its gaps hit it.
+fn inside(outline: Outline, rect: Rect, zoom: f32, pos: Pos2) -> bool {
     match outline {
-        Some(Outline::Rect(radius)) => in_rounded_rect(rect, radius * zoom, pos),
-        Some(Outline::Ellipse) => in_ellipse(rect, pos),
-        Some(Outline::Svg) | None => rect.contains(pos),
+        Outline::Rect(radius) => in_rounded_rect(rect, radius * zoom, pos),
+        Outline::Ellipse => in_ellipse(rect, pos),
+        Outline::Svg => rect.contains(pos),
     }
 }
 
