@@ -70,6 +70,7 @@ jobs:
         run: |
           mkdir "$PACKAGE"
           cp "target/$TARGET/release/drwr" LICENSE.md README.md "$PACKAGE"
+          cp assets/drwr.desktop assets/app_icon/drwr.png "$PACKAGE"
           tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
 
       - name: Package for macOS
@@ -78,10 +79,11 @@ jobs:
           contents=drwr.app/Contents
           mkdir -p "$contents/MacOS" "$contents/Resources"
           cp "target/$TARGET/release/drwr" "$contents/MacOS"
-          cp LICENSE.md "$contents/Resources"
+          cp LICENSE.md assets/app_icon/drwr.icns "$contents/Resources"
           version=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "drwr") | .version')
           /usr/libexec/PlistBuddy \
             -c "Add :CFBundleExecutable string drwr" \
+            -c "Add :CFBundleIconFile string drwr" \
             -c "Add :CFBundleIdentifier string io.github.pvik.drwr" \
             -c "Add :CFBundleName string drwr" \
             -c "Add :CFBundlePackageType string APPL" \
@@ -93,6 +95,7 @@ jobs:
           codesign --force --sign - drwr.app
           ditto -c -k --keepParent drwr.app "$PACKAGE.zip"
 
+      # build.rs gives drwr.exe its icon.
       - name: Package for Windows
         if: runner.os == 'Windows'
         run: |

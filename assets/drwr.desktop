@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=drwr
+GenericName=Diagram Editor
+Comment=Draw diagrams and edit yEd GraphML files
+Keywords=diagram;graph;graphml;yed;flowchart;
+Exec=drwr
+Icon=drwr
+Terminal=false
+Categories=Graphics;2DGraphics;VectorGraphics;
+StartupWMClass=drwr
