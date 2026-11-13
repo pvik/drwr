@@ -5,7 +5,7 @@ default-members = [".", "crates/graphml"]
 
 [package]
 name = "drwr"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 homepage = "https://pvik.github.io/drwr/"
 
@@ -30,6 +30,11 @@ rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
 toml = "1.2.1"
+
+[dev-dependencies]
+# Compresses the app icon files three times better than tiny-skia does.
+# tiny-skia uses it, so it builds nothing new.
+png = "0.17.16"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Has quitting ask about unsaved changes. eframe uses them, so they build
