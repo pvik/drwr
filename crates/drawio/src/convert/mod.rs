@@ -1,25 +1,25 @@
 //! Converts a page's cells to GraphML with yEd graphics.
 
+mod label;
+mod line;
 mod notes;
 
 use std::collections::{HashMap, HashSet};
 
 use base64::Engine;
 use graphml::{
-    Data, Edge, GraphMl, KeyDomain, Node,
+    Data, GraphMl, Key, KeyDomain, Node,
     yed::{
-        self, Alignment, Arrow, Arrows, Color, EdgeGraphics, EdgeKind, Fill, Font, FontStyle, Keys,
-        Label, LabelPosition, LineType, NodeGraphics, NodeKind, Point, Rect, ShapeType, Stroke,
+        self, Color, Fill, Keys, LineType, NodeGraphics, NodeKind, Point, Rect, ShapeType, Stroke,
     },
 };
 
 use crate::{
     model::{Cell, Model},
-    route::{self, End, Router},
     shape::{self, Shape},
     style::Style,
-    text,
 };
+use line::{Frame, Line, Pending};
 use notes::Notes;
 
 /// A page converted to GraphML.
@@ -43,9 +43,6 @@ pub(crate) fn convert(model: &Model) -> Import {
     }
 }
 
-/// The size of the nodes added at loose line ends.
-const ANCHOR_SIZE: f64 = 2.0;
-
 struct Converter<'a> {
     cells: &'a [Cell],
     /// Cell indexes by id.
@@ -54,18 +51,24 @@ struct Converter<'a> {
     children: HashMap<&'a str, Vec<usize>>,
     /// The ids lines end on.
     terminals: HashSet<&'a str>,
+    grid_size: f64,
     doc: GraphMl,
     keys: Keys,
     /// The node each drawn vertex became, by cell index.
     placed: HashMap<usize, Placed>,
     /// The collapsed container standing in for each cell hidden in it.
     stand_ins: HashMap<usize, usize>,
-    /// Lines to convert once every vertex has its node.
-    edges: Vec<Pending>,
+    /// The page's lines in document order, converted once every vertex has
+    /// its node.
+    lines: Vec<Line>,
+    /// Which of `lines` each edge cell is, by cell index.
+    line_of: HashMap<usize, usize>,
+    /// Where lines ending on a converted line, or on a label of one, end, by
+    /// cell index.
+    anchors: HashMap<usize, Point>,
     corner_radii: Vec<(String, f64)>,
     notes: Notes,
     node_count: usize,
-    edge_count: usize,
 }
 
 /// Where a vertex went.
@@ -74,28 +77,9 @@ struct Placed {
     node: String,
     /// The bounds of the node lines end on.
     node_bounds: Rect,
-    /// The vertex's own bounds, which draw.io routes lines by.
+    /// The vertex's bounds, turned as its node is, which lines are routed by.
     bounds: Rect,
-}
-
-/// An edge cell, with its parent's top-left corner and style.
-struct Pending {
-    index: usize,
-    origin: Point,
-    parent_style: Option<Style>,
-}
-
-/// Where a line ends, before any node is added for it.
-enum LineEnd {
-    On(Terminal),
-    Loose(Point),
-}
-
-/// A line's end: the node and where on it.
-struct Terminal {
-    node: String,
-    node_bounds: Rect,
-    end: End,
+    frame: Frame,
 }
 
 impl<'a> Converter<'a> {
@@ -121,15 +105,17 @@ impl<'a> Converter<'a> {
             index,
             children,
             terminals,
+            grid_size: model.grid_size,
             doc,
             keys,
             placed: HashMap::new(),
             stand_ins: HashMap::new(),
-            edges: Vec::new(),
+            lines: Vec::new(),
+            line_of: HashMap::new(),
+            anchors: HashMap::new(),
             corner_radii: Vec::new(),
             notes: Notes::default(),
             node_count: 0,
-            edge_count: 0,
         }
     }
 
@@ -138,11 +124,14 @@ impl<'a> Converter<'a> {
         self.children.get(id).cloned().unwrap_or_default()
     }
 
+    /// The index of the cell the cell at `index` is in, if it's on the page.
+    fn parent_of(&self, index: usize) -> Option<usize> {
+        let parent = self.cells[index].parent.as_deref()?;
+        self.index.get(parent).copied()
+    }
+
     fn run(&mut self) {
-        let roots = (0..self.cells.len()).filter(|&i| {
-            let parent = self.cells[i].parent.as_deref();
-            parent.is_none_or(|parent| !self.index.contains_key(parent))
-        });
+        let roots = (0..self.cells.len()).filter(|&i| self.parent_of(i).is_none());
         for root in roots.collect::<Vec<_>>() {
             if self.is_drawn(root) {
                 self.visit(root, Point::default(), None);
@@ -160,8 +149,17 @@ impl<'a> Converter<'a> {
                 }
             }
         }
-        for pending in std::mem::take(&mut self.edges) {
-            self.edge(pending);
+        for line in 0..self.lines.len() {
+            self.convert_line(line);
+        }
+        let edges = std::mem::take(&mut self.lines).into_iter();
+        let edges = edges.filter_map(|line| match line {
+            Line::Done(edge) => edge,
+            _ => None,
+        });
+        for (n, mut edge) in edges.enumerate() {
+            edge.id = Some(format!("e{n}"));
+            self.doc.graphs[0].edges.push(*edge);
         }
     }
 
@@ -175,11 +173,12 @@ impl<'a> Converter<'a> {
         let cells = self.cells;
         let cell = &cells[index];
         if cell.edge {
-            self.edges.push(Pending {
+            self.line_of.insert(index, self.lines.len());
+            self.lines.push(Line::Waiting(Pending {
                 index,
                 origin,
                 parent_style: parent.map(|(style, _)| style.clone()),
-            });
+            }));
             return;
         }
         if !cell.vertex {
@@ -196,18 +195,13 @@ impl<'a> Converter<'a> {
         let g = &cell.geometry;
         let offset = g.offset.unwrap_or_default();
         let bounds = match parent {
-            Some((_, p)) if g.relative => Rect {
-                x: p.x + g.x * p.width + offset.x,
-                y: p.y + g.y * p.height + offset.y,
-                width: g.width,
-                height: g.height,
-            },
-            _ => Rect {
-                x: origin.x + g.x,
-                y: origin.y + g.y,
-                width: g.width,
-                height: g.height,
-            },
+            Some((_, p)) if g.relative => rect(
+                p.x + g.x * p.width + offset.x,
+                p.y + g.y * p.height + offset.y,
+                g.width,
+                g.height,
+            ),
+            _ => rect(origin.x + g.x, origin.y + g.y, g.width, g.height),
         };
         self.vertex(index, &style, bounds);
         let inside = self.children_of(index);
@@ -238,75 +232,76 @@ impl<'a> Converter<'a> {
     fn vertex(&mut self, index: usize, style: &Style, bounds: Rect) {
         let cells = self.cells;
         let cell = &cells[index];
-        let mut bounds = bounds;
         let mut shape = shape::shape(style, bounds.width, bounds.height);
+        let mut frame = Frame::new(style, bounds);
+        let mut bounds = bounds;
         let rotation = style.number("rotation", 0.0).rem_euclid(360.0);
-        if rotation != 0.0 {
-            let quarter = (rotation - 90.0).abs() < 1e-6 || (rotation - 270.0).abs() < 1e-6;
-            let half = (rotation - 180.0).abs() < 1e-6;
-            let symmetric = matches!(
-                shape,
-                Shape::Box { .. }
-                    | Shape::Line { .. }
-                    | Shape::Yed(ShapeType::Ellipse | ShapeType::Diamond | ShapeType::Octagon)
-            );
-            if quarter && symmetric {
+        let quarters = (rotation / 90.0).round();
+        let symmetric = matches!(
+            shape,
+            Shape::Box { .. }
+                | Shape::Line { .. }
+                | Shape::Yed(ShapeType::Ellipse | ShapeType::Diamond | ShapeType::Octagon)
+        );
+        if symmetric && (rotation - quarters * 90.0).abs() < 1e-6 {
+            frame.rotation = quarters * 90.0;
+            if quarters % 2.0 == 1.0 {
                 // Turned a quarter, they fill their bounds turned instead.
-                let center = (
-                    bounds.x + bounds.width / 2.0,
-                    bounds.y + bounds.height / 2.0,
-                );
+                let center = center(bounds);
                 (bounds.width, bounds.height) = (bounds.height, bounds.width);
-                bounds.x = center.0 - bounds.width / 2.0;
-                bounds.y = center.1 - bounds.height / 2.0;
+                bounds.x = center.x - bounds.width / 2.0;
+                bounds.y = center.y - bounds.height / 2.0;
                 if let Shape::Line { vertical } = &mut shape {
                     *vertical = !*vertical;
                 }
-            } else if !(half && symmetric) {
-                self.notes.rotated += 1;
             }
+        } else if rotation != 0.0 {
+            self.notes.rotated += 1;
         }
-        let label = self.label(cell, style, false);
-        match shape {
+        let label = self.label(cell, style).map(|mut label| {
+            label.set_position(label::position(style));
+            label
+        });
+        let node = match shape {
             Shape::Box { radius } => {
                 let kind = match radius > 0.0 {
                     true => ShapeType::RoundRectangle,
                     false => ShapeType::Rectangle,
                 };
-                let mut graphics = self.graphics(NodeKind::Shape(kind), bounds, style, label);
+                let mut graphics = graphics(NodeKind::Shape(kind), bounds, style, label);
                 if style.get("image").is_some() {
                     self.notes.box_images += 1;
                 }
                 let mut sides = Vec::new();
                 if matches!(style.get("shape"), Some("partialRectangle" | "tableRow")) {
-                    let drawn = ["top", "right", "bottom", "left"]
-                        .map(|side| style.get(side).is_none_or(|value| value == "1"));
+                    let drawn = ["top", "right", "bottom", "left"].map(|s| style.flag_or(s, true));
                     if !drawn.iter().all(|drawn| *drawn) {
                         sides = side_lines(bounds, drawn, &graphics.border);
                         graphics.border.color = None;
                     }
                 }
-                let node = self.add_node(index, &graphics, bounds, bounds);
+                let node = self.add_node(index, &graphics);
                 if radius > 0.0 {
-                    self.corner_radii.push((node, radius));
+                    self.corner_radii.push((node.clone(), radius));
                 }
                 for side in sides {
                     self.push_node(&side);
                 }
+                Some((node, bounds))
             }
             Shape::Yed(kind) => {
                 if turned(style, &kind) {
                     self.notes.turned += 1;
                 }
-                let graphics = self.graphics(NodeKind::Shape(kind), bounds, style, label);
-                self.add_node(index, &graphics, bounds, bounds);
+                let graphics = graphics(NodeKind::Shape(kind), bounds, style, label);
+                Some((self.add_node(index, &graphics), bounds))
             }
             Shape::Generic(configuration) => {
                 let kind = NodeKind::Generic(configuration.to_owned());
-                let graphics = self.graphics(kind, bounds, style, label);
-                self.add_node(index, &graphics, bounds, bounds);
+                let graphics = graphics(kind, bounds, style, label);
+                Some((self.add_node(index, &graphics), bounds))
             }
-            Shape::Image(image) => self.image(index, &image, bounds, style, label),
+            Shape::Image(image) => Some((self.image(index, &image, bounds, style, label), bounds)),
             Shape::Line { vertical } => {
                 let width = style.number("strokeWidth", 1.0).max(1.0);
                 let mut line = bounds;
@@ -317,17 +312,11 @@ impl<'a> Converter<'a> {
                     line.y += (bounds.height - width) / 2.0;
                     line.height = width;
                 }
-                let kind = NodeKind::Shape(ShapeType::Rectangle);
-                let mut graphics = self.graphics(kind, line, style, label);
-                graphics.fill.color = style
-                    .color("strokeColor", Color::BLACK)
-                    .map(|c| opacity(c, style, "strokeOpacity"));
-                graphics.fill.gradient = None;
-                graphics.border.color = None;
                 if style.flag("dashed") {
                     self.notes.dashed_lines += 1;
                 }
-                self.add_node(index, &graphics, line, bounds);
+                let graphics = line_graphics(line, style, label);
+                Some((self.add_node(index, &graphics), line))
             }
             Shape::Swimlane { start, horizontal } => {
                 let kind = NodeKind::Shape(ShapeType::Rectangle);
@@ -339,26 +328,22 @@ impl<'a> Converter<'a> {
                 }
                 let titled = head.width > 0.0 && head.height > 0.0;
                 let body_label = if titled { None } else { label.clone() };
-                let mut body = self.graphics(kind.clone(), bounds, style, body_label);
+                let mut body = graphics(kind.clone(), bounds, style, body_label);
                 body.fill.color = style
                     .color("swimlaneFillColor", Color::WHITE)
                     .map(|c| opacity(c, style, "fillOpacity"));
                 body.fill.gradient = None;
-                self.add_node(index, &body, bounds, bounds);
+                let node = self.add_node(index, &body);
                 if titled {
-                    if !horizontal && label.is_some() {
-                        self.notes.vertical_titles += 1;
-                    }
-                    let graphics = self.graphics(kind, head, style, label);
-                    self.push_node(&graphics);
+                    self.push_node(&graphics(kind, head, style, label));
                 }
+                Some((node, bounds))
             }
             Shape::Lifeline { head } => {
                 let kind = NodeKind::Shape(ShapeType::Rectangle);
                 let mut top = bounds;
                 top.height = head.max(1.0);
-                let graphics = self.graphics(kind.clone(), top, style, label);
-                self.push_node(&graphics);
+                self.push_node(&graphics(kind, top, style, label));
                 let width = style.number("strokeWidth", 1.0).max(1.0);
                 let line = Rect {
                     x: bounds.x + (bounds.width - width) / 2.0,
@@ -366,46 +351,55 @@ impl<'a> Converter<'a> {
                     width,
                     height: (bounds.height - top.height).max(1.0),
                 };
-                let mut graphics = self.graphics(kind, line, style, None);
-                graphics.fill.color = style.color("strokeColor", Color::BLACK);
-                graphics.fill.gradient = None;
-                graphics.border.color = None;
-                self.add_node(index, &graphics, line, bounds);
-            }
-            Shape::Group => {
-                // Invisible, so needed only for lines to end on.
-                if self.terminals.contains(cell.id.as_str()) {
-                    let kind = NodeKind::Shape(ShapeType::Rectangle);
-                    let graphics = self.graphics(kind, bounds, style, label);
-                    self.add_node(index, &graphics, bounds, bounds);
+                if style.flag_or("lifelineDashed", true) {
+                    self.notes.dashed_lines += 1;
                 }
+                let graphics = line_graphics(line, style, None);
+                Some((self.add_node(index, &graphics), line))
             }
+            // Invisible, so needed only for lines to end on.
+            Shape::Group if self.terminals.contains(cell.id.as_str()) => {
+                let kind = NodeKind::Shape(ShapeType::Rectangle);
+                let graphics = graphics(kind, bounds, style, label);
+                Some((self.add_node(index, &graphics), bounds))
+            }
+            Shape::Group => None,
             Shape::Unknown(name) => {
                 *self.notes.unknown.entry(name).or_default() += 1;
                 let kind = NodeKind::Shape(ShapeType::Rectangle);
-                let graphics = self.graphics(kind, bounds, style, label);
-                self.add_node(index, &graphics, bounds, bounds);
+                let graphics = graphics(kind, bounds, style, label);
+                Some((self.add_node(index, &graphics), bounds))
             }
+        };
+        if let Some((node, node_bounds)) = node {
+            let node_bounds = node_rect(node_bounds);
+            let placed = Placed {
+                node,
+                node_bounds,
+                bounds,
+                frame,
+            };
+            self.placed.insert(index, placed);
         }
     }
 
-    /// Adds an image's node: an SVG node if the file holds the SVG, else an
-    /// empty dashed box where it was.
+    /// Adds an image's node, returning its id: an SVG node if the file holds
+    /// the SVG, else an empty dashed box where it was.
     fn image(
         &mut self,
         index: usize,
         image: &str,
         bounds: Rect,
         style: &Style,
-        label: Option<Label>,
-    ) {
+        label: Option<yed::Label>,
+    ) -> String {
         match svg(image) {
             Some(svg) => {
                 let resource = Some(yed::add_resource(&mut self.doc, &svg));
                 let mut graphics = NodeGraphics::new(NodeKind::Svg { resource });
                 graphics.geometry = node_rect(bounds);
                 graphics.labels.extend(label);
-                self.add_node(index, &graphics, bounds, bounds);
+                self.add_node(index, &graphics)
             }
             None => {
                 if image.starts_with("data:") {
@@ -414,62 +408,25 @@ impl<'a> Converter<'a> {
                     self.notes.linked_images += 1;
                 }
                 let kind = NodeKind::Shape(ShapeType::Rectangle);
-                let mut graphics = self.graphics(kind, bounds, style, label);
+                let mut graphics = graphics(kind, bounds, style, label);
                 graphics.fill = Fill::default();
                 graphics.border = Stroke {
                     color: Some(Color::rgb(0xC0, 0xC0, 0xC0)),
                     line_type: LineType::Dashed,
                     width: 1.0,
                 };
-                self.add_node(index, &graphics, bounds, bounds);
+                self.add_node(index, &graphics)
             }
         }
     }
 
-    /// Graphics of `kind` in `bounds`, filled and outlined as `style` says.
-    fn graphics(
-        &self,
-        kind: NodeKind,
-        bounds: Rect,
-        style: &Style,
-        label: Option<Label>,
-    ) -> NodeGraphics {
-        let mut graphics = NodeGraphics::new(kind);
-        graphics.geometry = node_rect(bounds);
-        let fill = |key| {
-            let color = style.color(key, Color::WHITE);
-            color.map(|c| opacity(c, style, "fillOpacity"))
-        };
-        let color = fill("fillColor");
-        graphics.fill = Fill {
-            gradient: color.and(fill("gradientColor")),
-            color,
-        };
-        graphics.border = stroke(style);
-        graphics.labels.extend(label);
-        graphics
-    }
-
-    /// Adds a node for the vertex at `index`, lines ending on it within
-    /// `node_bounds`. Returns its id.
-    fn add_node(
-        &mut self,
-        index: usize,
-        graphics: &NodeGraphics,
-        node_bounds: Rect,
-        bounds: Rect,
-    ) -> String {
+    /// Adds a node for the vertex at `index`, keeping its link and tooltip.
+    /// Returns its id.
+    fn add_node(&mut self, index: usize, graphics: &NodeGraphics) -> String {
         let id = self.push_node(graphics);
         let node = self.doc.graphs[0].nodes.last_mut().expect("just added");
-        add_properties(&self.doc.keys, node, &self.cells[index]);
-        self.placed.insert(
-            index,
-            Placed {
-                node: id.clone(),
-                node_bounds: node_rect(node_bounds),
-                bounds,
-            },
-        );
+        let cell = &self.cells[index];
+        add_properties(&self.doc.keys, KeyDomain::Node, &mut node.data, cell);
         id
     }
 
@@ -481,218 +438,41 @@ impl<'a> Converter<'a> {
         self.doc.graphs[0].nodes.push(node);
         id
     }
+}
 
-    /// The label of `cell`, unless it has none.
-    fn label(&mut self, cell: &Cell, style: &Style, edge: bool) -> Option<Label> {
-        if style.flag("noLabel") {
-            return None;
-        }
-        let mut value = cell.value.clone();
-        if cell
-            .properties
-            .get("placeholders")
-            .is_some_and(|p| p == "1")
-        {
-            for (name, property) in &cell.properties {
-                value = value.replace(&format!("%{name}%"), property);
-            }
-        }
-        let text = match style.is("html", "1") {
-            true => text::from_html(&value),
-            false => text::from_plain(&value),
-        };
-        if text.text.trim().is_empty() {
-            return None;
-        }
-        if text.lost_formatting {
-            self.notes.formatting += 1;
-        }
-        let mut label = match edge {
-            true => Label::new_on_edge(text.text),
-            false => Label::new(text.text),
-        };
-        let bits = style.number("fontStyle", 0.0) as u32;
-        let bold = text.bold || bits & 1 != 0;
-        let italic = text.italic || bits & 2 != 0;
-        label.font = Font {
-            family: font_family(style),
-            size: style.number("fontSize", 12.0).round().max(1.0) as u32,
-            style: match (bold, italic) {
-                (true, true) => FontStyle::BoldItalic,
-                (true, false) => FontStyle::Bold,
-                (false, true) => FontStyle::Italic,
-                (false, false) => FontStyle::Plain,
-            },
-        };
-        label.text_color = style
-            .color("fontColor", Color::BLACK)
-            .map_or(Color::BLACK, |c| opacity(c, style, "textOpacity"));
-        label.background = style.color("labelBackgroundColor", Color::WHITE);
-        label.border = style.color("labelBorderColor", Color::BLACK);
-        label.alignment = match style.get("align") {
-            Some("left") => Alignment::Left,
-            Some("right") => Alignment::Right,
-            _ => Alignment::Center,
-        };
-        if !edge {
-            label.set_position(position(style));
-        }
-        Some(label)
-    }
+/// Graphics of `kind` in `bounds`, filled and outlined as `style` says.
+fn graphics(
+    kind: NodeKind,
+    bounds: Rect,
+    style: &Style,
+    label: Option<yed::Label>,
+) -> NodeGraphics {
+    let mut graphics = NodeGraphics::new(kind);
+    graphics.geometry = node_rect(bounds);
+    let fill = |key| {
+        let color = style.color(key, Color::WHITE);
+        color.map(|c| opacity(c, style, "fillOpacity"))
+    };
+    let color = fill("fillColor");
+    graphics.fill = Fill {
+        gradient: color.and(fill("gradientColor")),
+        color,
+    };
+    graphics.border = stroke(style);
+    graphics.labels.extend(label);
+    graphics
+}
 
-    /// Adds the line for the edge cell `pending.index`.
-    fn edge(&mut self, pending: Pending) {
-        let cells = self.cells;
-        let cell = &cells[pending.index];
-        if !cell.visible {
-            self.notes.hidden_lines += 1;
-            return;
-        }
-        let style = Style::new(&cell.style, true, pending.parent_style.as_ref());
-        let g = &cell.geometry;
-        let shift = |p: Point| Point {
-            x: p.x + pending.origin.x,
-            y: p.y + pending.origin.y,
-        };
-        let source = self.end(
-            cell.source.as_deref(),
-            g.source_point.map(shift),
-            &style,
-            true,
-        );
-        let target = self.end(
-            cell.target.as_deref(),
-            g.target_point.map(shift),
-            &style,
-            false,
-        );
-        let (Some(source), Some(target)) = (source, target) else {
-            self.notes.unplaced_lines += 1;
-            return;
-        };
-        let (source, target) = (self.terminal(source), self.terminal(target));
-        let hints: Vec<Point> = g.points.iter().copied().map(shift).collect();
-        let path = route::route(router(&style), &source.end, &target.end, &hints);
-        let relative = |port: Point, node: Rect| Point {
-            x: port.x - (node.x + node.width / 2.0),
-            y: port.y - (node.y + node.height / 2.0),
-        };
-        let mut graphics = EdgeGraphics::new(EdgeKind::PolyLine);
-        graphics.path = yed::Path {
-            source: relative(path.source, source.node_bounds),
-            target: relative(path.target, target.node_bounds),
-            points: path.bends,
-        };
-        graphics.line = stroke(&style);
-        graphics.arrows = Arrows {
-            source: arrow(style.get("startArrow"), style.get("startFill") != Some("0")),
-            target: arrow(style.get("endArrow"), style.get("endFill") != Some("0")),
-        };
-        if style.flag("curved") {
-            self.notes.curved += 1;
-        }
-        let along = yed::Route::new(&graphics.path, source.node_bounds, target.node_bounds);
-        if let Some(label) = self.label(cell, &style, true) {
-            let label = place(label, &along, g.x, g.y, g.offset, &style);
-            graphics.labels.push(label);
-        }
-        for child in self.children_of(pending.index) {
-            let child = &cells[child];
-            if !child.vertex || !child.visible {
-                continue;
-            }
-            let child_style = Style::new(&child.style, false, Some(&style));
-            if let Some(label) = self.label(child, &child_style, true) {
-                let cg = &child.geometry;
-                let label = place(label, &along, cg.x, cg.y, cg.offset, &child_style);
-                graphics.labels.push(label);
-            }
-        }
-        let id = format!("e{}", self.edge_count);
-        self.edge_count += 1;
-        let mut edge = Edge::new(source.node, target.node);
-        edge.id = Some(id);
-        add_properties(&self.doc.keys, &mut edge, cell);
-        self.keys.set_edge_graphics(&mut edge, &graphics);
-        self.doc.graphs[0].edges.push(edge);
-    }
-
-    /// Where a line ends: on the vertex with id `id`, or loose at `point`.
-    fn end(
-        &self,
-        id: Option<&str>,
-        point: Option<Point>,
-        style: &Style,
-        source: bool,
-    ) -> Option<LineEnd> {
-        let mut point = point;
-        if let Some(&index) = id.and_then(|id| self.index.get(id)) {
-            let index = self.stand_ins.get(&index).copied().unwrap_or(index);
-            if let Some(placed) = self.placed.get(&index) {
-                return Some(LineEnd::On(Terminal {
-                    node: placed.node.clone(),
-                    node_bounds: placed.node_bounds,
-                    end: End {
-                        bounds: placed.bounds,
-                        point: constraint(style, source, placed.bounds),
-                    },
-                }));
-            }
-            if !self.cells[index].edge {
-                // A vertex that isn't drawn, such as a hidden one.
-                return None;
-            }
-            point = point.or_else(|| self.middle_of(index));
-        }
-        point.map(LineEnd::Loose)
-    }
-
-    /// The terminal for a line end, adding a small node for a loose one.
-    fn terminal(&mut self, end: LineEnd) -> Terminal {
-        let point = match end {
-            LineEnd::On(terminal) => return terminal,
-            LineEnd::Loose(point) => point,
-        };
-        self.notes.loose_ends += 1;
-        let bounds = Rect {
-            x: point.x - ANCHOR_SIZE / 2.0,
-            y: point.y - ANCHOR_SIZE / 2.0,
-            width: ANCHOR_SIZE,
-            height: ANCHOR_SIZE,
-        };
-        let mut graphics = NodeGraphics::new(NodeKind::Shape(ShapeType::Rectangle));
-        graphics.geometry = bounds;
-        graphics.fill = Fill::default();
-        graphics.border.color = None;
-        Terminal {
-            node: self.push_node(&graphics),
-            node_bounds: bounds,
-            end: End {
-                bounds,
-                point: Some(point),
-            },
-        }
-    }
-
-    /// Roughly the middle of the edge cell at `index`, for lines ending on it.
-    fn middle_of(&self, index: usize) -> Option<Point> {
-        let cell = &self.cells[index];
-        let points = &cell.geometry.points;
-        if !points.is_empty() {
-            return Some(points[points.len() / 2]);
-        }
-        let center = |id: Option<&str>| {
-            let placed = self.placed.get(self.index.get(id?)?)?;
-            let b = placed.bounds;
-            Some((b.x + b.width / 2.0, b.y + b.height / 2.0))
-        };
-        let (sx, sy) = center(cell.source.as_deref())?;
-        let (tx, ty) = center(cell.target.as_deref())?;
-        Some(Point {
-            x: (sx + tx) / 2.0,
-            y: (sy + ty) / 2.0,
-        })
-    }
+/// A line drawn as a box `line` filled with the line's color.
+fn line_graphics(line: Rect, style: &Style, label: Option<yed::Label>) -> NodeGraphics {
+    let kind = NodeKind::Shape(ShapeType::Rectangle);
+    let mut graphics = graphics(kind, line, style, label);
+    graphics.fill = Fill {
+        color: stroke(style).color,
+        gradient: None,
+    };
+    graphics.border.color = None;
+    graphics
 }
 
 /// Lines along the `drawn` sides (top, right, bottom, left) of `bounds`, as
@@ -736,6 +516,13 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
     }
 }
 
+fn center(rect: Rect) -> Point {
+    Point {
+        x: rect.x + rect.width / 2.0,
+        y: rect.y + rect.height / 2.0,
+    }
+}
+
 /// Bounds a node can have: drwr and yEd draw nothing narrower than a point.
 fn node_rect(bounds: Rect) -> Rect {
     Rect {
@@ -776,7 +563,14 @@ fn percent_decode(text: &str) -> Option<String> {
 
 /// Applies draw.io's `opacity`, and the opacity under `key`, to `color`.
 fn opacity(color: Color, style: &Style, key: &str) -> Color {
-    let fraction = style.number("opacity", 100.0) / 100.0 * style.number(key, 100.0) / 100.0;
+    fade(
+        color,
+        style.number("opacity", 100.0) * style.number(key, 100.0) / 1e4,
+    )
+}
+
+/// `color` with its alpha scaled by `fraction`.
+fn fade(color: Color, fraction: f64) -> Color {
     Color {
         a: (f64::from(color.a) * fraction.clamp(0.0, 1.0)).round() as u8,
         ..color
@@ -811,50 +605,6 @@ fn line_type(style: &Style) -> LineType {
     }
 }
 
-/// The first font family in `fontFamily`, which may be a CSS list.
-fn font_family(style: &Style) -> String {
-    let families = style.get("fontFamily").unwrap_or("Helvetica");
-    let first = families.split(',').next().unwrap_or_default();
-    let first = first.trim().trim_matches(['"', '\'']);
-    match first.is_empty() {
-        true => "Helvetica".to_owned(),
-        false => first.to_owned(),
-    }
-}
-
-/// The yEd position closest to where draw.io puts a vertex's label.
-fn position(style: &Style) -> LabelPosition {
-    use LabelPosition::*;
-    let outside_x = style.get("labelPosition").unwrap_or("center");
-    let outside_y = style.get("verticalLabelPosition").unwrap_or("middle");
-    match (outside_x, outside_y) {
-        ("center", "middle") => {}
-        ("center", "top") => return North,
-        ("center", "bottom") => return South,
-        ("left", "middle") => return West,
-        ("right", "middle") => return East,
-        ("left", "top") => return NorthWest,
-        ("right", "top") => return NorthEast,
-        ("left", "bottom") => return SouthWest,
-        ("right", "bottom") => return SouthEast,
-        _ => {}
-    }
-    match (
-        style.get("align").unwrap_or("center"),
-        style.get("verticalAlign").unwrap_or("middle"),
-    ) {
-        ("left", "top") => TopLeft,
-        ("right", "top") => TopRight,
-        ("left", "bottom") => BottomLeft,
-        ("right", "bottom") => BottomRight,
-        ("left", _) => Left,
-        ("right", _) => Right,
-        (_, "top") => Top,
-        (_, "bottom") => Bottom,
-        _ => Center,
-    }
-}
-
 /// Whether draw.io draws a yEd shape turned some way yEd can't.
 fn turned(style: &Style, kind: &ShapeType) -> bool {
     let direction = style.get("direction").unwrap_or("east");
@@ -862,152 +612,15 @@ fn turned(style: &Style, kind: &ShapeType) -> bool {
     match kind {
         // yEd's triangle points up; draw.io's points right unless turned.
         ShapeType::Triangle => direction != "north" || style.flag("flipV"),
-        ShapeType::Parallelogram => upright || style.flag("flipH") != (direction == "west"),
+        // Turned half round it's the same, while either flip mirrors it.
+        ShapeType::Parallelogram => upright || style.flag("flipH") != style.flag("flipV"),
         ShapeType::Hexagon | ShapeType::Trapezoid | ShapeType::Trapezoid2 => upright,
         _ => false,
     }
 }
 
-/// The point a line's draw.io constraint fixes it to on a node in `bounds`.
-fn constraint(style: &Style, source: bool, bounds: Rect) -> Option<Point> {
-    let [x, y, dx, dy] = match source {
-        true => ["exitX", "exitY", "exitDx", "exitDy"],
-        false => ["entryX", "entryY", "entryDx", "entryDy"],
-    };
-    let fraction = |key: &str| {
-        style
-            .get(key)?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite())
-    };
-    Some(Point {
-        x: bounds.x + fraction(x)? * bounds.width + style.number(dx, 0.0),
-        y: bounds.y + fraction(y)? * bounds.height + style.number(dy, 0.0),
-    })
-}
-
-fn router(style: &Style) -> Router {
-    if style.flag("noEdgeStyle") {
-        return Router::Straight;
-    }
-    match style.get("edgeStyle") {
-        Some("orthogonalEdgeStyle" | "segmentEdgeStyle") => Router::Orthogonal,
-        Some("elbowEdgeStyle") => Router::Elbow {
-            vertical: style.is("elbow", "vertical"),
-        },
-        Some("entityRelationEdgeStyle") => Router::EntityRelation {
-            segment: style.number("segment", 30.0),
-        },
-        Some("sequenceEdgeStyle") => Router::Sequence,
-        _ => Router::Straight,
-    }
-}
-
-/// The yEd arrowhead closest to draw.io's marker `name`, filled or not.
-fn arrow(name: Option<&str>, filled: bool) -> Arrow {
-    let Some(name) = name else {
-        return Arrow::None;
-    };
-    let other = |keyword: &str| Arrow::Other(keyword.to_owned());
-    match name {
-        "classic" | "classicThin" if filled => Arrow::Standard,
-        "block" | "blockThin" | "doubleBlock" if filled => Arrow::Delta,
-        "classic" | "classicThin" | "block" | "blockThin" | "doubleBlock" => Arrow::WhiteDelta,
-        "open" | "openThin" | "async" | "openAsync" => Arrow::Plain,
-        "oval" | "circle" | "circlePlus" if filled => Arrow::Circle,
-        "oval" | "circle" | "circlePlus" | "halfCircle" => Arrow::TransparentCircle,
-        "diamond" | "diamondThin" if filled => Arrow::Diamond,
-        "diamond" | "diamondThin" => Arrow::WhiteDiamond,
-        "dash" | "baseDash" => Arrow::Dash,
-        "cross" => Arrow::SkewedDash,
-        "ERone" => other("crows_foot_one"),
-        "ERmandOne" => other("crows_foot_one_mandatory"),
-        "ERmany" => other("crows_foot_many"),
-        "ERoneToMany" => other("crows_foot_many_mandatory"),
-        "ERzeroToMany" => other("crows_foot_many_optional"),
-        "ERzeroToOne" => other("crows_foot_one_optional"),
-        _ => Arrow::Standard,
-    }
-}
-
-/// Places an edge label as draw.io does: `x` from -1 to 1 along the line,
-/// `y` away from it, moved by `offset`, then aligned to that point.
-fn place(
-    mut label: Label,
-    route: &yed::Route,
-    x: f64,
-    y: f64,
-    offset: Option<Point>,
-    style: &Style,
-) -> Label {
-    let points = &route.points;
-    let lengths: Vec<f64> = points.windows(2).map(|w| distance(w[0], w[1])).collect();
-    let total: f64 = lengths.iter().sum();
-    let mut center = points[0];
-    if total > 0.0 {
-        let mut left = ((x / 2.0 + 0.5) * total).clamp(0.0, total);
-        for (i, &length) in lengths.iter().enumerate() {
-            if left <= length || i == lengths.len() - 1 {
-                let (a, b) = (points[i], points[i + 1]);
-                let t = if length > 0.0 { left / length } else { 0.0 };
-                let (dx, dy) = (b.x - a.x, b.y - a.y);
-                let (nx, ny) = match length > 0.0 {
-                    true => (dy / length, dx / length),
-                    false => (0.0, 0.0),
-                };
-                center = Point {
-                    x: a.x + dx * t + nx * y,
-                    y: a.y + dy * t - ny * y,
-                };
-                break;
-            }
-            left -= length;
-        }
-    }
-    let offset = offset.unwrap_or_default();
-    center.x += offset.x;
-    center.y += offset.y;
-    let (width, height) = estimate_size(&label);
-    // The point is the label's center unless it's aligned otherwise.
-    match style.get("align") {
-        Some("left") => center.x += width / 2.0,
-        Some("right") => center.x -= width / 2.0,
-        _ => {}
-    }
-    match style.get("verticalAlign") {
-        Some("top") => center.y += height / 2.0,
-        Some("bottom") => center.y -= height / 2.0,
-        _ => {}
-    }
-    label.place_on(route, center, width, height);
-    label
-}
-
-fn distance(a: Point, b: Point) -> f64 {
-    (b.x - a.x).hypot(b.y - a.y)
-}
-
-/// A label's rough size, before a renderer measures it.
-fn estimate_size(label: &Label) -> (f64, f64) {
-    let size = f64::from(label.font.size);
-    let lines = label.text.lines().count().max(1);
-    let widest = label
-        .text
-        .lines()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
-    (
-        widest as f64 * size * 0.55 + 4.0,
-        lines as f64 * size * 1.2 + 4.0,
-    )
-}
-
 /// Keeps a draw.io link and tooltip as yEd's `url` and `description` data.
-fn add_properties(keys: &[graphml::Key], element: &mut impl HasData, cell: &Cell) {
-    let domain = element.domain();
+fn add_properties(keys: &[Key], domain: KeyDomain, data: &mut Vec<Data>, cell: &Cell) {
     for (property, name) in [("link", "url"), ("tooltip", "description")] {
         let Some(value) = cell.properties.get(property).filter(|v| !v.is_empty()) else {
             continue;
@@ -1016,34 +629,7 @@ fn add_properties(keys: &[graphml::Key], element: &mut impl HasData, cell: &Cell
             .iter()
             .find(|key| key.domain == domain && key.attr_name.as_deref() == Some(name));
         if let Some(key) = key {
-            element
-                .data()
-                .push(Data::from_text(key.id.clone(), value.clone()));
+            data.push(Data::from_text(key.id.clone(), value.clone()));
         }
-    }
-}
-
-trait HasData {
-    fn domain(&self) -> KeyDomain;
-    fn data(&mut self) -> &mut Vec<Data>;
-}
-
-impl HasData for Node {
-    fn domain(&self) -> KeyDomain {
-        KeyDomain::Node
-    }
-
-    fn data(&mut self) -> &mut Vec<Data> {
-        &mut self.data
-    }
-}
-
-impl HasData for Edge {
-    fn domain(&self) -> KeyDomain {
-        KeyDomain::Edge
-    }
-
-    fn data(&mut self) -> &mut Vec<Data> {
-        &mut self.data
     }
 }

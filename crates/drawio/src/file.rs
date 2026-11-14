@@ -1,10 +1,13 @@
 use std::io::Read;
 
-use base64::Engine;
+use base64::{
+    Engine, alphabet,
+    engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
+};
 use flate2::read::{DeflateDecoder, ZlibDecoder};
 use graphml::xml::Element;
 
-use crate::{Error, Import, convert, model::Model};
+use crate::{Error, Import, convert, model::Model, text::zap_gremlins};
 
 /// Whether `text` holds a draw.io diagram rather than, say, GraphML: whether
 /// its root element is `<mxfile>` or `<mxGraphModel>`.
@@ -49,7 +52,7 @@ impl File {
     /// Reads a draw.io file: an `<mxfile>` of pages, compressed or not, or a
     /// lone `<mxGraphModel>`.
     pub fn parse(text: &str) -> Result<Self, Error> {
-        let root = Element::parse(text)?;
+        let root = Element::parse(&zap_gremlins(text))?;
         let pages = match root.local_name() {
             "mxGraphModel" => vec![Page {
                 name: page_name(0),
@@ -113,10 +116,15 @@ fn page_name(index: usize) -> String {
 /// Undoes draw.io's compression: Base64 of raw Deflate (zlib in old files)
 /// of the URI-encoded XML.
 fn decompress(text: &str) -> Result<String, String> {
+    // As lenient as browsers' atob, which draw.io decodes with.
+    const ATOB: GeneralPurpose = GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+            .with_decode_allow_trailing_bits(true),
+    );
     let text: String = text.split_whitespace().collect();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(text)
-        .map_err(|err| err.to_string())?;
+    let bytes = ATOB.decode(text).map_err(|err| err.to_string())?;
     let mut inflated = Vec::new();
     if DeflateDecoder::new(&bytes[..])
         .read_to_end(&mut inflated)
@@ -125,7 +133,8 @@ fn decompress(text: &str) -> Result<String, String> {
         inflated.clear();
         (ZlibDecoder::new(&bytes[..]).read_to_end(&mut inflated)).map_err(|err| err.to_string())?;
     }
-    decode_uri_component(&inflated)
+    let xml = decode_uri_component(&inflated)?;
+    Ok(zap_gremlins(&xml).into_owned())
 }
 
 /// Decodes `%XX` escapes, as JavaScript's `decodeURIComponent` does.

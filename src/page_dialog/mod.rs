@@ -1,20 +1,12 @@
-use egui::{Align, Button, Context, EventFilter, Key, Layout, Modifiers, ScrollArea, Sense, Ui};
+use egui::{Align, Button, Context, Key, Layout, Modifiers, ScrollArea, Sense, Ui};
 
 use crate::dialog;
 
-const MIN_WIDTH: f32 = 240.0;
-/// As wide as a prompt at most, long names cut short.
-const MAX_WIDTH: f32 = 400.0;
+/// As wide as a prompt at most, long names cut short. Fixed, as its
+/// separator widens it to its maximum, but only after its first frame.
+const WIDTH: f32 = 400.0;
 /// Beyond this, the list scrolls, so the buttons stay in the window.
 const MAX_LIST_HEIGHT: f32 = 300.0;
-
-/// Up and Down move the selection instead of the focus.
-const ARROWS: EventFilter = EventFilter {
-    tab: false,
-    horizontal_arrows: false,
-    vertical_arrows: true,
-    escape: false,
-};
 
 /// A modal dialog asking which page of a file to open, for a target of type
 /// `T`, which tells the caller what the pages are of.
@@ -73,8 +65,7 @@ impl<T> PageDialog<T> {
 impl<T> Dialog<T> {
     /// Returns whether the selected page was opened.
     fn ui(&mut self, ui: &mut Ui) -> bool {
-        ui.set_min_width(MIN_WIDTH);
-        ui.set_max_width(MAX_WIDTH);
+        ui.set_width(WIDTH);
         ui.strong("Open page");
         let count = self.pages.len();
         ui.label(format!(
@@ -123,9 +114,6 @@ impl<T> Dialog<T> {
                 open.request_focus();
             }
             let cancel = ui.button("Cancel");
-            for button in [&open, &cancel] {
-                ui.memory_mut(|memory| memory.set_focus_lock_filter(button.id, ARROWS));
-            }
             if cancel.clicked() {
                 ui.close();
             }

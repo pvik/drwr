@@ -9,10 +9,8 @@ pub enum Error {
     /// The root element, by name, isn't `<mxfile>` or `<mxGraphModel>`.
     NotDrawio(String),
     /// A compressed page can't be decompressed.
-    Compressed {
-        page: String,
-        problem: String,
-    },
+    Compressed { page: String, problem: String },
+    /// The `<mxfile>` has no `<diagram>`.
     NoPages,
 }
 

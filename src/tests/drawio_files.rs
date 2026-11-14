@@ -512,3 +512,59 @@ fn dash_open_imports_a_drawio_file_asking_for_the_page_from_the_first_frame() {
     let err = app.open(&broken).unwrap_err();
     assert_eq!(err.to_string(), "the file has no pages");
 }
+
+#[test]
+fn up_and_down_keep_the_focus_on_open_over_the_app() {
+    let dir = ScratchDir::new("drawio-pages-up");
+    let pages = [box_page("First", "One"), box_page("Second", "Two")];
+    let file = dir.drawio("plan.drawio", &pages);
+    let mut harness = fixture_harness();
+    harness.open_file(&file);
+    for key in [Key::ArrowUp, Key::ArrowDown, Key::ArrowUp] {
+        harness.press(Modifiers::NONE, key);
+    }
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.labels(), ["One"]);
+}
+
+#[test]
+fn notes_are_dropped_with_the_import_they_tell_of() {
+    let dir = ScratchDir::new("drawio-notes-dropped");
+    let file = dir.drawio("plan.drawio", &[page("A", LOOSE_LINE)]);
+    let mut harness = Harness::new();
+    harness.app.open(&file).unwrap();
+    assert!(harness.app.import_notes.is_some());
+    harness.open_fixture();
+    assert!(harness.app.import_notes.is_none());
+    assert!(!harness.painted("Opened with changes"));
+}
+
+#[test]
+fn each_notes_dialog_is_sized_for_its_own_notes_from_its_first_frame() {
+    let dir = ScratchDir::new("drawio-notes-size");
+    let cells = [
+        shape("2", "", "shape=mxgraph.aws4.lambda_function;", 10),
+        shape("3", "", "shape=mxgraph.azure.storage_blob_container;", 200),
+        shape("4", "", "rotation=30;", 400),
+    ];
+    let long = dir.drawio("long.drawio", &[page("A", &cells.concat())]);
+    let short = dir.drawio("short.drawio", &[page("A", LOOSE_LINE)]);
+    let mut harness = Harness::new();
+    let mut first_and_settled = Vec::new();
+    for file in [&long, &short] {
+        harness.app.open(file).unwrap();
+        let mut ok = Vec::new();
+        for _ in 0..4 {
+            let shapes = harness.run(vec![]);
+            ok.extend(shapes.iter().find_map(|shape| match shape {
+                Shape::Text(text) if text.galley.text() == "OK" => Some(text.pos),
+                _ => None,
+            }));
+        }
+        first_and_settled.push((ok[0], *ok.last().unwrap()));
+        harness.press(Modifiers::NONE, Key::Enter);
+    }
+    for (first, settled) in first_and_settled {
+        assert_eq!(first, settled);
+    }
+}

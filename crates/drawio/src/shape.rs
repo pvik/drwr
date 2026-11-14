@@ -107,7 +107,7 @@ pub(crate) fn shape(style: &Style, width: f64, height: f64) -> Shape {
         // draw.io's tables are swimlanes too.
         "swimlane" | "table" => Shape::Swimlane {
             start: style.number("startSize", 40.0).max(0.0),
-            horizontal: style.get("horizontal") != Some("0"),
+            horizontal: style.parsed("horizontal") != Some(0.0),
         },
         "umlLifeline" => Shape::Lifeline {
             head: style.number("size", 40.0).clamp(0.0, height),

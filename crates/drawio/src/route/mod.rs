@@ -10,6 +10,9 @@ pub(crate) struct End {
     /// Where on the node the line is fixed to, if it is (draw.io's
     /// `exitX`/`entryX`, or a loose end); else it floats.
     pub point: Option<Point>,
+    /// Whether it's a loose end, at `point` on no node of draw.io's, so with
+    /// no side to leave by.
+    pub loose: bool,
 }
 
 /// How a line is routed: draw.io's `edgeStyle`.
@@ -46,24 +49,19 @@ const JETTY: f64 = 20.0;
 /// Routes a line from `source` to `target` through the points the user
 /// placed, `hints`.
 pub(crate) fn route(router: Router, source: &End, target: &End, hints: &[Point]) -> Path {
-    if router == Router::Straight {
-        return Path {
-            source: source.point.unwrap_or(center(source.bounds)),
-            target: target.point.unwrap_or(center(target.bounds)),
-            bends: hints.to_vec(),
-        };
-    }
-    let mut bends = if source.bounds == target.bounds && hints.is_empty() {
-        self_loop(source.bounds)
-    } else {
-        match router {
-            Router::Straight => unreachable!("handled above"),
-            Router::Orthogonal if hints.is_empty() => orthogonal(source, target),
-            Router::Orthogonal => segments(source, target, hints),
-            Router::Elbow { vertical } => elbow(source, target, hints.first().copied(), vertical),
-            Router::EntityRelation { segment } => entity_relation(source, target, segment),
-            Router::Sequence => sequence(source, target, hints),
+    let mut bends = match router {
+        Router::Straight => {
+            return Path {
+                source: source.point.unwrap_or(center(source.bounds)),
+                target: target.point.unwrap_or(center(target.bounds)),
+                bends: hints.to_vec(),
+            };
         }
+        Router::Orthogonal if hints.is_empty() => orthogonal(source, target),
+        Router::Orthogonal => segments(source, target, hints),
+        Router::Elbow { vertical } => elbow(source, target, hints.first().copied(), vertical),
+        Router::EntityRelation { segment } => entity_relation(source, target, segment),
+        Router::Sequence => sequence(source, target, hints),
     };
     let source_port = port(source, bends.first().copied(), target);
     let target_port = port(target, bends.last().copied(), source);
@@ -156,21 +154,54 @@ fn simplify(bends: &mut Vec<Point>) {
     }
 }
 
-/// A loop out of the right side of a node and back.
-fn self_loop(bounds: Rect) -> Vec<Point> {
-    let x = bounds.x + bounds.width + JETTY;
-    let quarter = bounds.height / 4.0;
-    let mid = center(bounds);
-    vec![
-        Point {
-            x,
-            y: mid.y - quarter,
+/// draw.io's loop from a node back to it: two bends `segment` either side
+/// of the middle, `2 × segment` beyond the side `direction` picks (west, the
+/// default, puts them right of it), or beside the first point placed, `hint`.
+pub(crate) fn self_loop(
+    source: &End,
+    target: &End,
+    hint: Option<Point>,
+    segment: f64,
+    direction: &str,
+) -> Path {
+    let b = source.bounds;
+    let mid = center(b);
+    let (mut x, mut y, mut dx, mut dy) = match direction {
+        "north" | "south" => (mid.x, 0.0, segment, 0.0),
+        _ => (0.0, mid.y, 0.0, segment),
+    };
+    match hint.filter(|&hint| !contains(b, hint)) {
+        Some(hint) if within(hint.x, b.x, b.x + b.width) => {
+            x = mid.x;
+            dx = (x - hint.x).abs().max(dy);
+            y = hint.y;
+            dy = 0.0;
+        }
+        Some(hint) => {
+            x = hint.x;
+            dy = (y - hint.y).abs().max(dy);
+        }
+        None => match direction {
+            "north" => y = b.y - 2.0 * dx,
+            "south" => y = b.y + b.height + 2.0 * dx,
+            "east" => x = b.x - 2.0 * dy,
+            _ => x = b.x + b.width + 2.0 * dy,
         },
-        Point {
-            x,
-            y: mid.y + quarter,
-        },
-    ]
+    }
+    Path {
+        source: source.point.unwrap_or(mid),
+        target: target.point.unwrap_or(mid),
+        bends: vec![
+            Point {
+                x: x - dx,
+                y: y - dy,
+            },
+            Point {
+                x: x + dx,
+                y: y + dy,
+            },
+        ],
+    }
 }
 
 /// A side of a node, by the direction a line leaves it in.
@@ -216,7 +247,7 @@ impl Side {
 
 /// The side a fixed point lies on, within a point of it.
 fn side_of(end: &End) -> Option<Side> {
-    let point = end.point?;
+    let point = end.point.filter(|_| !end.loose)?;
     let b = end.bounds;
     let near = |a: f64, b: f64| (a - b).abs() <= 1.0;
     if near(point.x, b.x) {
@@ -381,16 +412,13 @@ fn segments(source: &End, target: &End, hints: &[Point]) -> Vec<Point> {
     snap(&mut hints[0], start);
     let last = hints.len() - 1;
     snap(&mut hints[last], end);
+    let (first, last) = (hints[0], hints[last]);
 
     // Whether the segment through the first point runs across, decided by
     // which channel of either node the points line up with.
     let mut horizontal = true;
     for (i, end_of_line) in [source, target].into_iter().enumerate() {
-        let hint = if i == 0 {
-            hints[0]
-        } else {
-            hints[hints.len() - 1]
-        };
+        let hint = if i == 0 { first } else { last };
         let (level, upright) = match end_of_line.point {
             Some(point) => (point.y == hint.y, point.x == hint.x),
             None => {
@@ -402,7 +430,9 @@ fn segments(source: &End, target: &End, hints: &[Point]) -> Vec<Point> {
             }
         };
         if i == 0 && level && upright {
-            if end_of_line.point.is_some() && hints.len() > 1 {
+            // A point on a fixed start is dropped, as draw.io does, though
+            // the line still turns as from it.
+            if end_of_line.point.is_some() {
                 hints.remove(0);
             }
             continue;
@@ -419,7 +449,6 @@ fn segments(source: &End, target: &End, hints: &[Point]) -> Vec<Point> {
 
     let mut points = Vec::new();
     let mut at = start;
-    let first = hints[0];
     if horizontal {
         if needs_turn(source, first, true) {
             points.push(Point {
@@ -446,7 +475,7 @@ fn segments(source: &End, target: &End, hints: &[Point]) -> Vec<Point> {
         }
         points.push(at);
     }
-    let last = hints[hints.len() - 1];
+    let last = hints.last().copied().unwrap_or(first);
     if horizontal && needs_turn(target, last, true) {
         points.push(Point {
             x: end.x,
@@ -623,29 +652,25 @@ fn entity_relation(source: &End, target: &End, segment: f64) -> Vec<Point> {
     }
 }
 
-/// draw.io's sequence message: level at its placed point's height, or a
-/// fixed end's, within the span both ends share. More points route by hand.
+/// draw.io's sequence message: level at its placed point's height, within
+/// the span both ends share. A fixed end needs no bend: the other end's port
+/// meets it level if it can reach, and draw.io draws it straight if not. More
+/// points, or a loose end, route by hand.
 fn sequence(source: &End, target: &End, hints: &[Point]) -> Vec<Point> {
-    if hints.len() > 1 {
+    if hints.len() > 1 || source.loose || target.loose {
         return hints.to_vec();
     }
     let (s, t) = (source.bounds, target.bounds);
-    let y = match (source.point, target.point) {
-        (Some(_), Some(_)) => return Vec::new(),
-        (Some(fixed), None) | (None, Some(fixed)) => fixed.y,
-        (None, None) => {
-            let top = s.y.max(t.y);
-            let bottom = (s.y + s.height).min(t.y + t.height);
-            if top > bottom {
-                return Vec::new();
-            }
-            let middle = (center(s).y + center(t).y) / 2.0;
-            hints
-                .first()
-                .map_or(middle, |hint| hint.y)
-                .clamp(top, bottom)
-        }
-    };
+    let top = s.y.max(t.y);
+    let bottom = (s.y + s.height).min(t.y + t.height);
+    if source.point.is_some() || target.point.is_some() || top > bottom {
+        return Vec::new();
+    }
+    let middle = (center(s).y + center(t).y) / 2.0;
+    let y = hints
+        .first()
+        .map_or(middle, |hint| hint.y)
+        .clamp(top, bottom);
     let x = (center(s).x + center(t).x) / 2.0;
     vec![Point { x, y }]
 }

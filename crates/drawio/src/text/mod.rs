@@ -1,6 +1,6 @@
 //! Turns draw.io's HTML labels into plain text.
 
-use std::mem;
+use std::{borrow::Cow, mem};
 
 /// A label's plain text, and the font style its markup gives all of it.
 #[derive(Debug, Default, PartialEq)]
@@ -13,10 +13,15 @@ pub(crate) struct Text {
     pub lost_formatting: bool,
 }
 
-/// The text of an HTML label, broken into lines where the HTML breaks them.
-pub(crate) fn from_html(html: &str) -> Text {
+/// The text of an HTML label, broken into lines where the HTML breaks them,
+/// and with `newlines`, as draw.io's `nl2Br` does, at its newlines too.
+pub(crate) fn from_html(html: &str, newlines: bool) -> Text {
+    let html = match newlines {
+        true => Cow::Owned(newlines_to_breaks(html)),
+        false => Cow::Borrowed(html),
+    };
     let mut out = Writer::default();
-    let mut rest = html;
+    let mut rest = html.as_ref();
     while let Some(i) = rest.find(['<', '&']) {
         out.text(&rest[..i]);
         rest = &rest[i..];
@@ -44,8 +49,28 @@ pub(crate) fn from_html(html: &str) -> Text {
 /// The text of a plain label.
 pub(crate) fn from_plain(text: &str) -> Text {
     Text {
-        text: text.replace("\r\n", "\n"),
+        text: zap_gremlins(&text.replace("\r\n", "\n")).into_owned(),
         ..Text::default()
+    }
+}
+
+/// As draw.io renders HTML labels: trailing newlines as empty lines, others
+/// as breaks.
+fn newlines_to_breaks(html: &str) -> String {
+    let text = html.trim_end_matches('\n');
+    let trailing = html.len() - text.len();
+    text.replace('\n', "<br>") + &"<div><br></div>".repeat(trailing)
+}
+
+/// Drops the control characters XML can't hold, as draw.io's `zapGremlins`
+/// does.
+pub(crate) fn zap_gremlins(text: &str) -> Cow<'_, str> {
+    let gremlin = |c: char| {
+        (c < ' ' && !matches!(c, '\t' | '\n' | '\r')) || matches!(c, '\u{fffe}' | '\u{ffff}')
+    };
+    match text.contains(gremlin) {
+        true => text.chars().filter(|&c| !gremlin(c)).collect(),
+        false => Cow::Borrowed(text),
     }
 }
 
@@ -122,7 +147,13 @@ fn entity(text: &str) -> (String, usize) {
             Some(hex) => u32::from_str_radix(hex, 16).ok(),
             None => number.parse().ok(),
         };
-        code.and_then(char::from_u32).map(String::from)
+        // As browsers decode NUL, surrogates and numbers past Unicode.
+        code.map(|code| {
+            char::from_u32(code)
+                .filter(|&c| c != '\0')
+                .unwrap_or('\u{fffd}')
+        })
+        .map(String::from)
     } else if terminated {
         named_entity(name).map(String::from)
     } else {
@@ -291,14 +322,14 @@ impl Writer {
         match name {
             "" => return,
             "br" => {
-                self.space = false;
                 self.lines.push(mem::take(&mut self.line));
                 return;
             }
             "b" | "strong" => depth(&mut self.bold),
             "i" | "em" => depth(&mut self.italic),
             "style" | "script" | "head" | "title" => depth(&mut self.hidden),
-            "td" | "th" if !tag.closing && !self.line.is_empty() => self.space = true,
+            // Cells side by side, apart.
+            "td" | "th" => self.space = true,
             _ => {}
         }
         if BLOCKS.contains(&name) {
@@ -323,8 +354,9 @@ impl Writer {
         let italic = self.any_text && self.all_italic;
         // Bold or italic on part of the text is formatting lost.
         let partly = (self.some_bold && !bold) || (self.some_italic && !italic);
+        let text = self.lines.join("\n").replace('\u{a0}', " ");
         Text {
-            text: self.lines.join("\n").replace('\u{a0}', " "),
+            text: zap_gremlins(&text).into_owned(),
             bold,
             italic,
             lost_formatting: self.lost_formatting || partly,

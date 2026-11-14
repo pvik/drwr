@@ -1,7 +1,8 @@
 use egui::{Context, Id, Modal};
 
-/// As wide as a prompt at most.
-const MAX_WIDTH: f32 = 400.0;
+/// As wide as a prompt at most. Fixed, as its separator widens it to its
+/// maximum, but only after its first frame.
+const WIDTH: f32 = 400.0;
 
 /// What converting a draw.io file to GraphML couldn't carry over, for the
 /// notes dialog to tell.
@@ -36,7 +37,7 @@ pub fn show(ctx: &Context, notes: &mut Option<Notes>) {
     // Opaque from the first frame it's shown, unlike egui's fade-in.
     let area = Modal::default_area(id).fade_in(false);
     let modal = Modal::new(id).area(area).show(ctx, |ui| {
-        ui.set_max_width(MAX_WIDTH);
+        ui.set_width(WIDTH);
         ui.strong("Opened with changes");
         ui.label(format!(
             "{} was converted to GraphML. Some things couldn't be carried over:",

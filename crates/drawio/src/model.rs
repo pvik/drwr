@@ -4,9 +4,19 @@ use graphml::{
 };
 
 /// The cells of a page, in the order draw.io paints them.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct Model {
     pub cells: Vec<Cell>,
+    pub grid_size: f64,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Model {
+            cells: Vec::new(),
+            grid_size: 10.0,
+        }
+    }
 }
 
 /// An `<mxCell>`: a layer, a shape (vertex), or a line (edge).
@@ -55,14 +65,16 @@ impl Model {
             root.elements()
                 .filter_map(|element| match element.local_name() {
                     "mxCell" => Some(Cell::read(element, None)),
-                    "UserObject" | "object" => {
-                        Some(Cell::read(element.child("mxCell")?, Some(element)))
-                    }
-                    _ => None,
+                    // draw.io writes <UserObject> or <object>, but reads any.
+                    _ => Some(Cell::read(element.child("mxCell")?, Some(element))),
                 })
         });
+        let grid_size = model.attr("gridSize").and_then(|v| v.trim().parse().ok());
         Model {
             cells: cells.collect(),
+            grid_size: grid_size
+                .filter(|v: &f64| v.is_finite() && *v > 0.0)
+                .map_or(10.0, |v| v.max(1.0)),
         }
     }
 }

@@ -12,8 +12,8 @@ pub(super) struct Notes {
     pub rotated: usize,
     /// Shapes draw.io points some way yEd can't.
     pub turned: usize,
-    /// Swimlane titles draw.io writes upwards.
-    pub vertical_titles: usize,
+    /// Labels draw.io writes upwards.
+    pub upwards: usize,
     pub dashed_lines: usize,
     pub hidden_layers: usize,
     pub hidden_shapes: usize,
@@ -22,7 +22,7 @@ pub(super) struct Notes {
     /// Lines with an end on nothing drawn and no point to end at.
     pub unplaced_lines: usize,
     pub curved: usize,
-    /// Labels whose rich text lost its formatting.
+    /// Labels that lost formatting, such as colored or underlined text.
     pub formatting: usize,
 }
 
@@ -90,10 +90,10 @@ impl Notes {
                 plural(n, "it", "them")
             )
         });
-        say(self.vertical_titles, &|n| {
+        say(self.upwards, &|n| {
             format!(
                 "{} written upwards {} shown level.",
-                count(n, "title", "titles"),
+                count(n, "label", "labels"),
                 plural(n, "is", "are")
             )
         });
@@ -141,7 +141,7 @@ impl Notes {
         });
         say(self.formatting, &|n| {
             format!(
-                "{} lost {} rich-text formatting.",
+                "{} lost some of {} formatting.",
                 count(n, "label", "labels"),
                 plural(n, "its", "their")
             )
@@ -189,5 +189,28 @@ mod tests {
             ]
         );
         assert!(Notes::default().sentences().is_empty());
+    }
+
+    #[test]
+    fn sentences_list_three_unknown_shapes_at_most() {
+        let mut notes = Notes {
+            hidden_layers: 1,
+            ..Notes::default()
+        };
+        for name in ["a", "b", "c"] {
+            notes.unknown.insert(name.into(), 1);
+        }
+        assert_eq!(
+            notes.sentences(),
+            [
+                "3 shapes yEd has nothing like became boxes: a (1), b (1), c (1).",
+                "1 hidden layer was left out.",
+            ]
+        );
+        notes.unknown.insert("d".into(), 2);
+        assert_eq!(
+            notes.sentences()[0],
+            "5 shapes yEd has nothing like became boxes: d (2), a (1), b (1), …."
+        );
     }
 }

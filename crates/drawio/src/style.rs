@@ -14,6 +14,7 @@ pub(crate) struct Style {
 /// vertex, every edge, and each named style.
 const DEFAULT_VERTEX: &[(&str, &str)] = &[
     ("shape", "label"),
+    ("perimeter", "rectanglePerimeter"),
     ("fontSize", "12"),
     ("fontFamily", "Helvetica"),
     ("align", "center"),
@@ -55,11 +56,67 @@ const LABEL: &[(&str, &str)] = &[
     ("rounded", "1"),
 ];
 
+const FANCY: &[(&str, &str)] = &[("shadow", "1"), ("glass", "1")];
+
 const IMAGE: &[(&str, &str)] = &[
     ("shape", "image"),
     ("labelBackgroundColor", "default"),
     ("verticalAlign", "top"),
     ("verticalLabelPosition", "bottom"),
+];
+
+const GRAY: &[(&str, &str)] = &[
+    ("gradientColor", "#B3B3B3"),
+    ("fillColor", "#F5F5F5"),
+    ("strokeColor", "#666666"),
+];
+
+const BLUE: &[(&str, &str)] = &[
+    ("gradientColor", "#7EA6E0"),
+    ("fillColor", "#DAE8FC"),
+    ("strokeColor", "#6C8EBF"),
+];
+
+const GREEN: &[(&str, &str)] = &[
+    ("gradientColor", "#97D077"),
+    ("fillColor", "#D5E8D4"),
+    ("strokeColor", "#82B366"),
+];
+
+const TURQUOISE: &[(&str, &str)] = &[
+    ("gradientColor", "#67AB9F"),
+    ("fillColor", "#D5E8D4"),
+    ("strokeColor", "#6A9153"),
+];
+
+const YELLOW: &[(&str, &str)] = &[
+    ("gradientColor", "#FFD966"),
+    ("fillColor", "#FFF2CC"),
+    ("strokeColor", "#D6B656"),
+];
+
+const ORANGE: &[(&str, &str)] = &[
+    ("gradientColor", "#FFA500"),
+    ("fillColor", "#FFCD28"),
+    ("strokeColor", "#D79B00"),
+];
+
+const RED: &[(&str, &str)] = &[
+    ("gradientColor", "#EA6B66"),
+    ("fillColor", "#F8CECC"),
+    ("strokeColor", "#B85450"),
+];
+
+const PINK: &[(&str, &str)] = &[
+    ("gradientColor", "#B5739D"),
+    ("fillColor", "#E6D0DE"),
+    ("strokeColor", "#996185"),
+];
+
+const PURPLE: &[(&str, &str)] = &[
+    ("gradientColor", "#8C6C9C"),
+    ("fillColor", "#E1D5E7"),
+    ("strokeColor", "#9673A6"),
 ];
 
 fn named(name: &str) -> &'static [&'static [(&'static str, &'static str)]] {
@@ -97,10 +154,11 @@ fn named(name: &str) -> &'static [&'static [(&'static str, &'static str)]] {
             ("fillColor", "none"),
             ("strokeColor", "none"),
             ("gradientColor", "none"),
+            ("pointerEvents", "0"),
         ]],
-        "ellipse" => &[&[("shape", "ellipse")]],
-        "rhombus" => &[&[("shape", "rhombus")]],
-        "triangle" => &[&[("shape", "triangle")]],
+        "ellipse" => &[&[("shape", "ellipse"), ("perimeter", "ellipsePerimeter")]],
+        "rhombus" => &[&[("shape", "rhombus"), ("perimeter", "rhombusPerimeter")]],
+        "triangle" => &[&[("shape", "triangle"), ("perimeter", "trianglePerimeter")]],
         "line" => &[&[
             ("shape", "line"),
             ("strokeWidth", "4"),
@@ -108,58 +166,33 @@ fn named(name: &str) -> &'static [&'static [(&'static str, &'static str)]] {
             ("verticalAlign", "top"),
             ("spacingTop", "8"),
         ]],
-        "image" | "roundImage" | "rhombusImage" => &[IMAGE],
+        "image" => &[IMAGE],
+        "roundImage" => &[IMAGE, &[("perimeter", "ellipsePerimeter")]],
+        "rhombusImage" => &[IMAGE, &[("perimeter", "rhombusPerimeter")]],
         "arrow" => &[&[
             ("shape", "arrow"),
             ("edgeStyle", "none"),
             ("fillColor", "default"),
         ]],
-        "fancy" => &[&[("shadow", "1")]],
-        "gray" | "plain-gray" => &[&[
-            ("gradientColor", "#B3B3B3"),
-            ("fillColor", "#F5F5F5"),
-            ("strokeColor", "#666666"),
-        ]],
-        "blue" | "plain-blue" => &[&[
-            ("gradientColor", "#7EA6E0"),
-            ("fillColor", "#DAE8FC"),
-            ("strokeColor", "#6C8EBF"),
-        ]],
-        "green" | "plain-green" => &[&[
-            ("gradientColor", "#97D077"),
-            ("fillColor", "#D5E8D4"),
-            ("strokeColor", "#82B366"),
-        ]],
-        "turquoise" | "plain-turquoise" => &[&[
-            ("gradientColor", "#67AB9F"),
-            ("fillColor", "#D5E8D4"),
-            ("strokeColor", "#6A9153"),
-        ]],
-        "yellow" | "plain-yellow" => &[&[
-            ("gradientColor", "#FFD966"),
-            ("fillColor", "#FFF2CC"),
-            ("strokeColor", "#D6B656"),
-        ]],
-        "orange" | "plain-orange" => &[&[
-            ("gradientColor", "#FFA500"),
-            ("fillColor", "#FFCD28"),
-            ("strokeColor", "#D79B00"),
-        ]],
-        "red" | "plain-red" => &[&[
-            ("gradientColor", "#EA6B66"),
-            ("fillColor", "#F8CECC"),
-            ("strokeColor", "#B85450"),
-        ]],
-        "pink" | "plain-pink" => &[&[
-            ("gradientColor", "#B5739D"),
-            ("fillColor", "#E6D0DE"),
-            ("strokeColor", "#996185"),
-        ]],
-        "purple" | "plain-purple" => &[&[
-            ("gradientColor", "#8C6C9C"),
-            ("fillColor", "#E1D5E7"),
-            ("strokeColor", "#9673A6"),
-        ]],
+        "fancy" => &[FANCY],
+        "gray" => &[FANCY, GRAY],
+        "plain-gray" => &[GRAY],
+        "blue" => &[FANCY, BLUE],
+        "plain-blue" => &[BLUE],
+        "green" => &[FANCY, GREEN],
+        "plain-green" => &[GREEN],
+        "turquoise" => &[FANCY, TURQUOISE],
+        "plain-turquoise" => &[TURQUOISE],
+        "yellow" => &[FANCY, YELLOW],
+        "plain-yellow" => &[YELLOW],
+        "orange" => &[FANCY, ORANGE],
+        "plain-orange" => &[ORANGE],
+        "red" => &[FANCY, RED],
+        "plain-red" => &[RED],
+        "pink" => &[FANCY, PINK],
+        "plain-pink" => &[PINK],
+        "purple" => &[FANCY, PURPLE],
+        "plain-purple" => &[PURPLE],
         _ => &[],
     }
 }
@@ -191,6 +224,23 @@ impl Style {
                 }
             }
         }
+        // Colors that name another, which draw.io's renderer looks up.
+        for key in ["fillColor", "strokeColor", "gradientColor", "fontColor"] {
+            let (owner, named) = match this.get(key) {
+                Some("parentFillColor") => (parent, "fillColor"),
+                Some("parentStrokeColor") => (parent, "strokeColor"),
+                Some(name @ ("fillColor" | "strokeColor")) if name != key => (Some(&this), name),
+                _ => continue,
+            };
+            let value = match owner.and_then(|owner| owner.get(named)) {
+                Some("default") if named == "fillColor" => "#FFFFFF",
+                Some("default") => "#000000",
+                Some(value) => value,
+                None => "none",
+            }
+            .to_owned();
+            this.set(key, &value);
+        }
         this
     }
 
@@ -217,17 +267,24 @@ impl Style {
         self.get(key) == Some(value)
     }
 
-    /// Whether `key` is `1`, as draw.io writes true.
+    /// Whether `key` is 1, as draw.io writes true and tests for it.
     pub fn flag(&self, key: &str) -> bool {
-        self.get(key)
-            .is_some_and(|value| value.trim() == "1" || value == "true")
+        self.parsed(key) == Some(1.0)
+    }
+
+    /// Whether `key` is 1, or `default` if it's not set.
+    pub fn flag_or(&self, key: &str, default: bool) -> bool {
+        self.get(key).map_or(default, |_| self.flag(key))
     }
 
     pub fn number(&self, key: &str, default: f64) -> f64 {
-        let value = self
-            .get(key)
-            .and_then(|value| value.trim().parse::<f64>().ok());
-        value.filter(|value| value.is_finite()).unwrap_or(default)
+        self.parsed(key).unwrap_or(default)
+    }
+
+    /// The number under `key`, if it's one.
+    pub fn parsed(&self, key: &str) -> Option<f64> {
+        let value = self.get(key)?.trim().parse::<f64>().ok();
+        value.filter(|value| value.is_finite())
     }
 
     /// The color under `key`; `None` if there's none. `default` is the color
@@ -248,7 +305,7 @@ pub(crate) fn parse_color(text: &str) -> Option<Color> {
         .strip_prefix("light-dark(")
         .and_then(|rest| rest.strip_suffix(')'))
     {
-        return parse_color(split_top_level(inner)?.0);
+        return parse_color(first_argument(inner)?);
     }
     if let Some(hex) = text.strip_prefix('#') {
         return match hex.len() {
@@ -293,14 +350,14 @@ pub(crate) fn parse_color(text: &str) -> Option<Color> {
     Some(Color::rgb(r, g, b))
 }
 
-/// Splits `a, b` at its first comma outside parentheses.
-fn split_top_level(text: &str) -> Option<(&str, &str)> {
+/// `a` of `a, b`, splitting at the first comma outside parentheses.
+fn first_argument(text: &str) -> Option<&str> {
     let mut depth = 0;
     for (i, c) in text.char_indices() {
         match c {
             '(' => depth += 1,
             ')' => depth -= 1,
-            ',' if depth == 0 => return Some((&text[..i], &text[i + 1..])),
+            ',' if depth == 0 => return Some(&text[..i]),
             _ => {}
         }
     }

@@ -188,11 +188,17 @@ fn round_boxes_report_their_radius() {
             [0.0, 0.0, 120.0, 60.0],
         ),
         vertex("c", "", "rounded=0;", [0.0, 0.0, 120.0, 60.0]),
+        // At most half the shorter side.
+        vertex("d", "", "rounded=1;arcSize=80;", [0.0, 0.0, 120.0, 60.0]),
     ];
     let import = convert(&page(&cells.concat()));
     assert_eq!(
         import.corner_radii,
-        [("n0".to_owned(), 9.0), ("n1".to_owned(), 25.0)]
+        [
+            ("n0".to_owned(), 9.0),
+            ("n1".to_owned(), 25.0),
+            ("n3".to_owned(), 30.0)
+        ]
     );
 }
 
@@ -611,4 +617,717 @@ fn tables_get_a_title_bar_and_rows_their_lines() {
     assert_eq!(nodes[3].fill.color, Some(Color::BLACK));
     assert_eq!(nodes[4].border.color, None);
     assert!(import.notes.is_empty(), "{:?}", import.notes);
+}
+
+/// Whether `a` is within 0.01 of `b` both ways.
+fn near(a: Point, b: Point) -> bool {
+    (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01
+}
+
+#[test]
+fn loops_go_round_a_side_whatever_the_line_style() {
+    let text = format!(
+        r#"<mxGraphModel gridSize="20"><root><mxCell id="0"/><mxCell id="1" parent="0"/>{}{}{}</root></mxGraphModel>"#,
+        vertex("a", "", "", [0.0, 0.0, 100.0, 50.0]),
+        edge("e", "a", "a", "", ""),
+        edge(
+            "f",
+            "a",
+            "a",
+            "edgeStyle=orthogonalEdgeStyle;segment=5;",
+            ""
+        ),
+    );
+    let edges = edges(&convert(&text));
+    // Out of its middle, round the page's grid size, beyond twice that.
+    let path = &edges[0].1.path;
+    assert_eq!(path.points, [at(140.0, 5.0), at(140.0, 45.0)]);
+    assert_eq!((path.source, path.target), (at(0.0, 0.0), at(0.0, 0.0)));
+    assert_eq!(edges[1].1.path.points, [at(110.0, 20.0), at(110.0, 30.0)]);
+}
+
+#[test]
+fn lines_can_end_on_other_lines_and_their_labels() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 40.0]),
+        vertex("b", "", "", [300.0, 0.0, 100.0, 40.0]),
+        vertex("c", "", "", [150.0, 200.0, 100.0, 40.0]),
+        // Before the line its source is a label of.
+        edge("toLabel", "l", "c", "", ""),
+        edge("ab", "a", "b", "", ""),
+        r#"<mxCell id="l" value="label" style="edgeLabel;" vertex="1" connectable="0" parent="ab"><mxGeometry x="-0.5" y="10" relative="1" as="geometry"/></mxCell>"#.to_owned(),
+        edge("toLine", "ab", "c", "", ""),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let edges = edges(&import);
+    let ids: Vec<_> = edges.iter().map(|(e, _)| e.id.clone().unwrap()).collect();
+    assert_eq!(ids, ["e0", "e1", "e2"]);
+    let nodes = nodes(&import);
+    let end = |node: &str| {
+        let index: usize = node[1..].parse().unwrap();
+        let g = nodes[index].geometry;
+        at(g.x + g.width / 2.0, g.y + g.height / 2.0)
+    };
+    // The label's anchor: a quarter along the line from x 100 to 300, 10 above.
+    assert_eq!(end(&edges[0].0.source), at(150.0, 10.0));
+    assert_eq!(edges[0].0.target, "n2");
+    // The middle of the line.
+    assert_eq!(end(&edges[2].0.source), at(200.0, 20.0));
+    assert_eq!(
+        import.notes,
+        ["2 loose line ends got small invisible nodes to end on."]
+    );
+}
+
+#[test]
+fn lines_ending_on_a_bent_line_meet_it_halfway_along() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 40.0]),
+        vertex("b", "", "", [300.0, 200.0, 100.0, 40.0]),
+        vertex("c", "", "", [0.0, 300.0, 100.0, 40.0]),
+        edge(
+            "bent",
+            "a",
+            "b",
+            "",
+            r#"<Array as="points"><mxPoint x="350" y="20"/></Array>"#,
+        ),
+        // A shape on the line: its corner where a label's anchor would be.
+        r#"<mxCell id="dot" style="ellipse;" vertex="1" parent="bent"><mxGeometry x="0.5" relative="1" width="10" height="10" as="geometry"/></mxCell>"#.to_owned(),
+        edge("toLine", "c", "bent", "", ""),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let nodes = nodes(&import);
+    // From (100, 20) right 250 and down 180: 215 along is (315, 20).
+    let anchor = nodes.last().unwrap().geometry;
+    assert_eq!(anchor, rect(314.0, 19.0, 2.0, 2.0));
+    // Three quarters along, 322.5 in: (350, 92.5).
+    let dot = &nodes[3];
+    assert_eq!(dot.kind, NodeKind::Shape(ShapeType::Ellipse));
+    assert_eq!(dot.geometry, rect(350.0, 92.5, 10.0, 10.0));
+    assert!(edges(&import)[0].1.labels.is_empty());
+}
+
+#[test]
+fn lines_ending_on_lines_or_shapes_not_shown_are_left_out() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 40.0]),
+        vertex("b", "", "", [300.0, 0.0, 100.0, 40.0]),
+        r#"<mxCell id="hidden" edge="1" visible="0" parent="1" source="a" target="b"><mxGeometry relative="1" as="geometry"/></mxCell>"#.to_owned(),
+        // Its point doesn't count: draw.io leaves it out too.
+        edge(
+            "toHidden",
+            "hidden",
+            "b",
+            "",
+            r#"<mxPoint x="0" y="200" as="sourcePoint"/>"#,
+        ),
+    ];
+    let import = convert(&page(&cells.concat()));
+    assert!(edges(&import).is_empty());
+    assert_eq!(nodes(&import).len(), 2);
+    assert_eq!(
+        import.notes,
+        [
+            "1 hidden item was left out.",
+            "1 line with an end on nothing shown was left out."
+        ]
+    );
+}
+
+#[test]
+fn fixed_ends_turn_flip_and_sit_on_the_outline_as_in_draw_io() {
+    let cells = [
+        vertex("ellipse", "", "ellipse;", [0.0, 0.0, 100.0, 60.0]),
+        vertex("rhombus", "", "rhombus;", [200.0, 0.0, 100.0, 60.0]),
+        vertex("flipped", "", "flipH=1;", [0.0, 200.0, 120.0, 60.0]),
+        vertex("turned", "", "rotation=90;", [200.0, 200.0, 120.0, 60.0]),
+        vertex("south", "", "direction=south;", [400.0, 200.0, 120.0, 60.0]),
+        edge(
+            "e1",
+            "ellipse",
+            "rhombus",
+            "exitX=0;exitY=0;entryX=0;entryY=0;",
+            "",
+        ),
+        edge(
+            "e2",
+            "flipped",
+            "turned",
+            "exitX=0;exitY=0.5;entryX=1;entryY=0.5;",
+            "",
+        ),
+        edge(
+            "e3",
+            "south",
+            "ellipse",
+            "exitX=1;exitY=0.5;exitPerimeter=0;entryX=0;entryY=0;entryPerimeter=0;",
+            "",
+        ),
+    ];
+    let edges = edges(&convert(&page(&cells.concat())));
+    let ports = |i: usize| (edges[i].1.path.source, edges[i].1.path.target);
+    // Relative to the node's center: on the ellipse at 45°, and on the
+    // rhombus a quarter of the way in from its bounds' corner.
+    let (source, target) = ports(0);
+    assert!(near(source, at(-35.36, -21.21)), "{source:?}");
+    assert!(near(target, at(-25.0, -15.0)), "{target:?}");
+    // The left side flipped right; the right side turned to the bottom.
+    assert_eq!(ports(1), (at(60.0, 0.0), at(0.0, 60.0)));
+    // The right side turned to the bottom with the direction, and the
+    // ellipse's corner left off its outline.
+    assert_eq!(ports(2), (at(0.0, 30.0), at(-50.0, -30.0)));
+}
+
+#[test]
+fn unknown_arrowheads_draw_none_like_in_draw_io() {
+    let ends = [
+        ("bogus", "1", Arrow::None),
+        ("box", "1", Arrow::Diamond),
+        ("box", "0", Arrow::WhiteDiamond),
+        ("mermaidExtension", "0", Arrow::WhiteDelta),
+        (
+            "manyOptional",
+            "1",
+            Arrow::Other("crows_foot_many_optional".into()),
+        ),
+        ("sysMLx", "1", Arrow::SkewedDash),
+    ];
+    let mut cells = vec![
+        vertex("a", "", "", [0.0, 0.0, 80.0, 40.0]),
+        vertex("b", "", "", [200.0, 0.0, 80.0, 40.0]),
+    ];
+    for (i, (name, fill, _)) in ends.iter().enumerate() {
+        let style = format!("endArrow={name};endFill={fill};");
+        cells.push(edge(&format!("e{i}"), "a", "b", &style, ""));
+    }
+    let edges = edges(&convert(&page(&cells.concat())));
+    for ((name, fill, expected), (_, graphics)) in ends.iter().zip(&edges) {
+        assert_eq!(&graphics.arrows.target, expected, "{name} {fill}");
+    }
+}
+
+#[test]
+fn colors_naming_another_take_its_value() {
+    let cells = r#"
+        <mxCell id="p" style="fillColor=#00ff00;strokeColor=#0000ff;" vertex="1" parent="1"><mxGeometry width="200" height="100" as="geometry"/></mxCell>
+        <mxCell id="c" style="fillColor=strokeColor;strokeColor=#ff0000;fontColor=parentStrokeColor;" value="x" vertex="1" parent="p"><mxGeometry x="10" y="10" width="50" height="30" as="geometry"/></mxCell>
+        <mxCell id="d" style="strokeColor=parentFillColor;" vertex="1" parent="p"><mxGeometry x="100" y="10" width="50" height="30" as="geometry"/></mxCell>
+        <mxCell id="e" style="strokeColor=fillColor;" vertex="1" parent="1"><mxGeometry x="300" width="50" height="30" as="geometry"/></mxCell>"#;
+    let nodes = nodes(&convert(&page(cells)));
+    let red = Some(Color::rgb(0xFF, 0, 0));
+    assert_eq!((nodes[1].fill.color, nodes[1].border.color), (red, red));
+    assert_eq!(nodes[1].labels[0].text_color, Color::rgb(0, 0, 0xFF));
+    assert_eq!(nodes[2].border.color, Some(Color::rgb(0, 0xFF, 0)));
+    // The default fill, white.
+    assert_eq!(nodes[3].border.color, Some(Color::WHITE));
+}
+
+#[test]
+fn parallelograms_turned_half_round_look_the_same() {
+    let styles = [
+        ("shape=parallelogram;direction=west;", false),
+        ("shape=parallelogram;flipV=1;", true),
+        ("shape=parallelogram;flipH=1;flipV=1;", false),
+        ("shape=parallelogram;direction=south;", true),
+    ];
+    for (style, noted) in styles {
+        let import = convert(&page(&vertex("p", "", style, [0.0, 0.0, 80.0, 40.0])));
+        assert_eq!(import.notes.len(), usize::from(noted), "{style}");
+    }
+}
+
+#[test]
+fn side_to_side_and_top_to_bottom_lines_are_elbows() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 50.0]),
+        vertex("b", "", "", [300.0, 100.0, 100.0, 50.0]),
+        edge("e", "a", "b", "edgeStyle=sideToSideEdgeStyle;", ""),
+        edge("f", "a", "b", "edgeStyle=topToBottomEdgeStyle;", ""),
+    ];
+    let edges = edges(&convert(&page(&cells.concat())));
+    assert_eq!(edges[0].1.path.points, [at(200.0, 25.0), at(200.0, 125.0)]);
+    assert_eq!(edges[1].1.path.points, [at(50.0, 75.0), at(350.0, 75.0)]);
+}
+
+#[test]
+fn lifelines_are_noted_as_drawn_solid_unless_they_are() {
+    let lifeline = |style: &str| {
+        let style = format!("shape=umlLifeline;{style}");
+        convert(&page(&vertex("l", "A", &style, [0.0, 0.0, 100.0, 300.0]))).notes
+    };
+    assert_eq!(lifeline(""), ["1 dashed line shape is drawn solid."]);
+    assert!(lifeline("lifelineDashed=0;").is_empty());
+}
+
+#[test]
+fn any_element_wrapping_a_cell_holds_its_properties() {
+    let cells = r#"<Server label="Web" tooltip="Front" id="s"><mxCell vertex="1" parent="1"><mxGeometry width="80" height="30" as="geometry"/></mxCell></Server>"#;
+    let import = convert(&page(cells));
+    assert_eq!(nodes(&import)[0].labels[0].text, "Web");
+    assert_eq!(import.graphml.graphs[0].nodes[0].data.len(), 2);
+}
+
+#[test]
+fn edge_labels_past_the_ends_extend_the_line() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 40.0]),
+        vertex("b", "", "", [300.0, 0.0, 100.0, 40.0]),
+        r#"<mxCell id="e" edge="1" parent="1" source="a" target="b"><mxGeometry relative="1" as="geometry"/></mxCell>"#.to_owned(),
+        r#"<mxCell id="l" value="past" style="edgeLabel;" vertex="1" parent="e"><mxGeometry x="1.5" relative="1" as="geometry"/></mxCell>"#.to_owned(),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let (_, graphics) = &edges(&import)[0];
+    let bounds = graphics.labels[0].bounds;
+    // 250 along a line 200 long, from where it leaves the source. As draw.io's
+    // edgeLabel style aligns labels left and top, their corner is there.
+    assert_eq!((bounds.x, bounds.y), (250.0, 0.0));
+}
+
+#[test]
+fn labels_without_a_font_get_draw_ios_and_only_text_opacity_fades_them() {
+    let cells = [
+        vertex("a", "plain", ";", [0.0, 0.0, 80.0, 40.0]),
+        vertex(
+            "b",
+            "faded",
+            "opacity=50;textOpacity=20;fontColor=#ff0000;",
+            [0.0, 0.0, 80.0, 40.0],
+        ),
+    ];
+    let nodes = nodes(&convert(&page(&cells.concat())));
+    let font = &nodes[0].labels[0].font;
+    assert_eq!((font.family.as_str(), font.size), ("Arial", 11));
+    assert_eq!(
+        nodes[1].labels[0].text_color,
+        Color {
+            a: 51,
+            ..Color::rgb(0xFF, 0, 0)
+        }
+    );
+}
+
+#[test]
+fn placeholders_are_replaced_once_as_draw_io_does() {
+    let cells = r#"
+        <UserObject label="" team="Ops" id="g"><mxCell style="group" vertex="1" parent="1"><mxGeometry width="200" height="100" as="geometry"/></mxCell></UserObject>
+        <UserObject label="%name% of %team% (%id%, %width%) %tooltip% %%name% %a% %missing% %name%%team% %date{yyyy}% %name%" placeholders="1" name="Box" a="%name%" tooltip="Tip" id="u"><mxCell vertex="1" parent="g"><mxGeometry width="80" height="30" as="geometry"/></mxCell></UserObject>"#;
+    let import = convert(&page(cells));
+    assert_eq!(
+        nodes(&import)[0].labels[0].text,
+        "Box of Ops (u, 80) %tooltip% %name% %name% %missing% BoxOps %date{yyyy}% Box"
+    );
+}
+
+#[test]
+fn underlined_or_upwards_labels_are_noted() {
+    let cells = [
+        vertex("a", "under", "fontStyle=4;", [0.0, 0.0, 80.0, 40.0]),
+        vertex("b", "up", "horizontal=0;", [0.0, 0.0, 80.0, 40.0]),
+    ];
+    let import = convert(&page(&cells.concat()));
+    assert_eq!(
+        import.notes,
+        [
+            "1 label written upwards is shown level.",
+            "1 label lost some of its formatting.",
+        ]
+    );
+}
+
+#[test]
+fn characters_xml_cant_hold_are_left_out_as_draw_io_does() {
+    let text = page(&vertex("a", "a\u{1}b", "", [0.0, 0.0, 80.0, 40.0]));
+    let import = convert(&text);
+    assert_eq!(nodes(&import)[0].labels[0].text, "ab");
+}
+
+/// "Pad" in a box, compressed into Base64 that ends in padding.
+const PADDED: &str = "jVBBDgIhDHxN71gu3lH3ZOIXmtAsJCAbRMXfSyi68bCJhybtTKedDGgT65RpcedkOYA+gjY5pSJdrIZDAFTegj4AomoFeNpgd51VC2W+ln8EKIIHhTsLciE7MM6F6+bdDo2jE6fIJb/aytPb4mRjL6+VYz+7odIDo5vM81e5mmzN8PkZ1zw69xPXGw==";
+
+#[test]
+fn compressed_pages_decode_as_leniently_as_browsers_do() {
+    // Without its padding, and with bits set past its last byte, as atob,
+    // which draw.io decodes with, takes them.
+    for data in [
+        PADDED,
+        PADDED.trim_end_matches('='),
+        &PADDED.replace("w==", "x=="),
+    ] {
+        let text = format!(r#"<mxfile><diagram name="A">{data}</diagram></mxfile>"#);
+        let import = convert(&text);
+        assert_eq!(nodes(&import)[0].labels[0].text, "Pad", "{data}");
+    }
+}
+
+#[test]
+fn html_labels_break_at_newlines_unless_nl2br_is_off() {
+    let cells = [
+        vertex("a", "one&#10;two", "html=1;", [0.0, 0.0, 80.0, 40.0]),
+        vertex(
+            "b",
+            "one&#10;two",
+            "html=1;nl2Br=0;",
+            [0.0, 0.0, 80.0, 40.0],
+        ),
+    ];
+    let nodes = nodes(&convert(&page(&cells.concat())));
+    assert_eq!(nodes[0].labels[0].text, "one\ntwo");
+    assert_eq!(nodes[1].labels[0].text, "one two");
+}
+
+#[test]
+fn edge_labels_turn_and_move_with_the_line() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 40.0]),
+        vertex("b", "", "", [250.0, 220.0, 100.0, 40.0]),
+        edge(
+            "e",
+            "a",
+            "b",
+            "",
+            r#"<Array as="points"><mxPoint x="300" y="20"/></Array>"#,
+        ),
+        // At the bend, so off the segment after it: 10 to the right of the
+        // downward run. Left- and top-aligned, as edgeLabel is.
+        r#"<mxCell id="l1" value="bend" style="edgeLabel;" vertex="1" parent="e"><mxGeometry y="10" relative="1" as="geometry"/></mxCell>"#.to_owned(),
+        // At the start, moved by an offset, with its bottom right corner there.
+        r#"<mxCell id="l2" value="ab" style="edgeLabel;align=right;verticalAlign=bottom;" vertex="1" parent="e"><mxGeometry x="-1" relative="1" as="geometry"><mxPoint x="5" y="7" as="offset"/></mxGeometry></mxCell>"#.to_owned(),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let (_, graphics) = &edges(&import)[0];
+    // Relative to where the line leaves the source, at (100, 20).
+    let bend = graphics.labels[0].bounds;
+    assert!(near(at(bend.x, bend.y), at(210.0, 0.0)), "{bend:?}");
+    let start = graphics.labels[1].bounds;
+    // Its size estimated from its 2 characters of 11 pt.
+    assert!(
+        near(at(start.width, start.height), at(16.1, 17.2)),
+        "{start:?}"
+    );
+    assert!(near(at(start.x, start.y), at(-11.1, -10.2)), "{start:?}");
+    // As yEd edge labels.
+    let xml = import.graphml.to_xml();
+    assert_eq!(xml.matches("<y:EdgeLabel").count(), 2);
+}
+
+#[test]
+fn labels_of_lines_between_overlapping_shapes_still_get_a_place() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 40.0]),
+        vertex("b", "", "", [0.0, 0.0, 100.0, 40.0]),
+        r#"<mxCell id="e" value="x" edge="1" parent="1" source="a" target="b"><mxGeometry relative="1" as="geometry"/></mxCell>"#.to_owned(),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let bounds = edges(&import)[0].1.labels[0].bounds;
+    assert!(bounds.x.is_finite() && bounds.y.is_finite(), "{bounds:?}");
+}
+
+#[test]
+fn lines_in_containers_are_placed_on_the_page() {
+    let cells = r#"
+        <mxCell id="g" style="group" vertex="1" parent="1"><mxGeometry x="100" y="100" width="300" height="200" as="geometry"/></mxCell>
+        <mxCell id="in" vertex="1" parent="g"><mxGeometry width="40" height="40" as="geometry"/></mxCell>
+        <mxCell id="e" edge="1" parent="g" source="in"><mxGeometry relative="1" as="geometry"><mxPoint x="200" y="50" as="targetPoint"/><Array as="points"><mxPoint x="10" y="50"/></Array></mxGeometry></mxCell>"#;
+    let import = convert(&page(cells));
+    let geometry: Vec<Rect> = nodes(&import).iter().map(|n| n.geometry).collect();
+    assert_eq!(
+        geometry,
+        [rect(100.0, 100.0, 40.0, 40.0), rect(299.0, 149.0, 2.0, 2.0)]
+    );
+    assert_eq!(edges(&import)[0].1.path.points, [at(110.0, 150.0)]);
+}
+
+#[test]
+fn edge_labels_are_vertices_with_no_size_shown() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 40.0]),
+        vertex("b", "", "", [300.0, 0.0, 100.0, 40.0]),
+        edge("e", "a", "b", "", ""),
+        r#"<mxCell id="hidden" value="hidden" style="edgeLabel;" vertex="1" visible="0" parent="e"><mxGeometry relative="1" as="geometry"/></mxCell>"#.to_owned(),
+        // A plain text style: a vertex's font size and no background.
+        r#"<mxCell id="wide" value="wide" style="text;" vertex="1" parent="e"><mxGeometry width="50" relative="1" as="geometry"/></mxCell>"#.to_owned(),
+        r#"<mxCell id="tall" value="tall" style="edgeLabel;" vertex="1" parent="e"><mxGeometry height="20" relative="1" as="geometry"/></mxCell>"#.to_owned(),
+    ];
+    let import = convert(&page(&cells.concat()));
+    assert_eq!(nodes(&import).len(), 2);
+    let labels = &edges(&import)[0].1.labels;
+    let texts: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["wide", "tall"]);
+    assert_eq!((labels[0].font.size, labels[0].background), (12, None));
+}
+
+#[test]
+fn loops_need_fewer_than_two_points_and_free_ends_if_orthogonal() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 50.0]),
+        // A fixed end still loops, unless the loop is orthogonal.
+        edge("fixed", "a", "a", "exitX=1;exitY=0.2;", ""),
+        edge(
+            "orthogonal",
+            "a",
+            "a",
+            "orthogonalLoop=1;exitX=1;exitY=0.2;",
+            "",
+        ),
+        edge(
+            "points",
+            "a",
+            "a",
+            "",
+            r#"<Array as="points"><mxPoint x="150" y="10"/><mxPoint x="160" y="40"/></Array>"#,
+        ),
+    ];
+    let edges = edges(&convert(&page(&cells.concat())));
+    let path = &edges[0].1.path;
+    assert_eq!(path.points, [at(120.0, 15.0), at(120.0, 35.0)]);
+    assert_eq!(path.source, at(50.0, -15.0));
+    assert!(edges[1].1.path.points.is_empty());
+    assert_eq!(edges[2].1.path.points, [at(150.0, 10.0), at(160.0, 40.0)]);
+}
+
+#[test]
+fn fixed_ends_can_be_offset_flipped_and_turned() {
+    let cells = [
+        vertex("box", "", "", [0.0, 0.0, 120.0, 60.0]),
+        vertex(
+            "flipped",
+            "",
+            "flipH=1;flipV=1;",
+            [50.0, 200.0, 120.0, 60.0],
+        ),
+        vertex("turned", "", "rotation=90;", [300.0, 200.0, 120.0, 60.0]),
+        edge(
+            "e1",
+            "box",
+            "flipped",
+            "exitX=1;exitY=0.5;exitDx=5;exitDy=-3;exitPerimeter=0;entryX=0;entryY=0.25;",
+            "",
+        ),
+        edge("e2", "box", "turned", "entryX=1;entryY=0;", ""),
+    ];
+    let edges = edges(&convert(&page(&cells.concat())));
+    let (e1, e2) = (&edges[0].1.path, &edges[1].1.path);
+    assert_eq!(e1.source, at(65.0, -3.0));
+    // The left side, a quarter down, flipped to the right, three down.
+    assert_eq!(e1.target, at(60.0, 15.0));
+    // The top right corner turned to the bottom right.
+    assert_eq!(e2.target, at(30.0, 60.0));
+}
+
+#[test]
+fn fixed_ends_move_onto_ellipses_and_rhombi_as_in_draw_io() {
+    let cells = [
+        vertex("ellipse", "", "ellipse;", [0.0, 0.0, 100.0, 60.0]),
+        vertex("rhombus", "", "rhombus;", [200.0, 0.0, 100.0, 60.0]),
+        vertex("box", "", "", [400.0, 0.0, 100.0, 60.0]),
+    ];
+    let mut cells = cells.concat();
+    let ends = [
+        ("ellipse", [0.25, 0.5], "rhombus", [0.5, 0.25]),
+        ("ellipse", [0.5, 0.25], "rhombus", [0.5, 0.75]),
+        ("ellipse", [0.5, 0.5], "rhombus", [0.25, 0.5]),
+        ("box", [0.5, 0.5], "rhombus", [0.75, 0.5]),
+        ("box", [0.25, 0.5], "rhombus", [0.25, 0.25]),
+        ("box", [0.5, 0.0], "rhombus", [0.4, 0.4]),
+        ("box", [0.5, 0.0], "rhombus", [0.5, 0.5]),
+    ];
+    for (i, (source, [ex, ey], target, [nx, ny])) in ends.iter().enumerate() {
+        let style = format!("exitX={ex};exitY={ey};entryX={nx};entryY={ny};");
+        cells += &edge(&format!("e{i}"), source, target, &style, "");
+    }
+    let edges = edges(&convert(&page(&cells)));
+    let ports: Vec<(Point, Point)> = edges
+        .iter()
+        .map(|(_, g)| (g.path.source, g.path.target))
+        .collect();
+    assert_eq!(
+        ports,
+        [
+            // Straight out from the center to the outline.
+            (at(-50.0, 0.0), at(0.0, -30.0)),
+            (at(0.0, -30.0), at(0.0, 30.0)),
+            // The center stays, but not on a box or a rhombus.
+            (at(0.0, 0.0), at(-50.0, 0.0)),
+            (at(50.0, 0.0), at(50.0, 0.0)),
+            // Inside a box is out to its side; on a rhombus stays.
+            (at(-50.0, 0.0), at(-25.0, -15.0)),
+            // Inside a rhombus is its center.
+            (at(0.0, -30.0), at(0.0, 0.0)),
+            (at(0.0, -30.0), at(0.0, 30.0)),
+        ]
+    );
+}
+
+#[test]
+fn shapes_outside_any_layer_are_drawn() {
+    let text = r#"<mxGraphModel><root><mxCell id="a" value="A" vertex="1"><mxGeometry width="80" height="30" as="geometry"/></mxCell></root></mxGraphModel>"#;
+    assert_eq!(nodes(&convert(text))[0].labels[0].text, "A");
+}
+
+#[test]
+fn partial_rectangles_draw_the_sides_they_leave_on() {
+    let style = "shape=partialRectangle;bottom=0;strokeWidth=2;";
+    let import = convert(&page(&vertex("p", "", style, [0.0, 0.0, 100.0, 50.0])));
+    let geometry: Vec<Rect> = nodes(&import).iter().map(|n| n.geometry).collect();
+    assert_eq!(
+        geometry,
+        [
+            rect(0.0, 0.0, 100.0, 50.0),
+            rect(0.0, -1.0, 100.0, 2.0),
+            rect(99.0, 0.0, 2.0, 50.0),
+            rect(-1.0, 0.0, 2.0, 50.0),
+        ]
+    );
+}
+
+#[test]
+fn line_shapes_become_boxes_of_their_stroke() {
+    let cells = [
+        vertex(
+            "h",
+            "",
+            "line;strokeColor=#ff0000;",
+            [0.0, 0.0, 100.0, 40.0],
+        ),
+        vertex("v", "", "line;direction=north;", [200.0, 0.0, 40.0, 100.0]),
+    ];
+    let nodes = nodes(&convert(&page(&cells.concat())));
+    assert_eq!(nodes[0].geometry, rect(0.0, 18.0, 100.0, 4.0));
+    assert_eq!(nodes[1].geometry, rect(218.0, 0.0, 4.0, 100.0));
+    assert_eq!(nodes[0].fill.color, Some(Color::rgb(0xFF, 0, 0)));
+    assert_eq!(nodes[0].border.color, None);
+}
+
+#[test]
+fn swimlanes_without_a_title_bar_keep_their_label_in_the_body() {
+    for style in [
+        "swimlane;startSize=0;",
+        "swimlane;startSize=0;horizontal=0;",
+    ] {
+        let import = convert(&page(&vertex("s", "Lane", style, [0.0, 0.0, 200.0, 100.0])));
+        let nodes = nodes(&import);
+        assert_eq!(nodes.len(), 1, "{style}");
+        assert_eq!(nodes[0].labels[0].text, "Lane");
+    }
+}
+
+#[test]
+fn lifelines_are_a_head_over_a_line() {
+    let style = "shape=umlLifeline;size=50;";
+    let import = convert(&page(&vertex("l", "A", style, [0.0, 0.0, 100.0, 300.0])));
+    let nodes = nodes(&import);
+    let geometry: Vec<Rect> = nodes.iter().map(|n| n.geometry).collect();
+    assert_eq!(
+        geometry,
+        [rect(0.0, 0.0, 100.0, 50.0), rect(49.5, 50.0, 1.0, 250.0)]
+    );
+    assert_eq!(nodes[0].labels[0].text, "A");
+}
+
+#[test]
+fn percent_encoded_svg_images_become_svg_nodes() {
+    let svg = "%3Csvg xmlns=%22http://www.w3.org/2000/svg%22%3E%3Ccircle r=%225%22/%3E%3C/svg%3E";
+    let style = format!("shape=image;image=data:image/svg+xml,{svg};");
+    let import = convert(&page(&vertex("i", "", &style, [0.0, 0.0, 40.0, 40.0])));
+    let NodeKind::Svg {
+        resource: Some(resource),
+    } = &nodes(&import)[0].kind
+    else {
+        panic!("not an SVG node");
+    };
+    let text = yed::resource_text(&import.graphml, resource).unwrap();
+    assert_eq!(
+        text,
+        r#"<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>"#
+    );
+}
+
+#[test]
+fn a_page_grid_of_zero_is_draw_ios_default_for_loops() {
+    let text = format!(
+        r#"<mxGraphModel gridSize="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/>{}{}</root></mxGraphModel>"#,
+        vertex("a", "", "", [0.0, 0.0, 100.0, 50.0]),
+        edge("e", "a", "a", "", ""),
+    );
+    let edges = edges(&convert(&text));
+    assert_eq!(edges[0].1.path.points, [at(120.0, 15.0), at(120.0, 35.0)]);
+}
+
+#[test]
+fn icons_show_their_image_and_label_shapes_their_box() {
+    let svg = "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=";
+    let cells = [
+        vertex(
+            "i",
+            "",
+            &format!("icon;image=data:image/svg+xml,{svg};"),
+            [0.0, 0.0, 40.0, 40.0],
+        ),
+        vertex(
+            "l",
+            "",
+            &format!("label;image=data:image/svg+xml,{svg};"),
+            [0.0, 0.0, 40.0, 40.0],
+        ),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let nodes = nodes(&import);
+    assert!(matches!(nodes[0].kind, NodeKind::Svg { .. }));
+    assert_eq!(nodes[1].kind, NodeKind::Shape(ShapeType::RoundRectangle));
+    assert_eq!(import.notes, ["1 image inside boxes was left out."]);
+}
+
+#[test]
+fn groups_with_a_fill_or_border_are_drawn() {
+    let cells = [
+        vertex("g", "", "group;fillColor=#ff0000;", [0.0, 0.0, 100.0, 50.0]),
+        vertex("h", "", "group;", [0.0, 100.0, 100.0, 50.0]),
+    ];
+    let nodes = nodes(&convert(&page(&cells.concat())));
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].fill.color, Some(Color::rgb(0xFF, 0, 0)));
+}
+
+#[test]
+fn colors_can_be_css_functions() {
+    let cells = [
+        vertex(
+            "a",
+            "",
+            "fillColor=rgba(255,0,0,0.5);",
+            [0.0, 0.0, 80.0, 40.0],
+        ),
+        vertex(
+            "b",
+            "",
+            "fillColor=light-dark(rgb(1,2,3),#000000);",
+            [0.0, 0.0, 80.0, 40.0],
+        ),
+    ];
+    let nodes = nodes(&convert(&page(&cells.concat())));
+    assert_eq!(
+        nodes[0].fill.color,
+        Some(Color {
+            a: 128,
+            ..Color::rgb(0xFF, 0, 0)
+        })
+    );
+    assert_eq!(nodes[1].fill.color, Some(Color::rgb(1, 2, 3)));
+}
+
+#[test]
+fn orthogonal_lines_run_straight_at_loose_ends_in_line() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 100.0, 50.0]),
+        edge(
+            "e",
+            "a",
+            "",
+            "edgeStyle=orthogonalEdgeStyle;",
+            r#"<mxPoint x="50" y="200" as="targetPoint"/>"#,
+        ),
+    ];
+    let edges = edges(&convert(&page(&cells.concat())));
+    assert!(edges[0].1.path.points.is_empty(), "{:?}", edges[0].1.path);
 }
