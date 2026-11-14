@@ -8,3 +8,11 @@ A simple, fast and lightweight GraphML based diagraming tool
 - Export to PNG and SVG
 - Can read in yEd GraphML files
 - Opens draw.io files, converting them to GraphML
+
+#### Installing on Mac
+
+Unzip it and move drwr.app to Applications. drwr isn't notarized by Apple yet, so macOS blocks its first launch: allow it under System Settings › Privacy & Security › Open Anyway, or run this in Terminal:
+```
+xattr -dr com.apple.quarantine /Applications/drwr.app
+```
+

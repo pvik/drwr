@@ -24,7 +24,7 @@ use crate::document::{self, EdgeEnd, Item, LabelRef};
 use crate::history::Document;
 use crate::scene::SceneEdge;
 use crate::selection::Selection;
-use crate::snap::{Axis, Feature, Guide, Side, Targets};
+use crate::snap::{Axis, EqualGaps, Feature, Guide, Side, Targets};
 use crate::style::Style;
 use crate::text_field::{self, End};
 use crate::tool::{NodeShape, Tool};
@@ -61,6 +61,12 @@ const HANDLE_SIZE: f32 = 7.0;
 const GUIDE: Color32 = Color32::from_rgb(0xE6, 0x00, 0x8A);
 /// How far guides reach past what they span, in screen points.
 const GUIDE_OVERHANG: f32 = 8.0;
+/// How far above a row's highest node, or left of a column's leftmost, the
+/// dimension lines showing equal gaps are, in screen points.
+const DIMENSION_OFFSET: f32 = 20.0;
+/// How long the arrowheads of dimension lines are along and across them, in
+/// screen points, and how far the lines up to them reach past.
+const ARROWHEAD: f32 = 5.0;
 
 /// The sides and corners of the selected node that can be dragged, e.g.
 /// `RIGHT_CENTER` for its right side.
@@ -138,6 +144,8 @@ pub struct Canvas {
     snapping: bool,
     /// What this frame's drag lines up with.
     guides: Vec<Guide>,
+    /// The equal gaps this frame's move makes.
+    equal_gaps: Vec<EqualGaps>,
 }
 
 /// Where the graph shows on the canvas.
@@ -307,6 +315,7 @@ impl Canvas {
             // Alt skips snapping, e.g. to place a node just beside a line.
             self.snapping = self.options.snap_lines && !ui.input(|input| input.modifiers.alt);
             self.guides.clear();
+            self.equal_gaps.clear();
             // A shortcut can switch tools mid-drag, which drops the shape.
             self.shape_drag.take_if(|drag| drag.tool != tool);
             self.edge_draw.take_if(|draw| draw.tool != tool);
@@ -1120,13 +1129,13 @@ impl Canvas {
         let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
         if !canvas.drag_stopped() {
             let to = canvas.interact_pointer_pos().map(to_graph)?;
-            let (delta, guides) = self.snap_move(shown, selected, to - drag.from);
-            self.guides = guides;
+            let (delta, guides, gaps) = self.snap_move(shown, selected, to - drag.from);
+            (self.guides, self.equal_gaps) = (guides, gaps);
             return Some(delta);
         }
         self.move_drag = None;
         if let Some(to) = ui.input(primary_release).map(to_graph) {
-            let ([dx, dy], _) = self.snap_move(shown, selected, to - drag.from);
+            let ([dx, dy], ..) = self.snap_move(shown, selected, to - drag.from);
             // Ending where it started changes nothing.
             if dx != 0.0 || dy != 0.0 {
                 document::move_items(doc.graphml_mut(), selected.items(), dx, dy);
@@ -1137,23 +1146,32 @@ impl Canvas {
 
     /// How far right and down to move the `selected` nodes for a drag by
     /// `delta`, in graph points, so that one lines up with a node left in
-    /// place, with the guides showing what lines up. With no nodes selected,
-    /// the selected edges' bends line up instead.
-    fn snap_move(&self, shown: Shown, selected: &Selection, delta: Vec2) -> ([f64; 2], Vec<Guide>) {
+    /// place, or they make equal gaps with nodes beside them, with the guides
+    /// and gaps showing it. With no nodes selected, the selected edges' bends
+    /// line up instead.
+    fn snap_move(
+        &self,
+        shown: Shown,
+        selected: &Selection,
+        delta: Vec2,
+    ) -> ([f64; 2], Vec<Guide>, Vec<EqualGaps>) {
         let mut delta = [delta.x, delta.y].map(f64::from);
         let scene = shown.scene;
         let moving = |node: usize| selected.contains_node(&scene.nodes[node].id);
         let Some(targets) = self.targets(shown, moving) else {
-            return (delta, Vec::new());
+            return (delta, Vec::new(), Vec::new());
         };
         let features = |[dx, dy]: [f64; 2]| {
             let nodes = (0..scene.nodes.len()).filter(|&node| moving(node));
-            let lines = nodes.flat_map(|node| {
+            let moved = nodes.map(|node| {
                 let mut rect = shown.geometry(node);
                 (rect.x, rect.y) = (rect.x + dx, rect.y + dy);
-                Feature::box_lines(&rect)
+                rect
             });
-            let mut features: Vec<_> = lines.collect();
+            let rects: Vec<_> = moved.collect();
+            let mut features: Vec<_> = rects.iter().flat_map(Feature::box_lines).collect();
+            // The gaps are those of the selection as a whole.
+            features.extend(Feature::block(&rects));
             if features.is_empty() {
                 let edges = (scene.edges.iter()).filter(|edge| selected.contains_edge(edge.index));
                 let bends = edges.flat_map(|edge| edge.graphics.path.points.iter());
@@ -1169,7 +1187,12 @@ impl Canvas {
         for (delta, shift) in delta.iter_mut().zip(shift) {
             *delta += shift.unwrap_or_default();
         }
-        (delta, targets.guides(&features(delta)))
+        let features = features(delta);
+        (
+            delta,
+            targets.guides(&features),
+            targets.equal_gaps(&features),
+        )
     }
 
     /// Selects the nodes inside the box that a drag [`Self::start_drag`]

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The release packages' icon files are drawn from this: see src/app_icon/. -->
+  <defs>
+    <linearGradient id="tile" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef2f7"/>
+    </linearGradient>
+    <pattern id="dots" width="4" height="4" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r=".4" fill="#cdd5e0"/>
+    </pattern>
+  </defs>
+  <rect width="32" height="32" rx="7.2" fill="url(#tile)"/>
+  <rect width="32" height="32" rx="7.2" fill="url(#dots)"/>
+  <rect x=".25" y=".25" width="31.5" height="31.5" rx="6.95" fill="none" stroke="#18202b" stroke-opacity=".15" stroke-width=".5"/>
+  <!-- The website's logo, shrunk about the middle. -->
+  <g transform="translate(16 16) scale(.74) translate(-16 -16)" fill="#add8e6" stroke="#18202b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="3" width="17" height="12" rx="2.5"/>
+    <circle cx="24" cy="23" r="6"/>
+    <path d="M10.5 15v8H17M14 20l3 3-3 3" fill="none"/>
+  </g>
+</svg>

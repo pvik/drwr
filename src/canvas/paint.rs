@@ -17,16 +17,16 @@ use crate::document::Item;
 use crate::fonts;
 use crate::line_type;
 use crate::selection::Selection;
-use crate::snap::{Axis, Guide};
+use crate::snap::{Axis, EqualGaps, Guide};
 use crate::style::Style;
 use crate::svg_image::SvgImage;
 
 use super::shown::{Anchor, EdgeLook, Outline, Shown, egui_rect, shape};
 use super::textures::Textures;
 use super::{
-    BACKGROUND, Canvas, EdgeDrag, EdgePart, GUIDE, GUIDE_OVERHANG, HALO, HANDLE_SIZE,
-    LABEL_PADDING, MAX_TEXT_PIXELS, Owner, Preview, SELECTION, SELECTION_BOX_FILL, SELECTION_GAP,
-    edge, grid,
+    ARROWHEAD, BACKGROUND, Canvas, DIMENSION_OFFSET, EdgeDrag, EdgePart, GUIDE, GUIDE_OVERHANG,
+    HALO, HANDLE_SIZE, LABEL_PADDING, MAX_TEXT_PIXELS, Owner, Preview, SELECTION,
+    SELECTION_BOX_FILL, SELECTION_GAP, edge, grid,
 };
 
 impl Canvas {
@@ -118,6 +118,7 @@ impl Canvas {
             painter.rect_stroke(outline, 0.0, SELECTION, StrokeKind::Outside);
         }
         paint_guides(painter, shown.to_screen, &self.guides);
+        paint_equal_gaps(painter, shown.to_screen, &self.equal_gaps);
         if kept
             && let Some(index) = selected_edge
             && let Some(edge) = scene.edge(index)
@@ -390,6 +391,57 @@ fn paint_guides(painter: &Painter, to_screen: TSTransform, guides: &[Guide]) {
             Axis::Y => vec2(GUIDE_OVERHANG, 0.0),
         };
         mesh.add_colored_rect(line.expand2(overhang), GUIDE);
+    }
+    painter.add(mesh);
+}
+
+/// Paints `runs` of equal gaps as yEd's dimension lines, a pixel wide: a line
+/// with arrowheads across each gap, a little above the run's highest node (or
+/// left of a column's leftmost), and lines from just past it along the sides
+/// facing the gap, down to the middle of the band the run overlaps.
+fn paint_equal_gaps(painter: &Painter, to_screen: TSTransform, runs: &[EqualGaps]) {
+    if runs.is_empty() {
+        return;
+    }
+    let pixels_per_point = painter.pixels_per_point();
+    // Diagonal, so a little wider than the lines to look as strong.
+    let stroke = Stroke::new(1.5 / pixels_per_point, GUIDE);
+    let mut mesh = Mesh::default();
+    for run in runs {
+        // Screen coordinates along the run's axis and across it.
+        let along = run.axis as usize;
+        let across = 1 - along;
+        let screen =
+            |at: f64, index: usize| to_screen.translation[index] + to_screen.scaling * at as f32;
+        let pos = |along_at: f32, across_at: f32| match run.axis {
+            Axis::X => pos2(along_at, across_at),
+            Axis::Y => pos2(across_at, along_at),
+        };
+        let rect = |along_at: Rangef, across_at: Rangef| match run.axis {
+            Axis::X => Rect::from_x_y_ranges(along_at, across_at),
+            Axis::Y => Rect::from_x_y_ranges(across_at, along_at),
+        };
+        let middle = screen((run.band[0] + run.band[1]) / 2.0, across);
+        let level = pixel(
+            screen(run.start, across) - DIMENSION_OFFSET,
+            pixels_per_point,
+        );
+        for gap in &run.gaps {
+            let ends = gap.map(|at| pixel(screen(at, along), pixels_per_point));
+            let extension = Rangef::new(level.min - ARROWHEAD, middle);
+            for end in ends {
+                mesh.add_colored_rect(rect(end, extension), GUIDE);
+            }
+            let line = Rangef::new(ends[0].min, ends[1].max);
+            mesh.add_colored_rect(rect(line, level), GUIDE);
+            let [from, to] = ends.map(|end| end.center());
+            let length = ARROWHEAD.min((to - from) / 2.0);
+            for (tip, back) in [(from, length), (to, -length)] {
+                let wing = |side: f32| pos(tip + back, level.center() + side * length);
+                let points = vec![wing(-1.0), pos(tip, level.center()), wing(1.0)];
+                painter.add(PathShape::line(points, stroke));
+            }
+        }
     }
     painter.add(mesh);
 }

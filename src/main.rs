@@ -6,6 +6,7 @@
 
 mod about_dialog;
 mod action;
+mod app_icon;
 mod atomic_file;
 mod canvas;
 mod cli;
@@ -110,9 +111,13 @@ fn main() -> eframe::Result {
 }
 
 fn run_gui(app: DrwrApp) -> eframe::Result {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_icon(app_icon::window_icon()),
+        ..Default::default()
+    };
     eframe::run_native(
         NAME,
-        eframe::NativeOptions::default(),
+        options,
         Box::new(|cc| {
             #[cfg(target_os = "macos")]
             macos::ask_before_quitting();

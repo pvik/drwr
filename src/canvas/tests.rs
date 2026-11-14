@@ -3510,10 +3510,24 @@ fn guides(shapes: &[Shape]) -> Vec<Rect> {
 /// Drags the node in [`NODE`], selected, by `by`, returning what the last
 /// frame before the release painted.
 fn drag_node_by(harness: &mut Harness, by: Vec2) -> Vec<Shape> {
-    let from = NODE.center().to_vec2();
+    drag_by(harness, NODE.center(), by)
+}
+
+/// Drags from `from` by `by`, returning what the last frame before the
+/// release painted.
+fn drag_by(harness: &mut Harness, from: Pos2, by: Vec2) -> Vec<Shape> {
+    let from = from.to_vec2();
     let held = harness.drag_and_hold(from, from + by);
     harness.frame(vec![button(harness.origin + from + by, false)]);
     held
+}
+
+/// Adds the boxes in [`NODE`] and [`OTHER`], and a third 50 wide below the
+/// gap between them, which it selects.
+fn add_three_boxes(harness: &mut Harness) {
+    harness.add_two_boxes();
+    let node = harness.add_box(pos2(300.0, 300.0), pos2(350.0, 340.0));
+    harness.selected = Selection::node(node);
 }
 
 #[test]
@@ -3541,6 +3555,123 @@ fn guides_show_what_the_moved_node_lines_up_with() {
     assert_eq!(guides(&held), [line(400.0), line(475.0), line(550.0)]);
     // Not once let go.
     assert_eq!(guides(&harness.frame(vec![])), []);
+}
+
+#[test]
+fn moved_nodes_snap_halfway_between_the_nodes_beside_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    add_three_boxes(&mut harness);
+    // Up into the gap, 3 right of halfway.
+    drag_by(&mut harness, pos2(325.0, 320.0), vec2(3.0, -240.0));
+    assert_eq!(harness.boxes()[2], geometry(300.0, 60.0, 50.0, 40.0));
+}
+
+#[test]
+fn equal_gaps_show_as_dimension_lines_above_the_row() {
+    let mut harness = Harness::new(Tool::Cursor);
+    add_three_boxes(&mut harness);
+    let held = drag_by(&mut harness, pos2(325.0, 320.0), vec2(3.0, -240.0));
+    let origin = harness.origin.to_vec2();
+    // Up each side facing a gap from the middle of what the boxes all span
+    // across, to past a line 20 above the highest, a pixel wide.
+    let side = |x: f32| Rect::from_min_max(pos2(x, 25.0), pos2(x + 1.0, 80.0)).translate(origin);
+    let line = |from: f32, to: f32| {
+        Rect::from_min_max(pos2(from, 30.0), pos2(to + 1.0, 31.0)).translate(origin)
+    };
+    assert_eq!(
+        guides(&held),
+        [
+            side(250.0),
+            side(300.0),
+            line(250.0, 300.0),
+            side(350.0),
+            side(400.0),
+            line(350.0, 400.0),
+        ]
+    );
+    // Arrowheads, wing to tip to wing, pointing out at both ends of each line.
+    let arrowhead = |tip: f32, back: f32| {
+        let points = [(tip + back, 25.5), (tip, 30.5), (tip + back, 35.5)];
+        (points.iter())
+            .map(|&(x, y)| pos2(x, y) + origin)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        lines(&held, GUIDE),
+        [
+            arrowhead(250.5, 5.0),
+            arrowhead(300.5, -5.0),
+            arrowhead(350.5, 5.0),
+            arrowhead(400.5, -5.0),
+        ]
+    );
+    let released = harness.frame(vec![]);
+    assert_eq!(
+        (guides(&released), lines(&released, GUIDE)),
+        (vec![], vec![])
+    );
+}
+
+#[test]
+fn moved_nodes_snap_as_far_past_a_node_as_it_is_past_the_next() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_two_boxes();
+    let node = harness.add_box(pos2(600.0, 300.0), pos2(700.0, 340.0));
+    harness.selected = Selection::node(node);
+    // 150 right of the second box, as it is of the first, and 4 more.
+    drag_by(&mut harness, pos2(650.0, 320.0), vec2(104.0, -240.0));
+    assert_eq!(harness.boxes()[2], geometry(700.0, 60.0, 100.0, 40.0));
+}
+
+#[test]
+fn equal_gaps_in_a_column_show_left_of_it() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    harness.add_box(pos2(100.0, 330.0), pos2(250.0, 410.0));
+    let node = harness.add_box(pos2(400.0, 400.0), pos2(440.0, 440.0));
+    harness.selected = Selection::node(node);
+    // Between the two boxes, 3 below halfway.
+    let held = drag_by(&mut harness, pos2(420.0, 420.0), vec2(-290.0, -187.0));
+    assert_eq!(harness.boxes()[2], geometry(110.0, 210.0, 40.0, 40.0));
+    let origin = harness.origin.to_vec2();
+    let side = |y: f32| Rect::from_min_max(pos2(75.0, y), pos2(130.0, y + 1.0)).translate(origin);
+    let line = |from: f32, to: f32| {
+        Rect::from_min_max(pos2(80.0, from), pos2(81.0, to + 1.0)).translate(origin)
+    };
+    assert_eq!(
+        guides(&held),
+        [
+            side(130.0),
+            side(210.0),
+            line(130.0, 210.0),
+            side(250.0),
+            side(330.0),
+            line(250.0, 330.0),
+        ]
+    );
+}
+
+#[test]
+fn a_moved_selection_snaps_into_equal_gaps_as_one() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_two_boxes();
+    let first = harness.add_box(pos2(300.0, 300.0), pos2(320.0, 340.0));
+    let second = harness.add_box(pos2(330.0, 300.0), pos2(350.0, 340.0));
+    harness.selected = Selection::of([Item::Node(first), Item::Node(second)]);
+    drag_by(&mut harness, pos2(310.0, 320.0), vec2(3.0, -240.0));
+    let boxes = harness.boxes();
+    assert_eq!((boxes[2].x, boxes[3].x), (300.0, 330.0));
+}
+
+#[test]
+fn alt_skips_equal_gaps_too() {
+    let mut harness = Harness::new(Tool::Cursor);
+    add_three_boxes(&mut harness);
+    let held = harness.holding(Modifiers::ALT, |harness| {
+        drag_by(harness, pos2(325.0, 320.0), vec2(3.0, -240.0))
+    });
+    assert_eq!((guides(&held), lines(&held, GUIDE)), (vec![], vec![]));
+    assert_eq!(harness.boxes()[2], geometry(303.0, 60.0, 50.0, 40.0));
 }
 
 #[test]
