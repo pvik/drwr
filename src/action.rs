@@ -50,6 +50,10 @@ pub enum Action {
     ToggleGridLines,
     /// Turns snapping to other nodes' sides and middles on or off.
     ToggleSnapLines,
+    /// Opens the color picker on the canvas's background color.
+    EditCanvasBackground,
+    /// Sets the canvas's background color, made opaque.
+    SetCanvasBackground(Color),
     /// Moves the selected bend, or else everything selected, right and down
     /// by these distances, in points; see [`crate::document::move_items`].
     MoveBy(f64, f64),

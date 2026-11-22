@@ -596,9 +596,7 @@ fn color_button(ui: &mut Ui, color: Option<Option<Color>>) -> Response {
         });
         return ui.add(Button::new(swatch));
     };
-    let swatch = sample(ui, 1.0, move |painter, rect, outline| {
-        color_picker::paint_swatch(painter, rect, color, outline);
-    });
+    let swatch = color_picker::swatch(ui, color);
     let text = color.map_or("None".to_owned(), |color| color.to_string());
     ui.add(Button::new((swatch, text)))
 }

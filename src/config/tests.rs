@@ -31,11 +31,12 @@ fn changed_settings() -> Settings {
         view: canvas::Options {
             grid_lines: true,
             snap_lines: false,
+            background: Color::rgb(0x33, 0x66, 0x99),
         },
         export: export::Settings {
             format: export::Format::Svg,
             margin: 20,
-            transparent: true,
+            background: export::Background::Canvas,
             scale: 200,
             outlines: true,
         },
@@ -68,11 +69,12 @@ fn the_settings_file_is_toml_in_sections() {
     let text = r##"[view]
 grid_lines = true
 snap_lines = false
+background = "#336699"
 
 [export]
 format = "svg"
 margin = 20
-transparent = true
+background = "canvas"
 scale = 200
 outlines = true
 
@@ -112,11 +114,12 @@ fn styles_never_set_are_left_out() {
     let text = "[view]
 grid_lines = true
 snap_lines = true
+background = \"#FFFFFF\"
 
 [export]
 format = \"png\"
 margin = 10
-transparent = false
+background = \"white\"
 scale = 100
 outlines = false
 ";
@@ -138,7 +141,7 @@ fn settings_missing_from_the_file_keep_their_defaults() {
     let settings = load_settings(&dir, "[view]\ngrid_lines = true\n");
     let expected = canvas::Options {
         grid_lines: true,
-        snap_lines: true,
+        ..canvas::Options::default()
     };
     assert_eq!(settings.view, expected);
     assert_eq!(settings.export, export::Settings::default());
@@ -175,6 +178,36 @@ width = 3.0
     style.set_color(&node, ColorProperty::Text(0), Some(Color::rgb(0, 0xFF, 0)));
     style.set_line_width(&node, 3.0);
     assert_eq!(settings.style, style);
+}
+
+#[test]
+fn backgrounds_this_version_cant_read_are_white() {
+    let dir = ScratchDir::new("config-unknown-backgrounds");
+    let text = "[view]\nbackground = \"blue\"\n\n[export]\nbackground = \"paper\"\n";
+    let settings = load_settings(&dir, text);
+    assert_eq!(settings.view.background, Color::WHITE);
+    assert_eq!(settings.export.background, export::Background::White);
+}
+
+#[test]
+fn the_canvas_background_reads_as_opaque() {
+    let dir = ScratchDir::new("config-opaque-background");
+    let settings = load_settings(&dir, "[view]\nbackground = \"#33669980\"\n");
+    assert_eq!(settings.view.background, Color::rgb(0x33, 0x66, 0x99));
+}
+
+#[test]
+fn transparent_as_older_versions_wrote_it_reads_as_the_background() {
+    let dir = ScratchDir::new("config-old-transparent");
+    for (transparent, background) in [
+        (true, export::Background::Transparent),
+        (false, export::Background::White),
+    ] {
+        let text = format!("[export]\nmargin = 5\ntransparent = {transparent}\n");
+        let export = load_settings(&dir, &text).export;
+        assert_eq!(export.background, background, "{transparent}");
+        assert_eq!(export.margin, 5);
+    }
 }
 
 #[test]

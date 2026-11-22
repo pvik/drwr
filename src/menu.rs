@@ -88,7 +88,14 @@ pub fn show(
                         ("Snap Lines", Action::ToggleSnapLines, snap),
                     ],
                 );
-                clicked = zoom.or(options);
+                ui.separator();
+                let item = (
+                    "Canvas Background Color…",
+                    Action::EditCanvasBackground,
+                    true,
+                );
+                let background = items(ui, [item]);
+                clicked = zoom.or(options).or(background);
             });
         });
     });

@@ -14,6 +14,8 @@ use crate::selection::Selection;
 
 const RED: Color = Color::rgb(0xFF, 0x00, 0x00);
 const BLUE: Color = Color::rgb(0x00, 0x00, 0xFF);
+/// The canvas's background color in these tests.
+const CANVAS: Color = Color::rgb(0x33, 0x33, 0x33);
 
 /// What the canvas draws of `graphml`, or of the items `only` has, with the
 /// labels in egui's own fonts.
@@ -68,7 +70,7 @@ fn svg(drawing: &Drawing, settings: Settings) -> String {
         format: Format::Svg,
         ..settings
     };
-    let bytes = export(drawing, &settings, &Fonts::default()).unwrap();
+    let bytes = export(drawing, &settings, CANVAS, &Fonts::default()).unwrap();
     String::from_utf8(bytes).unwrap()
 }
 
@@ -77,7 +79,7 @@ fn png(drawing: &Drawing, settings: Settings) -> Pixmap {
         format: Format::Png,
         ..settings
     };
-    let bytes = export(drawing, &settings, &Fonts::default()).unwrap();
+    let bytes = export(drawing, &settings, CANVAS, &Fonts::default()).unwrap();
     Pixmap::decode_png(&bytes).unwrap()
 }
 
@@ -307,22 +309,32 @@ fn colors_keep_their_alpha() {
 }
 
 #[test]
-fn transparent_exports_have_no_background() {
+fn exports_are_on_white_the_canvas_color_or_nothing() {
     let (graphml, ..) = two_nodes();
     let drawing = drawing(&graphml, None);
-    let transparent = Settings {
-        transparent: true,
-        ..Settings::default()
-    };
-    assert_eq!(
-        elements(&svg(&drawing, transparent.clone()), "rect").len(),
-        1
-    );
-    assert_eq!(pixel(&png(&drawing, transparent), pos2(1.0, 1.0))[3], 0);
-    assert_eq!(
-        pixel(&png(&drawing, Settings::default()), pos2(1.0, 1.0)),
-        [0xFF, 0xFF, 0xFF, 0xFF]
-    );
+    for (background, rect, pixel_color) in [
+        (Background::White, Some("#FFFFFF"), [0xFF, 0xFF, 0xFF, 0xFF]),
+        (
+            Background::Canvas,
+            Some("#333333"),
+            [0x33, 0x33, 0x33, 0xFF],
+        ),
+        (Background::Transparent, None, [0, 0, 0, 0]),
+    ] {
+        let settings = Settings {
+            background,
+            ..Settings::default()
+        };
+        let svg = svg(&drawing, settings.clone());
+        let rects = elements(&svg, "rect");
+        // The page's, if any, then the box's.
+        assert_eq!(rects.len(), 1 + usize::from(rect.is_some()), "{svg}");
+        if let Some(fill) = rect {
+            assert!(rects[0].ends_with(&format!(r#" fill="{fill}"/>"#)), "{svg}");
+        }
+        let png = png(&drawing, settings);
+        assert_eq!(pixel(&png, pos2(1.0, 1.0)), pixel_color, "{background:?}");
+    }
 }
 
 #[test]
@@ -548,7 +560,7 @@ fn numbers_have_at_most_two_decimals() {
 fn an_empty_drawing_has_nothing_to_export() {
     let drawing = drawing(&yed::new_document(), None);
     assert!(matches!(
-        export(&drawing, &Settings::default(), &Fonts::default()),
+        export(&drawing, &Settings::default(), CANVAS, &Fonts::default()),
         Err(Error::Empty)
     ));
     assert_eq!(page(drawing.bounds, 10), None);
@@ -567,14 +579,14 @@ fn pngs_over_the_limit_are_refused() {
     );
     let drawing = drawing(&graphml, None);
     assert!(matches!(
-        export(&drawing, &Settings::default(), &Fonts::default()),
+        export(&drawing, &Settings::default(), CANVAS, &Fonts::default()),
         Err(Error::TooLarge)
     ));
     let svg = Settings {
         format: Format::Svg,
         ..Settings::default()
     };
-    assert!(export(&drawing, &svg, &Fonts::default()).is_ok());
+    assert!(export(&drawing, &svg, CANVAS, &Fonts::default()).is_ok());
 }
 
 /// A red disc 20 across on a 40 by 30 canvas, which an SVG node at (100, 50)
@@ -626,7 +638,7 @@ fn svg_nodes_embed_their_drawing_showing_what_it_draws() {
 fn pngs_draw_svg_nodes_stretched_as_on_the_canvas() {
     let graphml = red_disc();
     let transparent = Settings {
-        transparent: true,
+        background: Background::Transparent,
         margin: 0,
         ..Settings::default()
     };

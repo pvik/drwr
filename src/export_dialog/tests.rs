@@ -6,6 +6,7 @@ use egui::{FallbackRequest, FontInsert, Key, Modifiers, pos2, vec2};
 use super::*;
 use crate::testing::{Drive, Driver, center};
 
+const CANVAS: Color = Color::rgb(0x33, 0x66, 0x99);
 /// 100×50 points at the origin.
 const EVERYTHING: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0));
 const SELECTED: Rect = Rect::from_min_max(pos2(10.0, 10.0), pos2(30.0, 30.0));
@@ -50,7 +51,7 @@ impl Harness {
             dialog: ExportDialog::default(),
             accepted: Vec::new(),
         };
-        harness.dialog.open(settings, everything, selected);
+        harness.dialog.open(settings, CANVAS, everything, selected);
         // A new modal is laid out unseen first.
         harness.frame(vec![]);
         harness.frame(vec![]);
@@ -119,7 +120,7 @@ fn the_options_shown_are_the_formats() {
     assert!(harness.driver.painted("PNG options"));
     // Scale and margin.
     assert_eq!(harness.fields().len(), 2);
-    assert!(harness.shown("Transparent background"));
+    assert!(harness.shown("Transparent"));
     assert!(!harness.shown("Text as outlines"));
 
     harness.click("SVG");
@@ -127,7 +128,7 @@ fn the_options_shown_are_the_formats() {
     assert!(harness.driver.painted("SVG options"));
     // Margin only.
     assert_eq!(harness.fields().len(), 1);
-    assert!(harness.shown("Transparent background"));
+    assert!(harness.shown("Transparent"));
     assert!(harness.shown("Text as outlines"));
     assert!(!harness.driver.painted("120 × 70 px"));
 }
@@ -162,7 +163,7 @@ fn the_size_in_pixels_follows_the_area_scale_and_margin() {
 fn export_returns_the_options_set() {
     let mut harness = Harness::open(Settings::default(), false);
     harness.click("SVG");
-    harness.click("Transparent background");
+    harness.click("Transparent");
     harness.click("Text as outlines");
     harness.set_field(0, "4");
     harness.click("Export…");
@@ -172,7 +173,7 @@ fn export_returns_the_options_set() {
             settings: Settings {
                 format: Format::Svg,
                 margin: 4,
-                transparent: true,
+                background: Background::Transparent,
                 scale: 100,
                 outlines: true,
             },
@@ -186,13 +187,14 @@ fn it_opens_on_the_settings_given() {
     let settings = Settings {
         format: Format::Svg,
         margin: 5,
-        transparent: true,
+        background: Background::Transparent,
         scale: 300,
         outlines: true,
     };
     let mut harness = Harness::open(settings.clone(), false);
     assert!(harness.checked("SVG"));
-    assert!(harness.checked("Transparent background"));
+    assert!(harness.checked("Transparent"));
+    assert!(!harness.checked("White"));
     assert!(harness.checked("Text as outlines"));
     assert_eq!(harness.fields()[0].numeric_value(), Some(5.0));
     harness.click("PNG");
@@ -252,7 +254,9 @@ fn pngs_over_the_limit_cant_be_exported() {
 fn opening_it_again_while_open_keeps_it() {
     let mut harness = Harness::open(Settings::default(), true);
     harness.click("Selected area only");
-    harness.dialog.open(Settings::default(), EVERYTHING, None);
+    harness
+        .dialog
+        .open(Settings::default(), CANVAS, EVERYTHING, None);
     harness.repaint();
     assert!(harness.checked("Selected area only"));
 }
@@ -286,7 +290,7 @@ fn the_dialog_shows_where_it_stays() {
     };
     harness
         .dialog
-        .open(Settings::default(), EVERYTHING, Some(SELECTED));
+        .open(Settings::default(), CANVAS, EVERYTHING, Some(SELECTED));
     // Laid out unseen first.
     harness.frame(vec![]);
     let mut shown = Vec::new();
@@ -295,4 +299,45 @@ fn the_dialog_shows_where_it_stays() {
         shown.push(center(harness.driver.widget("Export…")));
     }
     assert!(shown.iter().all(|&at| at == shown[0]), "{shown:?}");
+}
+
+#[test]
+fn the_choices_line_up_beside_their_labels() {
+    let harness = Harness::open(Settings::default(), true);
+    let left = |widget: &Node| widget.bounds().unwrap().x0;
+    let choices = [
+        "PNG",
+        "Entire document",
+        "White",
+        "Canvas color",
+        "Transparent",
+    ];
+    let mut lefts: Vec<_> = choices
+        .map(|label| left(harness.driver.widget(label)))
+        .into();
+    lefts.extend(harness.fields().into_iter().map(left));
+    assert!(lefts.iter().all(|&x| x == lefts[0]), "{lefts:?}");
+}
+
+#[test]
+fn canvas_color_shows_the_canvas_background() {
+    let mut harness = Harness::open(Settings::default(), false);
+    assert!(harness.checked("White"));
+    let fill = color_picker::color32(CANVAS);
+    let swatch = harness.driver.shapes.iter().find_map(|shape| match shape {
+        egui::Shape::Rect(rect) if rect.fill == fill => Some(rect.rect),
+        _ => None,
+    });
+    let swatch = swatch.expect("the canvas color is shown");
+    // Inside the choice, so clicking it picks the choice.
+    let choice = harness.driver.widget("Canvas color").bounds().unwrap();
+    let choice = Rect::from_min_max(
+        pos2(choice.x0 as f32, choice.y0 as f32),
+        pos2(choice.x1 as f32, choice.y1 as f32),
+    );
+    assert!(choice.contains_rect(swatch), "{swatch:?} in {choice:?}");
+    harness.click_at(swatch.center(), 1);
+    harness.click("Export…");
+    let background = harness.accepted[0].settings.background;
+    assert_eq!(background, Background::Canvas);
 }

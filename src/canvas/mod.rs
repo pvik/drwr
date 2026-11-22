@@ -36,8 +36,6 @@ pub use shown::Outline;
 use shown::{Anchor, EdgeLook, Shown, egui_pos, yed_point};
 use textures::Textures;
 
-/// White like paper, even in the dark theme.
-const BACKGROUND: Color32 = Color32::WHITE;
 /// New nodes' fill, CSS's `lightblue`.
 const NEW_NODE_FILL: yed::Color = yed::Color::rgb(0xAD, 0xD8, 0xE6);
 
@@ -103,7 +101,7 @@ const MAX_TEXT_SCALE: f32 = 1.25;
 const EDITOR_MARGIN: Margin = Margin::symmetric(4, 2);
 const EDITOR_MIN_WIDTH: f32 = 60.0;
 
-/// What the View menu turns on for the canvas.
+/// What the View menu sets for the canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Options {
@@ -111,6 +109,9 @@ pub struct Options {
     /// Whether drags snap onto the sides and middles of other nodes, with
     /// guides showing what lines up, unless Alt is held.
     pub snap_lines: bool,
+    /// Behind the drawing, always opaque.
+    #[serde(with = "opaque_color")]
+    pub background: yed::Color,
 }
 
 impl Default for Options {
@@ -118,7 +119,26 @@ impl Default for Options {
         Options {
             grid_lines: false,
             snap_lines: true,
+            // Like paper, even in the dark theme.
+            background: yed::Color::WHITE,
         }
+    }
+}
+
+/// A color as `#RRGGBB`, read as opaque, and as the default background if
+/// it can't be read.
+mod opaque_color {
+    use graphml::yed::Color;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(color: &Color, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(color)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Color, D::Error> {
+        let color = Color::from_hex(&String::deserialize(deserializer)?);
+        let default = super::Options::default().background;
+        Ok(color.map_or(default, |color| Color { a: 255, ..color }))
     }
 }
 
@@ -580,7 +600,7 @@ impl Canvas {
         let id = Id::unique("label_editor");
         let output = ui
             .scope_builder(UiBuilder::new().max_rect(rect), |ui| {
-                // White like the canvas, even in the dark theme.
+                // A white field with dark text, whatever the theme or canvas.
                 ui.style_mut().visuals = Visuals::light();
                 text_field::label_edit(&mut editor.text)
                     .id(id)

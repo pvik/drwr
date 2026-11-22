@@ -92,10 +92,12 @@ fn ctrl_n_replaces_the_graph_with_an_empty_unsaved_one() {
 #[test]
 fn new_closes_the_dialogs() {
     let mut harness = fixture_harness();
-    harness
-        .app
-        .color_picker
-        .open(ColorProperty::Fill, "Fill", None, true);
+    harness.app.color_picker.open(
+        ColorTarget::Selection(ColorProperty::Fill),
+        "Fill",
+        None,
+        true,
+    );
     let edit = LabelEdit {
         labels: vec![],
         text: String::new(),
@@ -109,8 +111,8 @@ fn new_closes_the_dialogs() {
 #[test]
 fn open_closes_the_color_picker() {
     let mut app = DrwrApp::default();
-    app.color_picker
-        .open(ColorProperty::Fill, "Fill color", None, true);
+    let fill = ColorTarget::Selection(ColorProperty::Fill);
+    app.color_picker.open(fill, "Fill color", None, true);
     app.open(Path::new(FIXTURE)).unwrap();
     assert!(!app.color_picker.is_open());
 }

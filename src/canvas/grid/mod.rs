@@ -1,7 +1,7 @@
 //! The canvas's grid lines, spaced to suit the zoom.
 
 use egui::emath::TSTransform;
-use egui::{Color32, Mesh, Painter, Rangef, Rect};
+use egui::{Color32, Mesh, Painter, Rangef, Rect, Rgba};
 
 use super::paint::pixel;
 
@@ -16,13 +16,14 @@ const MIN_GAP: f32 = 5.0;
 const FAINT_GAP: f32 = 10.0;
 /// ...and lines this far apart, or more, as dark as [`DARK`].
 const DARK_GAP: f32 = 100.0;
-/// How dark lines are drawn, from 0 (white) to 1 (black).
+/// How dark lines are drawn, from 0 (the background) to 1 (black), or how
+/// light on a dark background.
 const FAINT: f32 = 0.065;
 const DARK: f32 = 0.17;
 
 /// Paints grid lines across the canvas at `rect`, which `to_screen` takes
-/// graph coordinates to. They're a pixel wide at any zoom.
-pub fn paint(painter: &Painter, rect: Rect, to_screen: TSTransform) {
+/// graph coordinates to, over `background`. They're a pixel wide at any zoom.
+pub fn paint(painter: &Painter, rect: Rect, to_screen: TSTransform, background: Color32) {
     let pixel = |at: f32| pixel(at, painter.pixels_per_point());
     let (origin, zoom) = (to_screen.translation, to_screen.scaling);
     let across = lines(rect.x_range(), origin.x, zoom)
@@ -32,17 +33,40 @@ pub fn paint(painter: &Painter, rect: Rect, to_screen: TSTransform) {
         .into_iter()
         .map(|(y, darkness)| (darkness, Rect::from_x_y_ranges(rect.x_range(), pixel(y))));
     let mut lines: Vec<_> = across.chain(down).collect();
-    // The darker over the fainter, where they cross.
+    // The stronger over the fainter, where they cross.
     lines.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+    let ink = ink(background);
     let mut mesh = Mesh::default();
     for (darkness, line) in lines {
-        let gray = (255.0 * (1.0 - darkness)).round() as u8;
+        let color = mix(background, ink, darkness);
         // Those just fading in show nothing yet.
-        if gray < 255 {
-            mesh.add_colored_rect(line, Color32::from_gray(gray));
+        if color != background {
+            mesh.add_colored_rect(line, color);
         }
     }
     painter.add(mesh);
+}
+
+/// What lines are drawn toward from `background`: black, or white if that
+/// stands out more, as WCAG measures contrast.
+fn ink(background: Color32) -> Color32 {
+    let linear = Rgba::from(background);
+    let luminance = 0.2126 * linear.r() + 0.7152 * linear.g() + 0.0722 * linear.b();
+    // Where black and white stand out as much.
+    if luminance > 0.179 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    }
+}
+
+/// The opaque color `amount` of the way from `from` to `to`.
+fn mix(from: Color32, to: Color32, amount: f32) -> Color32 {
+    let channel = |from: u8, to: u8| {
+        (f32::from(from) * (1.0 - amount) + f32::from(to) * amount).round() as u8
+    };
+    let [r, g, b] = [0, 1, 2].map(|i| channel(from[i], to[i]));
+    Color32::from_rgb(r, g, b)
 }
 
 /// Where lines cross `range` on screen along an axis, on which graph point 0

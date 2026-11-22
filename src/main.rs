@@ -152,8 +152,7 @@ struct DrwrApp {
     fonts: Arc<Fonts>,
     side_panel: SidePanel,
     file_dialog: FileDialog<FilePurpose>,
-    /// Picks the colors of the selected nodes and edges.
-    color_picker: ColorPicker<ColorProperty>,
+    color_picker: ColorPicker<ColorTarget>,
     label_dialog: TextDialog<LabelEdit>,
     export_dialog: ExportDialog,
     /// Whether the About dialog is open.
@@ -175,6 +174,24 @@ struct DrwrApp {
     typing: bool,
 }
 
+/// What the color picker picks a color for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ColorTarget {
+    /// A color of the selected nodes and edges.
+    Selection(ColorProperty),
+    CanvasBackground,
+}
+
+impl ColorTarget {
+    /// The action setting it to `color`, if it can be that.
+    fn set(self, color: Option<yed::Color>) -> Option<Action> {
+        match self {
+            ColorTarget::Selection(property) => Some(Action::SetColor(property, color)),
+            ColorTarget::CanvasBackground => color.map(Action::SetCanvasBackground),
+        }
+    }
+}
+
 /// Labels the label dialog edits together, and the text it opened on.
 struct LabelEdit {
     labels: Vec<LabelRef>,
@@ -194,6 +211,8 @@ enum FilePurpose {
 struct ExportJob {
     drawing: Drawing,
     settings: export::Settings,
+    /// The canvas's background color.
+    canvas: yed::Color,
 }
 
 /// An export writing the file at `path` on its own thread, which returns why
@@ -493,7 +512,8 @@ impl DrwrApp {
         let everything = Drawing::of(ctx, scene, None).bounds;
         let selected = (!self.selected.is_empty())
             .then(|| Drawing::of(ctx, scene, Some(&self.selected)).bounds);
-        (self.export_dialog).open(self.settings.export.clone(), everything, selected);
+        let (settings, canvas) = (self.settings.export.clone(), self.settings.view.background);
+        (self.export_dialog).open(settings, canvas, everything, selected);
     }
 
     /// Asks where to export the drawing as the export dialog was `accepted`,
@@ -520,7 +540,12 @@ impl DrwrApp {
             name: format!("{stem}.{}", format.extension()),
             folder: file.and_then(Path::parent).map(Path::to_path_buf),
         };
-        let job = Arc::new(ExportJob { drawing, settings });
+        let canvas = self.settings.view.background;
+        let job = Arc::new(ExportJob {
+            drawing,
+            settings,
+            canvas,
+        });
         (self.file_dialog).open(FilePurpose::Export(job), request, ctx, frame);
     }
 
@@ -545,7 +570,7 @@ impl DrwrApp {
         let thread = std::thread::Builder::new()
             .name("export".to_owned())
             .spawn(move || {
-                let written = export::export(&job.drawing, &job.settings, &fonts)
+                let written = export::export(&job.drawing, &job.settings, job.canvas, &fonts)
                     .map_err(|err| err.to_string())
                     .and_then(|bytes| {
                         atomic_file::write(&to, |file| file.write_all(&bytes))
@@ -754,6 +779,14 @@ impl DrwrApp {
             Action::ToggleSnapLines => {
                 self.settings.view.snap_lines = !self.settings.view.snap_lines;
             }
+            Action::EditCanvasBackground => {
+                let color = self.settings.view.background;
+                let target = ColorTarget::CanvasBackground;
+                (self.color_picker).open_opaque(target, "Canvas background color", color);
+            }
+            Action::SetCanvasBackground(color) => {
+                self.settings.view.background = yed::Color { a: 255, ..color };
+            }
             Action::MoveBy(dx, dy) => match (self.selected.single(), self.selected.bend()) {
                 (Some(&Item::Edge(index)), Some(bend)) => {
                     document::move_bends(self.doc.graphml_mut(), index, Some(bend), dx, dy);
@@ -782,8 +815,8 @@ impl DrwrApp {
                 if let Some(graphics) = first {
                     let title = format!("{} color", property.name());
                     let color = property.get(graphics.as_ref());
-                    self.color_picker
-                        .open(property, title, color, property.optional());
+                    let target = ColorTarget::Selection(property);
+                    (self.color_picker).open(target, title, color, property.optional());
                 }
             }
             Action::SetColor(property, color) => {
@@ -968,8 +1001,9 @@ impl eframe::App for DrwrApp {
             self.perform(action, ui.ctx(), frame);
         }
 
-        if let Some((property, color)) = self.color_picker.show(ui.ctx()) {
-            self.perform(Action::SetColor(property, color), ui.ctx(), frame);
+        let picked = self.color_picker.show(ui.ctx());
+        if let Some(action) = picked.and_then(|(target, color)| target.set(color)) {
+            self.perform(action, ui.ctx(), frame);
         }
         if let Some((edit, text)) = self.label_dialog.show(ui.ctx())
             // Unchanged, it would blank labels that differ.
