@@ -1,18 +1,19 @@
 use std::ops::RangeInclusive;
 
-use egui::{Align, Button, Context, DragValue, Layout, Rect, Response, Ui, vec2};
+use egui::{Align, Atoms, Button, Context, DragValue, Layout, Rect, Response, Ui, vec2};
+use graphml::yed::Color;
 
-use crate::dialog;
-use crate::export::{self, Format, Settings};
+use crate::export::{self, Background, Format, Settings};
+use crate::{color_picker, dialog};
 
 /// The PNG scales offered, in percent.
 const SCALES: RangeInclusive<u32> = 10..=1000;
 /// The margins offered, in points.
 const MARGINS: RangeInclusive<u32> = 0..=1000;
 /// So that the dialog keeps its width as the numbers change.
-const MIN_WIDTH: f32 = 280.0;
+const MIN_WIDTH: f32 = 295.0;
 /// Of the labels left of the choices.
-const LABEL_WIDTH: f32 = 60.0;
+const LABEL_WIDTH: f32 = 75.0;
 
 /// A modal dialog asking how to export the drawing: its format, all of it or
 /// what's selected, and the format's options.
@@ -31,6 +32,8 @@ pub struct Accepted {
 
 struct Dialog {
     accepted: Accepted,
+    /// The canvas's background color.
+    canvas: Color,
     /// What the drawing covers, in graph points.
     everything: Rect,
     /// What the selected items cover, if any are selected.
@@ -45,9 +48,16 @@ impl ExportDialog {
     }
 
     /// Opens the dialog on `settings`, with all of the drawing chosen, for a
-    /// drawing covering `everything`, of which the selected items cover
-    /// `selected`, unless none are. Unless it's open already.
-    pub fn open(&mut self, settings: Settings, everything: Rect, selected: Option<Rect>) {
+    /// drawing covering `everything` on a `canvas` background, of which the
+    /// selected items cover `selected`, unless none are. Unless it's open
+    /// already.
+    pub fn open(
+        &mut self,
+        settings: Settings,
+        canvas: Color,
+        everything: Rect,
+        selected: Option<Rect>,
+    ) {
         if self.is_open() {
             return;
         }
@@ -56,6 +66,7 @@ impl ExportDialog {
                 settings,
                 selected_only: false,
             },
+            canvas,
             everything,
             selected,
             focus: true,
@@ -127,8 +138,16 @@ impl Dialog {
             )
         });
         field.labelled_by(label.id);
-        row(ui, "", |ui| {
-            ui.checkbox(&mut settings.transparent, "Transparent background");
+        row(ui, "Background", |ui| {
+            ui.vertical(|ui| {
+                for background in Background::ALL {
+                    let mut text = Atoms::new(background.name());
+                    if background == Background::Canvas {
+                        text.push_right(color_picker::swatch(ui, Some(self.canvas)));
+                    }
+                    ui.radio_value(&mut settings.background, background, text);
+                }
+            });
         });
         if !png {
             row(ui, "", |ui| {

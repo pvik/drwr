@@ -8,6 +8,7 @@ use std::fmt;
 use egui::Rect;
 use graphml::yed::Color;
 use resvg::{tiny_skia, usvg};
+use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::canvas::Drawing;
@@ -56,6 +57,86 @@ impl<'de> Deserialize<'de> for Format {
     }
 }
 
+/// What's behind an exported drawing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Background {
+    #[default]
+    White,
+    /// The canvas's background color.
+    Canvas,
+    Transparent,
+}
+
+impl Background {
+    pub const ALL: [Background; 3] = [
+        Background::White,
+        Background::Canvas,
+        Background::Transparent,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Background::White => "White",
+            Background::Canvas => "Canvas color",
+            Background::Transparent => "Transparent",
+        }
+    }
+
+    fn keyword(self) -> &'static str {
+        match self {
+            Background::White => "white",
+            Background::Canvas => "canvas",
+            Background::Transparent => "transparent",
+        }
+    }
+
+    /// Its color, with `canvas` the canvas's, or `None` if it's transparent.
+    pub fn color(self, canvas: Color) -> Option<Color> {
+        match self {
+            Background::White => Some(Color::WHITE),
+            Background::Canvas => Some(canvas),
+            Background::Transparent => None,
+        }
+    }
+}
+
+/// Written as its keyword. One this version doesn't know reads as white.
+impl Serialize for Background {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.keyword())
+    }
+}
+
+/// Also read from the `transparent = true` or `false` older versions wrote.
+impl<'de> Deserialize<'de> for Background {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Read;
+
+        impl Visitor<'_> for Read {
+            type Value = Background;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a background or whether it's transparent")
+            }
+
+            fn visit_str<E: de::Error>(self, keyword: &str) -> Result<Background, E> {
+                let known = Background::ALL.into_iter().find(|b| b.keyword() == keyword);
+                Ok(known.unwrap_or_default())
+            }
+
+            fn visit_bool<E: de::Error>(self, transparent: bool) -> Result<Background, E> {
+                Ok(if transparent {
+                    Background::Transparent
+                } else {
+                    Background::White
+                })
+            }
+        }
+
+        deserializer.deserialize_any(Read)
+    }
+}
+
 /// How drawings are exported.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -63,8 +144,8 @@ pub struct Settings {
     pub format: Format,
     /// Around the drawing, in points.
     pub margin: u32,
-    /// Whether the background is left transparent, rather than white.
-    pub transparent: bool,
+    #[serde(alias = "transparent")]
+    pub background: Background,
     /// A PNG's pixels per hundred points.
     pub scale: u32,
     /// Whether an SVG has its text as the outlines of the glyphs, rather than
@@ -77,7 +158,7 @@ impl Default for Settings {
         Settings {
             format: Format::Png,
             margin: 10,
-            transparent: false,
+            background: Background::White,
             scale: 100,
             outlines: false,
         }
@@ -124,10 +205,16 @@ pub fn too_large([width, height]: [u32; 2]) -> bool {
     u64::from(width) * u64::from(height) > MAX_PIXELS
 }
 
-/// The file `drawing` exports to with `settings`, its text drawn in `fonts`.
-pub fn export(drawing: &Drawing, settings: &Settings, fonts: &Fonts) -> Result<Vec<u8>, Error> {
+/// The file `drawing` exports to with `settings`, `canvas` being the canvas's
+/// background color, its text drawn in `fonts`.
+pub fn export(
+    drawing: &Drawing,
+    settings: &Settings,
+    canvas: Color,
+    fonts: &Fonts,
+) -> Result<Vec<u8>, Error> {
     let page = page(drawing.bounds, settings.margin).ok_or(Error::Empty)?;
-    let background = (!settings.transparent).then_some(Color::WHITE);
+    let background = settings.background.color(canvas);
     match settings.format {
         Format::Svg => {
             let svg = svg::write(drawing, page, background, settings.outlines, fonts);

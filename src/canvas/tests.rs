@@ -14,6 +14,8 @@ use crate::testing::{self, CTRL, button, middle_button};
 
 /// The light blue new boxes get.
 const BOX_FILL: Color32 = Color32::from_rgb(0xAD, 0xD8, 0xE6);
+/// The canvas's background, unless the options set another.
+const BACKGROUND: Color32 = Color32::WHITE;
 
 /// Drives a canvas filling an 800×600 window, one frame at a time.
 struct Harness {
@@ -2366,6 +2368,22 @@ fn grid_lines_space_out_and_fill_in_with_the_zoom() {
     // Zoomed in, lines 5 points apart fill in.
     harness.zoom(8.0);
     assert_eq!(first_grid_lines(&mut harness), [0.0, 20.0, 40.0]);
+}
+
+#[test]
+fn the_canvas_is_painted_in_its_background_with_lines_that_stand_out() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let canvas = filled_rects(&harness.frame(vec![]), BACKGROUND)[0];
+    harness.options.background = yed::Color::rgb(0x33, 0x33, 0x33);
+    harness.options.grid_lines = true;
+    let shapes = harness.frame(vec![]);
+    assert_eq!(filled_rects(&shapes, Color32::from_gray(0x33)), [canvas]);
+    assert_eq!(filled_rects(&shapes, BACKGROUND), []);
+    let lines = grid_lines(&shapes);
+    assert!(!lines.is_empty());
+    for (line, color) in lines {
+        assert!(color.r() > 0x33, "{line:?} is {color:?}");
+    }
 }
 
 #[test]

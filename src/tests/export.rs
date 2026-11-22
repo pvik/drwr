@@ -253,14 +253,46 @@ fn selected_area_only_needs_a_selection() {
 }
 
 #[test]
+fn exports_can_be_on_the_canvas_background_color() {
+    let dir = ScratchDir::new("export-background");
+    let mut harness = fixture_harness();
+    let slate = yed::Color::rgb(0x33, 0x66, 0x99);
+    harness.perform(Action::SetCanvasBackground(slate));
+    harness.press(CTRL, Key::E);
+    // Its swatch, a line of text high, unlike the canvas.
+    let swatch = harness.run(vec![]).into_iter().any(|shape| match shape {
+        Shape::Rect(rect) => {
+            rect.fill == Color32::from_rgb(0x33, 0x66, 0x99) && rect.rect.height() < 20.0
+        }
+        _ => false,
+    });
+    assert!(swatch);
+    harness.close_export_dialog(None);
+    harness.export_with(&["SVG"]);
+    harness.export_to(&dir.path("white.svg"));
+    harness.export_with(&["Canvas color"]);
+    harness.export_to(&dir.path("canvas.svg"));
+    // The page's rect comes first.
+    let page = |name: &str| {
+        let svg = read_to_string(&dir.path(name));
+        let rect = svg.lines().find(|line| line.starts_with("<rect "));
+        rect.expect("the page is filled").to_owned()
+    };
+    assert!(page("white.svg").ends_with(r##" fill="#FFFFFF"/>"##));
+    assert!(page("canvas.svg").ends_with(r##" fill="#336699"/>"##));
+    let background = harness.app.settings.export.background;
+    assert_eq!(background, crate::export::Background::Canvas);
+}
+
+#[test]
 fn settings_are_kept_but_the_area_starts_as_entire_document() {
     let mut harness = fixture_harness();
     harness.app.selected = Selection::node("n0");
-    harness.export_with(&["SVG", "Transparent background", "Selected area only"]);
+    harness.export_with(&["SVG", "Transparent", "Selected area only"]);
     harness.answer(None);
     harness.press(CTRL, Key::E);
     assert!(harness.checked("SVG"));
-    assert!(harness.checked("Transparent background"));
+    assert!(harness.checked("Transparent"));
     assert!(harness.checked("Entire document"));
 
     // Cancelling keeps none of what was changed.

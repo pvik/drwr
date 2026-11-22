@@ -1,7 +1,7 @@
 use egui::color_picker;
 use egui::{
-    Color32, Context, DragValue, Key, Painter, Rect, Response, Role, Sense, Stroke, StrokeKind,
-    TextEdit, Ui, Vec2, WidgetInfo, vec2,
+    Atom, Color32, Context, DragValue, Key, Painter, Rect, Response, Role, Sense, Stroke,
+    StrokeKind, TextEdit, TextStyle, Ui, Vec2, WidgetInfo, vec2,
 };
 use graphml::yed::Color;
 
@@ -40,6 +40,8 @@ struct Dialog<T> {
     title: String,
     /// Whether "No color" is offered.
     optional: bool,
+    /// Whether the color can't be see-through, so has no alpha field.
+    opaque: bool,
     no_color: bool,
     color: Color,
     hex: String,
@@ -70,18 +72,40 @@ impl<T> ColorPicker<T> {
         color: Option<Color>,
         optional: bool,
     ) {
+        self.open_dialog(target, title.into(), color, optional, false);
+    }
+
+    /// Opens the dialog with `color` picked, unless it's open already, for a
+    /// color that can't be "No color" or see-through.
+    pub fn open_opaque(&mut self, target: T, title: impl Into<String>, color: Color) {
+        self.open_dialog(target, title.into(), Some(color), false, true);
+    }
+
+    fn open_dialog(
+        &mut self,
+        target: T,
+        title: String,
+        color: Option<Color>,
+        optional: bool,
+        opaque: bool,
+    ) {
         if self.is_open() {
             return;
         }
-        self.dialog = Some(Dialog {
+        let mut dialog = Dialog {
             target,
-            title: title.into(),
+            title,
             optional,
+            opaque,
             no_color: optional && color.is_none(),
-            color: color.unwrap_or(Color::WHITE),
+            color: Color::WHITE,
             hex: String::new(),
             focus_hex: true,
-        });
+        };
+        if let Some(color) = color {
+            dialog.pick(color);
+        }
+        self.dialog = Some(dialog);
     }
 
     /// Closes the dialog without picking anything.
@@ -115,8 +139,17 @@ impl<T> Dialog<T> {
         (!self.no_color).then_some(self.color)
     }
 
+    /// `color` as the dialog would pick it: opaque if its color must be.
+    fn pickable(&self, color: Color) -> Color {
+        if self.opaque {
+            Color { a: 255, ..color }
+        } else {
+            color
+        }
+    }
+
     fn pick(&mut self, picked: Color) {
-        self.color = picked;
+        self.color = self.pickable(picked);
         self.no_color = false;
     }
 
@@ -139,10 +172,17 @@ impl<T> Dialog<T> {
                 self.hex_field(ui);
                 ui.add_enabled_ui(!self.no_color, |ui| self.channel_fields(ui));
                 ui.label("Recent colors");
-                if recent.is_empty() {
+                // As they'd be picked, once each.
+                let mut shown = Vec::new();
+                for color in recent.iter().map(|&color| self.pickable(color)) {
+                    if !shown.contains(&color) {
+                        shown.push(color);
+                    }
+                }
+                if shown.is_empty() {
                     ui.weak("None yet");
                 }
-                ok |= self.swatches(ui, recent, RECENT / 2);
+                ok |= self.swatches(ui, &shown, RECENT / 2);
             });
         });
         ok |= dialog::ok_cancel(ui, None);
@@ -211,12 +251,15 @@ impl<T> Dialog<T> {
         });
     }
 
-    /// Shows a field each for the red, green, blue and alpha of the color.
+    /// Shows a field each for the red, green, blue and, unless it's opaque,
+    /// alpha of the color.
     fn channel_fields(&mut self, ui: &mut Ui) {
         let size = vec2(field_width(ui), ui.spacing().interact_size.y);
+        let shown = if self.opaque { 3 } else { 4 };
         let Color { r, g, b, a } = &mut self.color;
         ui.horizontal(|ui| {
-            for (prefix, value) in [("R ", r), ("G ", g), ("B ", b), ("A ", a)] {
+            let channels = [("R ", r), ("G ", g), ("B ", b), ("A ", a)];
+            for (prefix, value) in channels.into_iter().take(shown) {
                 ui.add(
                     DragValue::new(value)
                         .prefix(prefix)
@@ -260,6 +303,15 @@ fn swatch_button(ui: &mut Ui, color: Color, current: bool) -> Response {
     }
     paint_swatch(ui.painter(), rect, Some(color), outline);
     response.on_hover_text(hex)
+}
+
+/// A swatch of `color` a line of text high, as in a button's text.
+pub fn swatch<'a>(ui: &Ui, color: Option<Color>) -> Atom<'a> {
+    let height = ui.text_style_height(&TextStyle::Body);
+    Atom::paint(Vec2::splat(height), move |ui, args| {
+        let outline = Stroke::new(1.0, args.fallback_text_color);
+        paint_swatch(ui.painter(), args.rect, color, outline);
+    })
 }
 
 /// Paints `color` in `rect` with an outline, or strikes `rect` out if `None`.

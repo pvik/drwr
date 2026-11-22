@@ -32,12 +32,16 @@ fn view_menu_options_outlast_a_restart() {
     harness.click_widget("Snap Lines");
     // Too soon after the grid lines to be written yet.
     assert!(settings_file(&dir).contains("snap_lines = true"));
+    let slate = yed::Color::rgb(0x33, 0x66, 0x99);
+    harness.perform(Action::SetCanvasBackground(slate));
     assert!(!harness.close_window());
+    assert!(settings_file(&dir).contains("background = \"#336699\""));
 
     let mut harness = start(&dir);
     let options = canvas::Options {
         grid_lines: true,
         snap_lines: false,
+        background: slate,
     };
     assert_eq!(harness.app.settings.view, options);
     harness.click_widget("View");

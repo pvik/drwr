@@ -161,6 +161,7 @@ fn frames_that_change_nothing_read_nothing() {
 }
 
 const GRID_LINES: &str = "Canvas Grid Lines Ctrl+'";
+const BACKGROUND: &str = "Canvas Background Color…";
 
 /// Whether the canvas painted grid lines: quads of gray.
 fn grid_painted(shapes: &[Shape]) -> bool {
@@ -174,7 +175,7 @@ fn grid_painted(shapes: &[Shape]) -> bool {
 }
 
 #[test]
-fn the_view_menu_has_the_zoom_commands_then_grid_and_snap_lines() {
+fn the_view_menu_has_the_zoom_commands_then_the_canvas_options() {
     let mut harness = Harness::new();
     harness.click_widget("View");
     let labels = [
@@ -183,6 +184,7 @@ fn the_view_menu_has_the_zoom_commands_then_grid_and_snap_lines() {
         "Zoom to 100% Ctrl+0",
         GRID_LINES,
         "Snap Lines",
+        BACKGROUND,
     ];
     let ys: Vec<_> = (labels.iter())
         .map(|label| testing::center(&harness.widget(label)).y)
@@ -245,18 +247,87 @@ fn canvas_grid_lines_toggle_from_the_view_menu_and_with_ctrl_quote() {
 }
 
 #[test]
-fn grid_and_snap_lines_stay_as_set_for_new_and_opened_graphs() {
+fn the_canvas_options_stay_as_set_for_new_and_opened_graphs() {
     let mut harness = Harness::new();
+    let canvas = canvas(&harness.run(vec![]));
     harness.press(CTRL, Key::Quote);
     harness.perform(Action::ToggleSnapLines);
+    // Gray, so that the grid lines are too.
+    let gray = yed::Color::rgb(0xF0, 0xF0, 0xF0);
+    harness.perform(Action::SetCanvasBackground(gray));
     harness.press(CTRL, Key::N);
     harness.run(vec![]);
     let options = canvas::Options {
         grid_lines: true,
         snap_lines: false,
+        background: gray,
     };
     assert_eq!(harness.app.settings.view, options);
     harness.open_fixture();
-    assert!(grid_painted(&harness.run(vec![])));
+    let shapes = harness.run(vec![]);
+    assert!(grid_painted(&shapes));
+    assert_eq!(canvas_on(&shapes, Color32::from_gray(0xF0)), Some(canvas));
     assert_eq!(harness.app.settings.view, options);
+}
+
+const SLATE: yed::Color = yed::Color::rgb(0x33, 0x66, 0x99);
+
+/// Where the canvas is: the largest rect painted in `background`.
+fn canvas_on(shapes: &[Shape], background: Color32) -> Option<Rect> {
+    let rects = shapes.iter().filter_map(|shape| match shape {
+        Shape::Rect(rect) if rect.fill == background => Some(rect.rect),
+        _ => None,
+    });
+    rects.max_by(|a, b| a.area().total_cmp(&b.area()))
+}
+
+#[test]
+fn the_canvas_background_color_is_picked_from_the_view_menu() {
+    let mut harness = fixture_harness();
+    let canvas = canvas(&harness.run(vec![]));
+    harness.click_widget("View");
+    harness.click_widget(BACKGROUND);
+    assert!(!Popup::is_any_open(&harness.ctx));
+    assert!(harness.painted("Canvas background color"));
+    assert!(
+        harness
+            .widgets()
+            .iter()
+            .all(|w| w.label() != Some("No color"))
+    );
+    // The hex field has the focus.
+    harness.type_text("336699");
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert!(!harness.app.color_picker.is_open());
+    assert_eq!(harness.app.settings.view.background, SLATE);
+    let slate = Color32::from_rgb(0x33, 0x66, 0x99);
+    assert_eq!(canvas_on(&harness.run(vec![]), slate), Some(canvas));
+
+    // A view setting, not a change to the graph.
+    assert!(!harness.app.check_modified());
+    assert!(!harness.app.doc.can_undo());
+}
+
+#[test]
+fn the_canvas_background_color_picker_opens_on_the_color_set() {
+    let mut harness = Harness::new();
+    harness.perform(Action::SetCanvasBackground(SLATE));
+    harness.click_widget("View");
+    harness.click_widget(BACKGROUND);
+    // Cancelled, nothing changes.
+    harness.click_widget("Cancel");
+    assert!(!harness.app.color_picker.is_open());
+    assert_eq!(harness.app.settings.view.background, SLATE);
+    harness.click_widget("View");
+    harness.click_widget(BACKGROUND);
+    harness.press(Modifiers::NONE, Key::Enter);
+    assert_eq!(harness.app.settings.view.background, SLATE);
+}
+
+#[test]
+fn the_canvas_background_is_always_opaque() {
+    let mut harness = Harness::new();
+    let see_through = yed::Color { a: 0x80, ..SLATE };
+    harness.perform(Action::SetCanvasBackground(see_through));
+    assert_eq!(harness.app.settings.view.background, SLATE);
 }

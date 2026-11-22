@@ -50,3 +50,35 @@ fn rounder_lines_are_darker() {
     assert_eq!(dark(100.0), dark(200.0));
     assert_eq!(dark(100.0), DARK);
 }
+
+#[test]
+fn lines_on_white_are_grays_as_dark_as_they_are_drawn() {
+    for darkness in [FAINT, 0.1, DARK] {
+        let gray = (255.0 * (1.0 - darkness)).round() as u8;
+        let line = mix(Color32::WHITE, ink(Color32::WHITE), darkness);
+        assert_eq!(line, Color32::from_gray(gray), "{darkness}");
+    }
+}
+
+#[test]
+fn lines_go_toward_black_or_white_whichever_stands_out_more() {
+    for (background, ink_color) in [
+        (Color32::WHITE, Color32::BLACK),
+        (Color32::from_rgb(0xFF, 0xFF, 0xCC), Color32::BLACK),
+        // WCAG's crossover falls between these grays.
+        (Color32::from_gray(0x76), Color32::BLACK),
+        (Color32::from_gray(0x75), Color32::WHITE),
+        (Color32::from_rgb(0x00, 0x00, 0x99), Color32::WHITE),
+        (Color32::BLACK, Color32::WHITE),
+    ] {
+        assert_eq!(ink(background), ink_color, "{background:?}");
+    }
+}
+
+#[test]
+fn lines_on_dark_backgrounds_are_as_much_lighter() {
+    let navy = Color32::from_rgb(0x00, 0x00, 0x66);
+    let line = mix(navy, ink(navy), DARK);
+    // 17% of the way to white.
+    assert_eq!(line, Color32::from_rgb(0x2B, 0x2B, 0x80));
+}

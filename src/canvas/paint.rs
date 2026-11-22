@@ -24,9 +24,9 @@ use crate::svg_image::SvgImage;
 use super::shown::{Anchor, EdgeLook, Outline, Shown, egui_rect, shape};
 use super::textures::Textures;
 use super::{
-    ARROWHEAD, BACKGROUND, Canvas, DIMENSION_OFFSET, EdgeDrag, EdgePart, GUIDE, GUIDE_OVERHANG,
-    HALO, HANDLE_SIZE, LABEL_PADDING, MAX_TEXT_PIXELS, Owner, Preview, SELECTION,
-    SELECTION_BOX_FILL, SELECTION_GAP, edge, grid,
+    ARROWHEAD, Canvas, DIMENSION_OFFSET, EdgeDrag, EdgePart, GUIDE, GUIDE_OVERHANG, HALO,
+    HANDLE_SIZE, LABEL_PADDING, MAX_TEXT_PIXELS, Owner, Preview, SELECTION, SELECTION_BOX_FILL,
+    SELECTION_GAP, edge, grid,
 };
 
 impl Canvas {
@@ -48,9 +48,10 @@ impl Canvas {
             boxed,
         } = preview;
         let (scene, painter) = (shown.scene, shown.painter);
-        painter.rect_filled(rect, 0.0, BACKGROUND);
+        let background = color32(self.options.background);
+        painter.rect_filled(rect, 0.0, background);
         if self.options.grid_lines {
-            grid::paint(painter, rect, shown.to_screen);
+            grid::paint(painter, rect, shown.to_screen, background);
         }
         let editing = self.editor.as_ref().map(|editor| &editor.label);
         // The label being edited shows in its editor instead.

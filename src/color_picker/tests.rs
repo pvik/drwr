@@ -222,6 +222,58 @@ fn colors_that_are_not_optional_cannot_be_none() {
 }
 
 #[test]
+fn opaque_colors_have_neither_alpha_nor_no_color() {
+    let mut harness = Harness::new();
+    let see_through = Color { a: 0x80, ..ORANGE };
+    let title = "Canvas background color";
+    harness.picker.open_opaque("background", title, see_through);
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    let widgets = harness.driver.widgets.iter();
+    let labels: Vec<_> = widgets.filter_map(|w| w.label()).collect();
+    for absent in ["No color", "A"] {
+        assert!(!labels.contains(&absent), "{labels:?}");
+    }
+    assert!(labels.contains(&"B"), "{labels:?}");
+    assert_eq!(harness.hex(), "#FFCC00");
+
+    harness.type_text("#12345678");
+    harness.press(Key::Enter);
+    let picked = Color::rgb(0x12, 0x34, 0x56);
+    assert_eq!(harness.picked, [("background", Some(picked))]);
+}
+
+#[test]
+fn recent_colors_show_as_they_would_be_picked_where_colors_must_be_opaque() {
+    let mut harness = Harness::new();
+    for hex in ["#33669940", "#336699", "#12E3D000"] {
+        harness.pick(hex);
+    }
+    harness.open(Some(ORANGE));
+    assert_eq!(harness.recent(), ["#12E3D000", "#336699", "#33669940"]);
+    harness.press(Key::Escape);
+
+    harness
+        .picker
+        .open_opaque("background", "Background", Color::WHITE);
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    assert_eq!(harness.recent(), ["#12E3D0", "#336699"]);
+    let teal = Color32::from_rgb(0x12, 0xE3, 0xD0);
+    let mut shapes = harness.driver.shapes.iter();
+    assert!(shapes.any(|shape| matches!(shape, Shape::Rect(rect) if rect.fill == teal)));
+    harness.click_recent(0, 1);
+    let marked: Vec<_> = (harness.driver.widgets.iter())
+        .filter(|widget| widget.toggled() == Some(Toggled::True))
+        .filter_map(|widget| widget.label())
+        .collect();
+    assert_eq!(marked, ["#12E3D0"]);
+    harness.click("OK");
+    let picked = harness.picked.last().unwrap();
+    assert_eq!(*picked, ("background", Some(Color::rgb(0x12, 0xE3, 0xD0))));
+}
+
+#[test]
 fn no_color_picks_none() {
     let mut harness = Harness::new();
     harness.open(None);
