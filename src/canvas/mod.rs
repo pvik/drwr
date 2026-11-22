@@ -68,7 +68,7 @@ const DIMENSION_OFFSET: f32 = 20.0;
 /// screen points, and how far the lines up to them reach past.
 const ARROWHEAD: f32 = 5.0;
 
-/// The sides and corners of the selected node that can be dragged, e.g.
+/// The sides and corners of a selected node that can be dragged, e.g.
 /// `RIGHT_CENTER` for its right side.
 const HANDLES: [Align2; 8] = [
     Align2::LEFT_TOP,
@@ -80,9 +80,13 @@ const HANDLES: [Align2; 8] = [
     Align2::CENTER_BOTTOM,
     Align2::RIGHT_BOTTOM,
 ];
-/// How far inside or outside a side of the selected node a drag grabs it,
+/// How far inside or outside a side of a selected node a drag grabs it,
 /// which takes in its outline.
 const GRAB: f32 = 5.0;
+/// How long both sides of a node selected with other nodes or lines have to be
+/// on screen for it to get handles. Smaller ones move the selection from
+/// anywhere.
+const HANDLED_AMONG_OTHERS: f32 = 4.0 * GRAB;
 const MIN_SIZE: f64 = 1.0;
 /// How near on screen, in points, what's dragged snaps onto a line.
 const SNAP_REACH: f32 = 6.0;
@@ -191,10 +195,12 @@ struct ShapeDrag {
     from: Pos2,
 }
 
-/// A drag of one of the [`HANDLES`] of the only selected node, which
-/// resizes it.
-#[derive(Clone, Copy)]
+/// A drag of one of the [`HANDLES`] of a selected node, which resizes it, and
+/// moves the same sides of the other selected nodes as far.
+#[derive(Clone)]
 struct Resize {
+    /// The id of the node whose handle is dragged.
+    node: String,
     handle: Align2,
     /// Where the drag started, in graph coordinates.
     from: Pos2,
@@ -361,19 +367,17 @@ impl Canvas {
                 }
                 _ => self.draw_node(response.clone(), shown, doc, selected, tool, style),
             };
-            let (mut resized, mut dragged_edge, mut moved, mut boxed) = (None, None, None, None);
+            let (mut resized, mut dragged_edge, mut moved, mut boxed) =
+                (Vec::new(), None, None, None);
             if tool == Tool::Cursor {
-                match selected.single().cloned() {
-                    Some(Item::Node(id)) => {
-                        self.edge_drag = None;
-                        let geometry = self.resize_node(ui, shown, doc, &id);
-                        resized = geometry.map(|geometry| (id, geometry));
-                    }
-                    Some(Item::Edge(_)) => {
-                        self.resize = None;
-                        dragged_edge = self.drag_edge(ui, response.clone(), shown, doc, selected);
-                    }
-                    None => (self.resize, self.edge_drag) = (None, None),
+                if matches!(selected.single(), Some(Item::Edge(_))) {
+                    self.resize = None;
+                    dragged_edge = self.drag_edge(ui, response.clone(), shown, doc, selected);
+                } else {
+                    self.edge_drag = None;
+                    let handle_double_clicked;
+                    (resized, handle_double_clicked) = self.resize_nodes(ui, shown, doc, selected);
+                    double_clicked |= handle_double_clicked;
                 }
                 moved = self.move_selection(ui, &response, shown, doc, selected);
                 boxed = self.select_in_box(ui, &response, shown, selected);
@@ -382,10 +386,9 @@ impl Canvas {
             // What a release did shows in the same frame.
             let released = ui.input(primary_release).is_some();
             let mut scene = if released { doc.scene().clone() } else { scene };
-            // Drags show on the copy, sharing the graphics of the rest.
-            if let Some((id, geometry)) = resized
-                && let Some(node) = scene.node(&id)
-            {
+            // Drags show on the copy, sharing the graphics of the rest. Resizes
+            // return no bounds on release, so they index this scene.
+            for (node, geometry) in resized {
                 let node = Arc::make_mut(&mut scene.nodes[node]);
                 document::resize(&mut node.graphics, geometry);
             }
@@ -1232,87 +1235,151 @@ impl Canvas {
         None
     }
 
-    /// Lets the node with id `id` be resized by dragging its [`HANDLES`] with
-    /// the primary button. Changes its bounds on release, and returns them so
-    /// far while it's being resized.
-    fn resize_node(
+    /// Lets the selected nodes be resized by dragging the [`HANDLES`] of one
+    /// of them with the primary button, which moves the same sides of the
+    /// others as far. Changes their bounds on release, and returns them so
+    /// far, by index, while they're being resized. A click on a handle is one
+    /// on its node, and it also returns whether that asks to edit its label.
+    fn resize_nodes(
         &mut self,
         ui: &egui::Ui,
         shown: Shown,
         doc: &mut Document,
-        id: &str,
-    ) -> Option<yed::Rect> {
-        let index = shown.scene.node(id)?;
-        let node = shown.node_rect(index);
-        let geometry = shown.geometry(index);
+        selected: &mut Selection,
+    ) -> (Vec<(usize, yed::Rect)>, bool) {
+        let scene = shown.scene;
+        let mut nodes: Vec<usize> = selected.nodes().filter_map(|id| scene.node(id)).collect();
+        // In drawing order, so the handles of the node on top win.
+        nodes.sort_unstable();
+        let among_others = selected.items().len() > 1;
         let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
-        let handles = HANDLES.map(|handle| {
-            let rect = handle_rect(node, handle);
-            let response = ui
-                .interact(rect, Id::unique(("resize_handle", handle)), Sense::drag())
-                .on_hover_cursor(resize_cursor(handle));
-            (handle, response)
-        });
-        let mut resized = None;
-        for (handle, response) in handles {
-            if response.drag_started_by(PointerButton::Primary) {
-                ui.memory_mut(|memory| memory.stop_text_input());
-                let from = ui.input(|input| input.pointer.press_origin());
-                self.resize = from.map(|from| Resize {
-                    handle,
-                    from: to_graph(from),
-                });
-            }
-            let Some(drag) = self.resize.filter(|drag| drag.handle == handle) else {
+        let visible = shown.painter.clip_rect();
+        let mut dragged = None;
+        for &index in &nodes {
+            let id = &scene.nodes[index].id;
+            let rect = shown.node_rect(index);
+            let small = rect.width().min(rect.height()) < HANDLED_AMONG_OTHERS;
+            let hidden = !rect.expand(GRAB).intersects(visible);
+            // So that its drag goes on while it's zoomed small or panned away.
+            let dragging = self.resize.as_ref().is_some_and(|drag| drag.node == *id);
+            if ((small && among_others) || hidden) && !dragging {
                 continue;
-            };
-            // Like yEd, which keeps the proportions while Shift is held.
-            let keep = ui.input(|input| input.modifiers.shift);
-            if !response.drag_stopped() {
-                if let Some(to) = response.interact_pointer_pos().map(to_graph) {
-                    let (new, guides) = self.snap_resize(shown, index, drag, to, keep);
-                    (resized, self.guides) = (Some(new), guides);
+            }
+            for handle in HANDLES {
+                let response = ui
+                    .interact(
+                        handle_rect(rect, handle),
+                        Id::unique(("resize_handle", id, handle)),
+                        Sense::drag(),
+                    )
+                    .on_hover_cursor(resize_cursor(handle));
+                if response.drag_started_by(PointerButton::Primary) {
+                    ui.memory_mut(|memory| memory.stop_text_input());
+                    let from = ui.input(|input| input.pointer.press_origin());
+                    self.resize = from.map(|from| Resize {
+                        node: id.clone(),
+                        handle,
+                        from: to_graph(from),
+                    });
                 }
-                continue;
+                let resize = self.resize.as_ref();
+                if resize.is_some_and(|drag| drag.node == *id && drag.handle == handle) {
+                    dragged = Some((index, response));
+                }
             }
+        }
+        // No handle is dragged once its node is no longer selected.
+        let (Some(drag), Some((node, response))) = (self.resize.clone(), dragged) else {
             self.resize = None;
-            if let Some(to) = ui.input(primary_release).map(to_graph) {
-                let (new, _) = self.snap_resize(shown, index, drag, to, keep);
-                if new != geometry {
+            return (Vec::new(), false);
+        };
+        // Like yEd, which keeps the proportions while Shift is held.
+        let keep = ui.input(|input| input.modifiers.shift);
+        // Only a drag resizes, and only away from where it started, as the
+        // sides would snap there without moving.
+        let moved = |to: &Pos2| *to != drag.from;
+        if !response.drag_stopped() {
+            let click = ui.input(|input| input.pointer.could_any_button_be_click());
+            let to = response.interact_pointer_pos().map(to_graph);
+            let Some(to) = to.filter(moved).filter(|_| !click) else {
+                return (Vec::new(), false);
+            };
+            let resized;
+            (resized, self.guides) = self.snap_resize(shown, &nodes, node, &drag, to, keep);
+            return (resized, false);
+        }
+        self.resize = None;
+        let (clicked, double_clicked, ctrl) = ui.input(|input| {
+            let pointer = &input.pointer;
+            (
+                pointer.button_clicked(PointerButton::Primary),
+                pointer.button_double_clicked(PointerButton::Primary),
+                input.modifiers.command,
+            )
+        });
+        if clicked {
+            let item = Item::Node(drag.node);
+            if ctrl {
+                selected.toggle(item);
+            } else {
+                *selected = Selection::of([item]);
+            }
+            // Ctrl's double clicks edit no label, as on the canvas.
+            return (Vec::new(), double_clicked && !ctrl);
+        }
+        if let Some(to) = ui.input(primary_release).map(to_graph).filter(moved) {
+            let (resized, _) = self.snap_resize(shown, &nodes, node, &drag, to, keep);
+            for (index, new) in resized {
+                if new != shown.geometry(index) {
+                    let id = &scene.nodes[index].id;
                     document::edit_graphics(doc.graphml_mut(), id, |graphics| {
                         document::resize(graphics, new);
                     });
                 }
             }
         }
-        resized
+        (Vec::new(), false)
     }
 
     /// The bounds `drag` to `to` gives the node at index `node`, kept in
     /// proportion by a corner if `keep` says so, its dragged sides moved to
-    /// line up with those of nodes nearby, with the guides showing what lines
-    /// up.
+    /// line up with those of nodes nearby; and those each of the other
+    /// `nodes`, indexes in order, gets with its same handle dragged as far.
+    /// Returns them by index, with the guides showing what lines up.
     fn snap_resize(
         &self,
         shown: Shown,
+        nodes: &[usize],
         node: usize,
-        drag: Resize,
+        drag: &Resize,
         to: Pos2,
         keep: bool,
-    ) -> (yed::Rect, Vec<Guide>) {
+    ) -> (Vec<(usize, yed::Rect)>, Vec<Guide>) {
         let old = shown.geometry(node);
-        let new = drag.geometry(old, to, keep);
-        let Some(targets) = self.targets(shown, |other| other == node) else {
-            return (new, Vec::new());
-        };
+        let mut new = drag.geometry(old, to, keep);
+        let targets = self.targets(shown, |other| nodes.binary_search(&other).is_ok());
         let sides = drag.sides();
         let features = |rect: &yed::Rect| -> Vec<_> {
             (sides.iter())
                 .map(|&(axis, side)| Feature::side(rect, axis, side))
                 .collect()
         };
-        let snapped = drag.moved(old, new, targets.snap(&features(&new)), keep);
-        (snapped, targets.guides(&features(&snapped)))
+        // Only the dragged node snaps, so it decides which one lines up.
+        if let Some(targets) = &targets {
+            new = drag.moved(old, new, targets.snap(&features(&new)), keep);
+        }
+        let shift = drag.shift(old, new);
+        let resized: Vec<_> = (nodes.iter())
+            .map(|&other| {
+                let shifted = || drag.shifted(shown.geometry(other), shift, keep);
+                (other, if other == node { new } else { shifted() })
+            })
+            .collect();
+        let guides = targets.map_or_else(Vec::new, |targets| {
+            let lines = resized.iter().flat_map(|(_, rect)| features(rect));
+            targets.guides(&lines.collect::<Vec<_>>())
+        });
+        (resized, guides)
     }
 }
 
@@ -1381,9 +1448,30 @@ impl Resize {
     /// coordinates, kept in proportion by a corner if `keep` says so.
     fn geometry(&self, old: yed::Rect, to: Pos2, keep: bool) -> yed::Rect {
         let delta = to - self.from;
+        self.shifted(old, [delta.x, delta.y].map(f64::from), keep)
+    }
+
+    /// How far right and down the sides the handle drags moved from `old` to
+    /// make `new`.
+    fn shift(&self, old: yed::Rect, new: yed::Rect) -> [f64; 2] {
+        let shift = |side: Align, start: f64, new_start: f64, grown: f64| match side {
+            Align::Min => new_start - start,
+            Align::Center => 0.0,
+            Align::Max => grown,
+        };
         let [x_side, y_side] = self.handle.0;
-        let (x, width) = drag_side(old.x, old.width, x_side, delta.x.into());
-        let (y, height) = drag_side(old.y, old.height, y_side, delta.y.into());
+        [
+            shift(x_side, old.x, new.x, new.width - old.width),
+            shift(y_side, old.y, new.y, new.height - old.height),
+        ]
+    }
+
+    /// The bounds `old` would have with the handle moved right and down by
+    /// `shift`, kept in proportion by a corner if `keep` says so.
+    fn shifted(&self, old: yed::Rect, [dx, dy]: [f64; 2], keep: bool) -> yed::Rect {
+        let [x_side, y_side] = self.handle.0;
+        let (x, width) = drag_side(old.x, old.width, x_side, dx);
+        let (y, height) = drag_side(old.y, old.height, y_side, dy);
         if !(keep && self.keeps(old)) {
             return yed::Rect {
                 x,
