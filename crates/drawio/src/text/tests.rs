@@ -42,6 +42,7 @@ fn decodes_entities() {
         text("a &amp; b &lt;c&gt; &#39;d&#x27; &hellip;"),
         "a & b <c> 'd' …"
     );
+    assert_eq!(text("&NotEqualTilde; 👩&zwj;💻"), "≂̸ 👩‍💻");
     // Unknown or unterminated ones stay as written.
     assert_eq!(text("&bogus; &amp"), "&bogus; &amp");
     assert_eq!(text("1 < 2"), "1 < 2");

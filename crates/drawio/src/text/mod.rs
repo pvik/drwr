@@ -2,6 +2,8 @@
 
 use std::{borrow::Cow, mem};
 
+use html_escape::decode_html_entities;
+
 /// A label's plain text, and the font style its markup gives all of it.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Text {
@@ -135,82 +137,29 @@ impl Tag {
 
 /// Decodes the entity at the start of `text`, returning it and its length;
 /// an unknown one stays as written.
-fn entity(text: &str) -> (String, usize) {
+fn entity(text: &str) -> (Cow<'_, str>, usize) {
     let end = text[1..]
         .find(|c: char| !c.is_ascii_alphanumeric() && c != '#')
         .map_or(text.len(), |i| i + 1);
     let name = &text[1..end];
     let terminated = text[end..].starts_with(';');
     let len = end + usize::from(terminated);
-    let decoded = if let Some(number) = name.strip_prefix('#') {
+    if let Some(number) = name.strip_prefix('#') {
         let code = match number.strip_prefix(['x', 'X']) {
             Some(hex) => u32::from_str_radix(hex, 16).ok(),
             None => number.parse().ok(),
         };
         // As browsers decode NUL, surrogates and numbers past Unicode.
-        code.map(|code| {
-            char::from_u32(code)
+        if let Some(code) = code {
+            let decoded = char::from_u32(code)
                 .filter(|&c| c != '\0')
-                .unwrap_or('\u{fffd}')
-        })
-        .map(String::from)
+                .unwrap_or('\u{fffd}');
+            return (Cow::Owned(String::from(decoded)), len);
+        }
     } else if terminated {
-        named_entity(name).map(String::from)
-    } else {
-        None
-    };
-    match decoded {
-        Some(decoded) => (decoded, len),
-        None => ("&".to_owned(), 1),
+        return (decode_html_entities(&text[..len]), len);
     }
-}
-
-fn named_entity(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "nbsp" => "\u{a0}",
-        "amp" => "&",
-        "lt" => "<",
-        "gt" => ">",
-        "quot" => "\"",
-        "apos" => "'",
-        "copy" => "©",
-        "reg" => "®",
-        "trade" => "™",
-        "hellip" => "…",
-        "mdash" => "—",
-        "ndash" => "–",
-        "lsquo" => "‘",
-        "rsquo" => "’",
-        "ldquo" => "“",
-        "rdquo" => "”",
-        "laquo" => "«",
-        "raquo" => "»",
-        "bull" => "•",
-        "middot" => "·",
-        "deg" => "°",
-        "times" => "×",
-        "divide" => "÷",
-        "plusmn" => "±",
-        "euro" => "€",
-        "pound" => "£",
-        "yen" => "¥",
-        "cent" => "¢",
-        "sect" => "§",
-        "para" => "¶",
-        "larr" => "←",
-        "rarr" => "→",
-        "uarr" => "↑",
-        "darr" => "↓",
-        "harr" => "↔",
-        "lArr" => "⇐",
-        "rArr" => "⇒",
-        "hArr" => "⇔",
-        "le" => "≤",
-        "ge" => "≥",
-        "ne" => "≠",
-        "zwnj" | "zwj" | "shy" => "",
-        _ => return None,
-    })
+    (Cow::Borrowed("&"), 1)
 }
 
 #[derive(Default)]

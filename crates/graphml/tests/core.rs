@@ -324,3 +324,11 @@ fn any_xml_document_parses_into_its_root_element() {
         at(2, 1, "unexpected content after </a>")
     );
 }
+
+#[test]
+fn xml_references_use_only_xml_entities() {
+    for text in [r#"<root value="&alpha;"/>"#, "<root>&alpha;</root>"] {
+        let err = Element::parse(text).unwrap_err();
+        assert!(err.to_string().contains("unknown entity &alpha;"), "{err}");
+    }
+}

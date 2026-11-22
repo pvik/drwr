@@ -1,6 +1,6 @@
 use drawio::{Error, File, Import};
 use graphml::{
-    Edge,
+    Edge, GraphMl, drwr,
     yed::{
         self, Alignment, Arrow, Color, EdgeGraphics, FontStyle, Keys, LabelPosition, LineType,
         NodeGraphics, NodeKind, Point, Rect, ShapeType,
@@ -98,6 +98,9 @@ fn tells_draw_io_files_from_others() {
     assert!(drawio::is_drawio(
         "<mxGraphModel dx=\"1\"><root/></mxGraphModel>"
     ));
+    let with_prolog = r#"<?note comparison="a > b"?><mxGraphModel><root/></mxGraphModel>"#;
+    assert!(drawio::is_drawio(with_prolog));
+    assert!(File::parse(with_prolog).is_ok());
     assert!(!drawio::is_drawio("<?xml version=\"1.0\"?><graphml/>"));
     assert!(!drawio::is_drawio("<svg/>"));
     assert!(!drawio::is_drawio(""));
@@ -116,6 +119,61 @@ fn errors_say_what_is_wrong() {
             .starts_with("page \"A\" can't be decompressed: ")
     );
     assert!(matches!(File::parse("<mxfile>"), Err(Error::Xml(_))));
+}
+
+#[test]
+fn malformed_page_bodies_are_errors() {
+    // <metadata/> in draw.io's compressed page encoding.
+    let compressed = "UzV2zk0tSUxJLElUNXJTNXYFAA==";
+    let cases = [
+        ("<metadata/>", "expected <mxGraphModel>, found <metadata>"),
+        (compressed, "expected <mxGraphModel>, found <metadata>"),
+        ("<mxGraphModel/>", "missing <root> in <mxGraphModel>"),
+        (
+            "<mxGraphModel><root/><root/></mxGraphModel>",
+            "more than one <root> in <mxGraphModel>",
+        ),
+        (
+            "<mxGraphModel><root/></mxGraphModel>data",
+            "expected a single <mxGraphModel> or compressed text",
+        ),
+    ];
+    for (body, expected) in cases {
+        let text = format!(r#"<mxfile><diagram name="Bad">{body}</diagram></mxfile>"#);
+        let err = File::parse(&text).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidPage { page, problem } if page == "Bad" && problem == expected),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn negative_dimensions_are_errors_before_conversion() {
+    let cases = [
+        ("rounded=1;", [0.0, 0.0, -1.0, 40.0], "width"),
+        ("shape=umlLifeline;", [0.0, 0.0, 40.0, -1.0], "height"),
+    ];
+    for (style, bounds, dimension) in cases {
+        let cells = vertex("a", "", style, bounds);
+        let err = File::parse(&page(&cells)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(r#"invalid page "P": cell "a" has negative {dimension}"#)
+        );
+    }
+}
+
+#[test]
+fn fixed_ends_on_zero_width_ellipses_are_finite() {
+    let cells = [
+        vertex("a", "", "ellipse;", [0.0, 0.0, 0.0, 40.0]),
+        vertex("b", "", "", [200.0, 0.0, 80.0, 40.0]),
+        edge("e", "a", "b", "exitX=0.5;exitY=1;", ""),
+    ];
+    let import = convert(&page(&cells.concat()));
+    // The written node is 1 point wide and the port is on the original axis.
+    assert_eq!(edges(&import)[0].1.path.source, at(-0.5, 20.0));
 }
 
 #[test]
@@ -178,7 +236,7 @@ fn shapes_turned_some_other_way_are_noted() {
 }
 
 #[test]
-fn round_boxes_report_their_radius() {
+fn round_boxes_keep_their_radius_in_the_serialized_graphml() {
     let cells = [
         vertex("a", "", "rounded=1;", [0.0, 0.0, 120.0, 60.0]),
         vertex(
@@ -190,15 +248,31 @@ fn round_boxes_report_their_radius() {
         vertex("c", "", "rounded=0;", [0.0, 0.0, 120.0, 60.0]),
         // At most half the shorter side.
         vertex("d", "", "rounded=1;arcSize=80;", [0.0, 0.0, 120.0, 60.0]),
+        vertex(
+            "e",
+            "",
+            "rounded=1;arcSize=8;absoluteArcSize=1;",
+            [0.0, 0.0, 120.0, 60.0],
+        ),
     ];
     let import = convert(&page(&cells.concat()));
-    assert_eq!(
-        import.corner_radii,
-        [
-            ("n0".to_owned(), 9.0),
-            ("n1".to_owned(), 25.0),
-            ("n3".to_owned(), 30.0)
-        ]
+    let doc = GraphMl::parse(&import.graphml.to_xml()).unwrap();
+    let key = drwr::corner_radius_key(&doc).unwrap();
+    let keys = Keys::find(&doc);
+    let radii: Vec<_> = doc.graphs[0]
+        .nodes
+        .iter()
+        .map(|node| {
+            let graphics = keys.node_graphics(node).unwrap().unwrap();
+            drwr::corner_radius(&graphics.kind, node, Some(key)).unwrap()
+        })
+        .collect();
+    assert_eq!(radii, [9.0, 25.0, 0.0, 30.0, 4.0]);
+    assert!(
+        !doc.graphs[0].nodes[4]
+            .data
+            .iter()
+            .any(|data| data.key == key)
     );
 }
 
@@ -580,6 +654,19 @@ fn quarter_turned_boxes_turn_their_bounds() {
 }
 
 #[test]
+fn relative_ports_turn_with_their_parent() {
+    let cells = [
+        vertex("p", "", "rotation=90;", [0.0, 0.0, 100.0, 40.0]),
+        r#"<mxCell id="port" vertex="1" parent="p"><mxGeometry x="1" y="0.5" width="8" height="8" relative="1" as="geometry"><mxPoint x="-4" y="-4" as="offset"/></mxGeometry></mxCell>"#
+            .to_owned(),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let nodes = nodes(&import);
+    assert_eq!(nodes[0].geometry, rect(30.0, -30.0, 40.0, 100.0));
+    assert_eq!(nodes[1].geometry, rect(46.0, 66.0, 8.0, 8.0));
+}
+
+#[test]
 fn lines_left_out_leave_no_nodes_behind() {
     let cells = [
         r#"<mxCell id="h" vertex="1" visible="0" parent="1"><mxGeometry width="80" height="30" as="geometry"/></mxCell>"#,
@@ -706,6 +793,33 @@ fn lines_ending_on_a_bent_line_meet_it_halfway_along() {
     assert_eq!(dot.kind, NodeKind::Shape(ShapeType::Ellipse));
     assert_eq!(dot.geometry, rect(350.0, 92.5, 10.0, 10.0));
     assert!(edges(&import)[0].1.labels.is_empty());
+}
+
+#[test]
+fn shapes_on_lines_keep_their_descendants_and_connections() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 80.0, 40.0]),
+        vertex("b", "", "", [200.0, 0.0, 80.0, 40.0]),
+        // Resolve a descendant before the line that positions its parent.
+        edge("ref", "nested", "a", "", ""),
+        edge("e", "a", "b", "", ""),
+        r#"<mxCell id="attached" vertex="1" parent="e"><mxGeometry y="20" width="30" height="16" relative="1" as="geometry"/></mxCell>
+            <mxCell id="nested" vertex="1" parent="attached"><mxGeometry x="2" y="2" width="12" height="10" as="geometry"/></mxCell>
+            <mxCell id="inner" edge="1" parent="attached" source="nested" target="b"><mxGeometry relative="1" as="geometry"/></mxCell>"#
+            .to_owned(),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let nodes = nodes(&import);
+    assert_eq!(nodes.len(), 4);
+    assert_eq!(nodes[2].geometry, rect(140.0, 0.0, 30.0, 16.0));
+    assert_eq!(nodes[3].geometry, rect(142.0, 2.0, 12.0, 10.0));
+    let endpoints: Vec<_> = import.graphml.graphs[0]
+        .edges
+        .iter()
+        .map(|edge| (edge.source.as_str(), edge.target.as_str()))
+        .collect();
+    assert_eq!(endpoints, [("n3", "n0"), ("n0", "n1"), ("n3", "n1")]);
+    assert!(import.notes.is_empty(), "{:?}", import.notes);
 }
 
 #[test]
@@ -1290,6 +1404,22 @@ fn groups_with_a_fill_or_border_are_drawn() {
 }
 
 #[test]
+fn transparent_groups_keep_their_captions() {
+    let cells = vertex(
+        "g",
+        "&amp;alpha; &amp;eacute; &amp;check;",
+        "group;html=1;",
+        [0.0, 0.0, 100.0, 50.0],
+    );
+    let import = convert(&page(&cells));
+    let nodes = nodes(&import);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].labels[0].text, "α é ✓");
+    assert_eq!(nodes[0].fill.color, None);
+    assert_eq!(nodes[0].border.color, None);
+}
+
+#[test]
 fn colors_can_be_css_functions() {
     let cells = [
         vertex(
@@ -1330,4 +1460,25 @@ fn orthogonal_lines_run_straight_at_loose_ends_in_line() {
     ];
     let edges = edges(&convert(&page(&cells.concat())));
     assert!(edges[0].1.path.points.is_empty(), "{:?}", edges[0].1.path);
+}
+
+#[test]
+fn orthogonal_lines_keep_a_turnaround_past_aligned_ports() {
+    let cells = [
+        vertex("a", "", "", [0.0, 0.0, 80.0, 40.0]),
+        vertex("b", "", "", [200.0, 0.0, 80.0, 40.0]),
+        edge(
+            "e",
+            "a",
+            "b",
+            "edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;entryX=1;entryY=0.5;",
+            "",
+        ),
+    ];
+    let import = convert(&page(&cells.concat()));
+    let edges = edges(&import);
+    let path = &edges[0].1.path;
+    assert_eq!(path.source, at(40.0, 0.0));
+    assert_eq!(path.target, at(40.0, 0.0));
+    assert_eq!(path.points, [at(300.0, 20.0)]);
 }

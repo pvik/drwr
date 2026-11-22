@@ -2,7 +2,7 @@ use std::{fs, io::Read, mem, path::Path};
 
 use quick_xml::{
     Reader, XmlVersion,
-    escape::{EscapeError, resolve_predefined_entity},
+    escape::{EscapeError, resolve_xml_entity},
     events::{BytesRef, BytesStart, Event, attributes::AttrError},
 };
 
@@ -30,6 +30,12 @@ impl GraphMl {
 }
 
 impl Element {
+    /// Reads the root element's local name without parsing its contents.
+    pub fn root_local_name(text: &str) -> Result<String, Error> {
+        let root = Parser::new(text).root("no root element")?;
+        Ok(root.local_name().to_owned())
+    }
+
     /// Parses any XML document into its root element.
     pub fn parse(text: &str) -> Result<Self, Error> {
         let mut parser = Parser::new(text);
@@ -215,7 +221,7 @@ impl<'a> Parser<'a> {
             let attribute = attribute.map_err(|err| self.attribute_syntax_error(tag, err))?;
             let name = attribute.key.into_inner();
             let value = attribute
-                .normalized_value(XmlVersion::Implicit1_0)
+                .normalized_value_with(XmlVersion::Implicit1_0, 1, resolve_xml_entity)
                 .map_err(|err| {
                     let problem = match err {
                         quick_xml::Error::Escape(EscapeError::UnrecognizedEntity(_, entity)) => {
@@ -548,7 +554,7 @@ impl<'a> Parser<'a> {
             .map_err(|err| self.error(offset, err.to_string()))?;
         if let Some(c) = char_ref {
             text.push(c);
-        } else if let Some(replacement) = resolve_predefined_entity(reference) {
+        } else if let Some(replacement) = resolve_xml_entity(reference) {
             text.push_str(replacement);
         } else {
             return Err(self.error(offset, format!("unknown entity &{};", &**reference)));

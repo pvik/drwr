@@ -8,7 +8,7 @@ use graphml::{
 use super::{
     Converter, Placed, add_properties, center,
     label::{place, point_on},
-    rect, stroke,
+    rect, stroke, turn,
 };
 use crate::{
     route::{self, End, Router},
@@ -197,7 +197,7 @@ impl Converter<'_> {
             if cg.width > 0.0 && cg.height > 0.0 {
                 // A shape on the line rather than a label: its corner is there.
                 let bounds = rect(anchor.x, anchor.y, cg.width, cg.height);
-                self.vertex(index, &child_style, bounds);
+                self.visit_vertex(index, &child_style, bounds);
                 continue;
             }
             self.anchors.insert(index, anchor);
@@ -225,14 +225,12 @@ impl Converter<'_> {
         let Some(&index) = id.and_then(|id| self.index.get(id)) else {
             return point.map(LineEnd::Loose);
         };
-        let index = self.stand_ins.get(&index).copied().unwrap_or(index);
-        // Ends on a line, or on a label or shape of one, wait for that line.
-        let on_line = |index: usize| self.cells[index].edge.then_some(index);
-        let line = on_line(index).or_else(|| self.parent_of(index).and_then(on_line));
-        if let Some(&line) = line.and_then(|line| self.line_of.get(&line)) {
-            self.convert_line(line);
+        let mut terminal = self.stand_ins.get(&index).copied().unwrap_or(index);
+        if !self.placed.contains_key(&terminal) && !self.anchors.contains_key(&terminal) {
+            self.convert_containing_lines(terminal);
+            terminal = self.stand_ins.get(&index).copied().unwrap_or(index);
         }
-        if let Some(placed) = self.placed.get(&index) {
+        if let Some(placed) = self.placed.get(&terminal) {
             return Some(LineEnd::On(Terminal {
                 node: placed.node.clone(),
                 node_bounds: placed.node_bounds,
@@ -243,7 +241,23 @@ impl Converter<'_> {
                 },
             }));
         }
-        self.anchors.get(&index).copied().map(LineEnd::Loose)
+        self.anchors.get(&terminal).copied().map(LineEnd::Loose)
+    }
+
+    /// Places an edge terminal or one of its descendants by resolving its
+    /// containing lines from outermost to innermost.
+    fn convert_containing_lines(&mut self, index: usize) {
+        let ancestors = std::iter::successors(Some(index), |&cell| self.parent_of(cell));
+        // Broken parent links can form a cycle.
+        let lines: Vec<_> = ancestors
+            .take(self.cells.len())
+            .filter(|&cell| self.cells[cell].edge)
+            .collect();
+        for cell in lines.into_iter().rev() {
+            if let Some(&line) = self.line_of.get(&cell) {
+                self.convert_line(line);
+            }
+        }
     }
 
     /// The terminal for a line end, adding a small node for a loose one.
@@ -318,27 +332,18 @@ fn constraint(style: &Style, source: bool, vertex: &Placed) -> Option<Point> {
     Some(turn(point, mid, frame.rotation))
 }
 
-/// `point` turned `degrees` clockwise round `center`.
-fn turn(point: Point, center: Point, degrees: f64) -> Point {
-    // Exact in quarters, as draw.io turns points by direction.
-    let (sin, cos) = match degrees.rem_euclid(360.0) {
-        90.0 => (1.0, 0.0),
-        180.0 => (0.0, -1.0),
-        270.0 => (-1.0, 0.0),
-        d => d.to_radians().sin_cos(),
-    };
-    let (x, y) = (point.x - center.x, point.y - center.y);
-    Point {
-        x: center.x + x * cos - y * sin,
-        y: center.y + x * sin + y * cos,
-    }
-}
-
 /// Where draw.io's perimeter `outline` of a vertex in `bounds` meets the line
 /// from its center towards `point`.
 fn onto(outline: Perimeter, bounds: Rect, point: Point) -> Point {
     let mid = center(bounds);
     let (a, b) = (bounds.width / 2.0, bounds.height / 2.0);
+    if a == 0.0 || b == 0.0 {
+        // The perimeter has collapsed to a line or a point.
+        return Point {
+            x: point.x.max(bounds.x).min(bounds.x + bounds.width),
+            y: point.y.max(bounds.y).min(bounds.y + bounds.height),
+        };
+    }
     let (dx, dy) = (point.x - mid.x, point.y - mid.y);
     // How far along the line from the center the outline is.
     let along = match outline {

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use base64::Engine;
 use graphml::{
-    Data, GraphMl, Key, KeyDomain, Node,
+    Data, GraphMl, Key, KeyDomain, Node, drwr,
     yed::{
         self, Color, Fill, Keys, LineType, NodeGraphics, NodeKind, Point, Rect, ShapeType, Stroke,
     },
@@ -25,10 +25,8 @@ use notes::Notes;
 /// A page converted to GraphML.
 #[derive(Clone, Debug)]
 pub struct Import {
+    /// The converted document, including drwr's corner-radius attributes.
     pub graphml: GraphMl,
-    /// The corner radius of each round box, by node id, as draw.io rounds
-    /// them; yEd's round rectangles have a fixed 4 pt radius.
-    pub corner_radii: Vec<(String, f64)>,
     /// What couldn't be carried over, a sentence each.
     pub notes: Vec<String>,
 }
@@ -38,7 +36,6 @@ pub(crate) fn convert(model: &Model) -> Import {
     converter.run();
     Import {
         graphml: converter.doc,
-        corner_radii: converter.corner_radii,
         notes: converter.notes.sentences(),
     }
 }
@@ -47,8 +44,8 @@ struct Converter<'a> {
     cells: &'a [Cell],
     /// Cell indexes by id.
     index: HashMap<&'a str, usize>,
-    /// Cell indexes by their parent's id, in document order.
-    children: HashMap<&'a str, Vec<usize>>,
+    /// Cell indexes by their parent's index, in document order.
+    children: HashMap<usize, Vec<usize>>,
     /// The ids lines end on.
     terminals: HashSet<&'a str>,
     grid_size: f64,
@@ -58,15 +55,14 @@ struct Converter<'a> {
     placed: HashMap<usize, Placed>,
     /// The collapsed container standing in for each cell hidden in it.
     stand_ins: HashMap<usize, usize>,
-    /// The page's lines in document order, converted once every vertex has
-    /// its node.
+    /// Lines queued by the traversal. Converting a line can queue more lines
+    /// inside shapes attached to it.
     lines: Vec<Line>,
     /// Which of `lines` each edge cell is, by cell index.
     line_of: HashMap<usize, usize>,
     /// Where lines ending on a converted line, or on a label of one, end, by
     /// cell index.
     anchors: HashMap<usize, Point>,
-    corner_radii: Vec<(String, f64)>,
     notes: Notes,
     node_count: usize,
 }
@@ -82,16 +78,26 @@ struct Placed {
     frame: Frame,
 }
 
+/// A vertex's style and unrotated bounds, with the rotation kept on import.
+#[derive(Clone, Copy)]
+struct Parent<'a> {
+    style: &'a Style,
+    bounds: Rect,
+    rotation: f64,
+}
+
 impl<'a> Converter<'a> {
     fn new(model: &'a Model) -> Self {
         let cells = model.cells.as_slice();
         let mut index = HashMap::new();
-        let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
-        let mut terminals = HashSet::new();
         for (i, cell) in cells.iter().enumerate() {
             index.entry(cell.id.as_str()).or_insert(i);
-            if let Some(parent) = &cell.parent {
-                children.entry(parent.as_str()).or_default().push(i);
+        }
+        let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut terminals = HashSet::new();
+        for (i, cell) in cells.iter().enumerate() {
+            if let Some(&parent) = cell.parent.as_deref().and_then(|id| index.get(id)) {
+                children.entry(parent).or_default().push(i);
             }
             if cell.edge {
                 terminals.extend(cell.source.as_deref());
@@ -113,15 +119,13 @@ impl<'a> Converter<'a> {
             lines: Vec::new(),
             line_of: HashMap::new(),
             anchors: HashMap::new(),
-            corner_radii: Vec::new(),
             notes: Notes::default(),
             node_count: 0,
         }
     }
 
     fn children_of(&self, index: usize) -> Vec<usize> {
-        let id = self.cells[index].id.as_str();
-        self.children.get(id).cloned().unwrap_or_default()
+        self.children.get(&index).cloned().unwrap_or_default()
     }
 
     /// The index of the cell the cell at `index` is in, if it's on the page.
@@ -134,23 +138,25 @@ impl<'a> Converter<'a> {
         let roots = (0..self.cells.len()).filter(|&i| self.parent_of(i).is_none());
         for root in roots.collect::<Vec<_>>() {
             if self.is_drawn(root) {
-                self.visit(root, Point::default(), None);
+                self.visit(root, None);
                 continue;
             }
             for layer in self.children_of(root) {
                 if self.is_drawn(layer) {
-                    self.visit(layer, Point::default(), None);
+                    self.visit(layer, None);
                 } else if !self.cells[layer].visible {
                     self.notes.hidden_layers += 1;
                 } else {
                     for child in self.children_of(layer) {
-                        self.visit(child, Point::default(), None);
+                        self.visit(child, None);
                     }
                 }
             }
         }
-        for line in 0..self.lines.len() {
+        let mut line = 0;
+        while line < self.lines.len() {
             self.convert_line(line);
+            line += 1;
         }
         let edges = std::mem::take(&mut self.lines).into_iter();
         let edges = edges.filter_map(|line| match line {
@@ -167,23 +173,27 @@ impl<'a> Converter<'a> {
         self.cells[index].vertex || self.cells[index].edge
     }
 
-    /// Converts a cell and what's in it, `origin` being its parent's top-left
-    /// corner.
-    fn visit(&mut self, index: usize, origin: Point, parent: Option<(&Style, Rect)>) {
+    /// Converts a cell and its children, using the parent's placement when present.
+    fn visit(&mut self, index: usize, parent: Option<Parent<'_>>) {
         let cells = self.cells;
         let cell = &cells[index];
+        let origin = parent.map_or_else(Point::default, |parent| Point {
+            x: parent.bounds.x,
+            y: parent.bounds.y,
+        });
+        let parent_style = parent.map(|parent| parent.style);
         if cell.edge {
             self.line_of.insert(index, self.lines.len());
             self.lines.push(Line::Waiting(Pending {
                 index,
                 origin,
-                parent_style: parent.map(|(style, _)| style.clone()),
+                parent_style: parent_style.cloned(),
             }));
             return;
         }
         if !cell.vertex {
             for child in self.children_of(index) {
-                self.visit(child, origin, parent);
+                self.visit(child, parent);
             }
             return;
         }
@@ -191,30 +201,45 @@ impl<'a> Converter<'a> {
             self.notes.hidden_shapes += 1;
             return;
         }
-        let style = Style::new(&cell.style, false, parent.map(|(style, _)| style));
+        let style = Style::new(&cell.style, false, parent_style);
         let g = &cell.geometry;
-        let offset = g.offset.unwrap_or_default();
         let bounds = match parent {
-            Some((_, p)) if g.relative => rect(
-                p.x + g.x * p.width + offset.x,
-                p.y + g.y * p.height + offset.y,
-                g.width,
-                g.height,
-            ),
+            Some(parent) if g.relative => {
+                let offset = g.offset.unwrap_or_default();
+                let p = parent.bounds;
+                let mut bounds = rect(
+                    p.x + g.x * p.width + offset.x,
+                    p.y + g.y * p.height + offset.y,
+                    g.width,
+                    g.height,
+                );
+                if parent.rotation != 0.0 {
+                    let middle = turn(center(bounds), center(p), parent.rotation);
+                    bounds.x = middle.x - bounds.width / 2.0;
+                    bounds.y = middle.y - bounds.height / 2.0;
+                }
+                bounds
+            }
             _ => rect(origin.x + g.x, origin.y + g.y, g.width, g.height),
         };
-        self.vertex(index, &style, bounds);
+        self.visit_vertex(index, &style, bounds);
+    }
+
+    /// Converts a vertex whose page bounds have been resolved, then its children.
+    fn visit_vertex(&mut self, index: usize, style: &Style, bounds: Rect) {
+        let rotation = self.vertex(index, style, bounds);
         let inside = self.children_of(index);
-        if cell.collapsed {
+        if self.cells[index].collapsed {
             self.stand_in(index, &inside);
             return;
         }
-        let corner = Point {
-            x: bounds.x,
-            y: bounds.y,
+        let parent = Parent {
+            style,
+            bounds,
+            rotation,
         };
         for child in inside {
-            self.visit(child, corner, Some((&style, bounds)));
+            self.visit(child, Some(parent));
         }
     }
 
@@ -228,8 +253,8 @@ impl<'a> Converter<'a> {
         }
     }
 
-    /// Adds the node or nodes for the vertex at `index`.
-    fn vertex(&mut self, index: usize, style: &Style, bounds: Rect) {
+    /// Adds the nodes for the vertex and returns the rotation they show.
+    fn vertex(&mut self, index: usize, style: &Style, bounds: Rect) -> f64 {
         let cells = self.cells;
         let cell = &cells[index];
         let mut shape = shape::shape(style, bounds.width, bounds.height);
@@ -280,10 +305,7 @@ impl<'a> Converter<'a> {
                         graphics.border.color = None;
                     }
                 }
-                let node = self.add_node(index, &graphics);
-                if radius > 0.0 {
-                    self.corner_radii.push((node.clone(), radius));
-                }
+                let node = self.add_node(index, &graphics, Some(radius));
                 for side in sides {
                     self.push_node(&side);
                 }
@@ -294,12 +316,12 @@ impl<'a> Converter<'a> {
                     self.notes.turned += 1;
                 }
                 let graphics = graphics(NodeKind::Shape(kind), bounds, style, label);
-                Some((self.add_node(index, &graphics), bounds))
+                Some((self.add_node(index, &graphics, None), bounds))
             }
             Shape::Generic(configuration) => {
                 let kind = NodeKind::Generic(configuration.to_owned());
                 let graphics = graphics(kind, bounds, style, label);
-                Some((self.add_node(index, &graphics), bounds))
+                Some((self.add_node(index, &graphics, None), bounds))
             }
             Shape::Image(image) => Some((self.image(index, &image, bounds, style, label), bounds)),
             Shape::Line { vertical } => {
@@ -316,7 +338,7 @@ impl<'a> Converter<'a> {
                     self.notes.dashed_lines += 1;
                 }
                 let graphics = line_graphics(line, style, label);
-                Some((self.add_node(index, &graphics), line))
+                Some((self.add_node(index, &graphics, None), line))
             }
             Shape::Swimlane { start, horizontal } => {
                 let kind = NodeKind::Shape(ShapeType::Rectangle);
@@ -333,7 +355,7 @@ impl<'a> Converter<'a> {
                     .color("swimlaneFillColor", Color::WHITE)
                     .map(|c| opacity(c, style, "fillOpacity"));
                 body.fill.gradient = None;
-                let node = self.add_node(index, &body);
+                let node = self.add_node(index, &body, None);
                 if titled {
                     self.push_node(&graphics(kind, head, style, label));
                 }
@@ -355,22 +377,22 @@ impl<'a> Converter<'a> {
                     self.notes.dashed_lines += 1;
                 }
                 let graphics = line_graphics(line, style, None);
-                Some((self.add_node(index, &graphics), line))
+                Some((self.add_node(index, &graphics, None), line))
             }
-            // Invisible, so needed only for lines to end on.
-            Shape::Group if self.terminals.contains(cell.id.as_str()) => {
+            Shape::Group if label.is_some() || self.terminals.contains(cell.id.as_str()) => {
                 let kind = NodeKind::Shape(ShapeType::Rectangle);
                 let graphics = graphics(kind, bounds, style, label);
-                Some((self.add_node(index, &graphics), bounds))
+                Some((self.add_node(index, &graphics, None), bounds))
             }
             Shape::Group => None,
             Shape::Unknown(name) => {
                 *self.notes.unknown.entry(name).or_default() += 1;
                 let kind = NodeKind::Shape(ShapeType::Rectangle);
                 let graphics = graphics(kind, bounds, style, label);
-                Some((self.add_node(index, &graphics), bounds))
+                Some((self.add_node(index, &graphics, None), bounds))
             }
         };
+        let rotation = frame.rotation;
         if let Some((node, node_bounds)) = node {
             let node_bounds = node_rect(node_bounds);
             let placed = Placed {
@@ -381,6 +403,7 @@ impl<'a> Converter<'a> {
             };
             self.placed.insert(index, placed);
         }
+        rotation
     }
 
     /// Adds an image's node, returning its id: an SVG node if the file holds
@@ -399,7 +422,7 @@ impl<'a> Converter<'a> {
                 let mut graphics = NodeGraphics::new(NodeKind::Svg { resource });
                 graphics.geometry = node_rect(bounds);
                 graphics.labels.extend(label);
-                self.add_node(index, &graphics)
+                self.add_node(index, &graphics, None)
             }
             None => {
                 if image.starts_with("data:") {
@@ -415,18 +438,24 @@ impl<'a> Converter<'a> {
                     line_type: LineType::Dashed,
                     width: 1.0,
                 };
-                self.add_node(index, &graphics)
+                self.add_node(index, &graphics, None)
             }
         }
     }
 
-    /// Adds a node for the vertex at `index`, keeping its link and tooltip.
-    /// Returns its id.
-    fn add_node(&mut self, index: usize, graphics: &NodeGraphics) -> String {
+    /// Adds a node for the vertex at `index`, keeping its link, tooltip and
+    /// round rectangle radius. Returns its id.
+    fn add_node(&mut self, index: usize, graphics: &NodeGraphics, radius: Option<f64>) -> String {
+        let custom_radius = radius
+            .filter(|&radius| radius > 0.0 && radius != drwr::YED_CORNER_RADIUS)
+            .map(|radius| (drwr::ensure_corner_radius_key(&mut self.doc), radius));
         let id = self.push_node(graphics);
         let node = self.doc.graphs[0].nodes.last_mut().expect("just added");
         let cell = &self.cells[index];
         add_properties(&self.doc.keys, KeyDomain::Node, &mut node.data, cell);
+        if let Some((key, radius)) = custom_radius {
+            drwr::store_corner_radius(node, &key, radius);
+        }
         id
     }
 
@@ -520,6 +549,21 @@ fn center(rect: Rect) -> Point {
     Point {
         x: rect.x + rect.width / 2.0,
         y: rect.y + rect.height / 2.0,
+    }
+}
+
+/// `point` turned `degrees` clockwise around `center`.
+fn turn(point: Point, center: Point, degrees: f64) -> Point {
+    let (sin, cos) = match degrees.rem_euclid(360.0) {
+        90.0 => (1.0, 0.0),
+        180.0 => (0.0, -1.0),
+        270.0 => (-1.0, 0.0),
+        d => d.to_radians().sin_cos(),
+    };
+    let (x, y) = (point.x - center.x, point.y - center.y);
+    Point {
+        x: center.x + x * cos - y * sin,
+        y: center.y + x * sin + y * cos,
     }
 }
 

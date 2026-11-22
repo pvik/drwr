@@ -10,6 +10,8 @@ pub enum Error {
     NotDrawio(String),
     /// A compressed page can't be decompressed.
     Compressed { page: String, problem: String },
+    /// The page's XML doesn't describe a draw.io graph model.
+    InvalidPage { page: String, problem: String },
     /// The `<mxfile>` has no `<diagram>`.
     NoPages,
 }
@@ -23,6 +25,9 @@ impl fmt::Display for Error {
             }
             Error::Compressed { page, problem } => {
                 write!(f, "page {page:?} can't be decompressed: {problem}")
+            }
+            Error::InvalidPage { page, problem } => {
+                write!(f, "invalid page {page:?}: {problem}")
             }
             Error::NoPages => f.write_str("the file has no pages"),
         }

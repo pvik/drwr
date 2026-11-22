@@ -19,7 +19,7 @@ pub(crate) enum Shape {
     Swimlane { start: f64, horizontal: bool },
     /// A sequence diagram's lifeline: a box `head` tall above a line.
     Lifeline { head: f64 },
-    /// An invisible container, drawn only if lines end on it.
+    /// A container with no fill or border.
     Group,
     /// A box standing in for a shape yEd has nothing like, by name.
     Unknown(String),

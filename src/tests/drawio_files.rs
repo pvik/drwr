@@ -477,19 +477,24 @@ fn shapes_drwr_has_none_for_yet_show_as_boxes() {
 fn a_drawio_file_that_cant_be_read_shows_why_and_keeps_the_graph() {
     let dir = ScratchDir::new("drawio-broken");
     let broken = dir.path("broken.drawio");
-    let compressed = r#"<mxfile><diagram name="A">not base64!</diagram></mxfile>"#;
-    std::fs::write(&broken, compressed).unwrap();
-    let mut harness = fixture_harness();
-    let before = harness.app.doc.graphml().clone();
-    harness.open_file(&broken);
-    let error = harness.app.error.clone().unwrap_or_default();
-    let message = format!(
-        "Couldn't open {}:\npage \"A\" can't be decompressed",
-        broken.display()
-    );
-    assert!(error.starts_with(&message), "{error:?}");
-    assert_eq!(*harness.app.doc.graphml(), before);
-    assert_eq!(harness.app.imported, None);
+    for (body, problem) in [
+        ("not base64!", r#"page "A" can't be decompressed"#),
+        (
+            "<metadata/>",
+            r#"invalid page "A": expected <mxGraphModel>"#,
+        ),
+    ] {
+        let text = format!(r#"<mxfile><diagram name="A">{body}</diagram></mxfile>"#);
+        std::fs::write(&broken, text).unwrap();
+        let mut harness = fixture_harness();
+        let before = harness.app.doc.graphml().clone();
+        harness.open_file(&broken);
+        let error = harness.app.error.as_deref().unwrap_or_default();
+        let message = format!("Couldn't open {}:\n{problem}", broken.display());
+        assert!(error.starts_with(&message), "{error:?}");
+        assert_eq!(*harness.app.doc.graphml(), before);
+        assert_eq!(harness.app.imported, None);
+    }
 }
 
 #[test]

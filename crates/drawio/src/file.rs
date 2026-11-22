@@ -12,27 +12,10 @@ use crate::{Error, Import, convert, model::Model, text::zap_gremlins};
 /// Whether `text` holds a draw.io diagram rather than, say, GraphML: whether
 /// its root element is `<mxfile>` or `<mxGraphModel>`.
 pub fn is_drawio(text: &str) -> bool {
-    matches!(root_name(text), Some("mxfile" | "mxGraphModel"))
-}
-
-/// The local name of the root element, found without parsing the document.
-fn root_name(text: &str) -> Option<&str> {
-    let mut rest = text.strip_prefix('\u{feff}').unwrap_or(text);
-    loop {
-        rest = rest.trim_start();
-        if let Some(comment) = rest.strip_prefix("<!--") {
-            rest = &comment[comment.find("-->")? + 3..];
-        } else if rest.starts_with("<?") || rest.starts_with("<!") {
-            rest = &rest[rest.find('>')? + 1..];
-        } else {
-            let tag = rest.strip_prefix('<')?;
-            let end = tag
-                .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
-                .unwrap_or(tag.len());
-            let name = &tag[..end];
-            return Some(name.rsplit(':').next().unwrap_or(name));
-        }
-    }
+    matches!(
+        Element::root_local_name(&zap_gremlins(text)).as_deref(),
+        Ok("mxfile" | "mxGraphModel")
+    )
 }
 
 /// The pages of a draw.io file.
@@ -54,10 +37,7 @@ impl File {
     pub fn parse(text: &str) -> Result<Self, Error> {
         let root = Element::parse(&zap_gremlins(text))?;
         let pages = match root.local_name() {
-            "mxGraphModel" => vec![Page {
-                name: page_name(0),
-                model: Model::read(&root),
-            }],
+            "mxGraphModel" => vec![Page::from_model(&root, page_name(0))?],
             "mxfile" => (root.children_named("diagram").enumerate())
                 .map(|(index, diagram)| Page::read(diagram, index))
                 .collect::<Result<_, _>>()?,
@@ -79,22 +59,36 @@ impl Page {
         let name = diagram
             .attr("name")
             .map_or_else(|| page_name(index), str::to_owned);
-        let model = match diagram.child("mxGraphModel") {
-            Some(model) => Model::read(model),
-            None => {
-                let text = diagram.text();
-                if text.trim().is_empty() {
-                    Model::default()
-                } else {
-                    let xml = decompress(&text).map_err(|problem| Error::Compressed {
-                        page: name.clone(),
-                        problem,
-                    })?;
-                    Model::read(&Element::parse(&xml)?)
-                }
+        let text = diagram.text();
+        let mut children = diagram.elements();
+        match (children.next(), text.trim().is_empty()) {
+            (Some(model), true) if children.next().is_none() => Self::from_model(model, name),
+            (None, true) => Ok(Page {
+                name,
+                model: Model::default(),
+            }),
+            (None, false) => {
+                let xml = decompress(&text).map_err(|problem| Error::Compressed {
+                    page: name.clone(),
+                    problem,
+                })?;
+                Self::from_model(&Element::parse(&xml)?, name)
             }
-        };
-        Ok(Page { name, model })
+            _ => Err(Error::InvalidPage {
+                page: name,
+                problem: "expected a single <mxGraphModel> or compressed text".to_owned(),
+            }),
+        }
+    }
+
+    fn from_model(element: &Element, name: String) -> Result<Self, Error> {
+        match Model::read(element) {
+            Ok(model) => Ok(Page { name, model }),
+            Err(problem) => Err(Error::InvalidPage {
+                page: name,
+                problem,
+            }),
+        }
     }
 
     /// The name on the page's tab in draw.io.

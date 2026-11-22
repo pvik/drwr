@@ -8,7 +8,7 @@ use graphml::yed::{self, Keys};
 use graphml::{Edge, Graph, GraphMl, Key};
 
 use super::{
-    Item, fresh, node_graphics, resource_refs, taken_ids, top_graph_mut, unused_key_id, visit_data,
+    Item, fresh, node_graphics, resource_refs, taken_ids, top_graph_mut, visit_data,
     visit_elements, visit_graphs_mut, visit_nodes,
 };
 
@@ -166,7 +166,7 @@ fn merge_keys(doc: &mut GraphMl, keys: &[Key], graph: &mut Graph) {
             None => {
                 let mut key = key.clone();
                 if doc.keys.iter().any(|declared| declared.id == key.id) {
-                    key.id = unused_key_id(doc);
+                    key.id = yed::unused_key_id(doc);
                 }
                 let id = key.id.clone();
                 doc.keys.push(key);

@@ -21,6 +21,7 @@
 //! # Ok::<(), graphml::Error>(())
 //! ```
 
+pub mod drwr;
 mod error;
 mod model;
 mod read;

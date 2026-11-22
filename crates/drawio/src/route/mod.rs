@@ -141,12 +141,13 @@ fn port(end: &End, next: Option<Point>, other: &End) -> Point {
 fn simplify(bends: &mut Vec<Point>) {
     const NEAR: f64 = 0.5;
     bends.dedup_by(|b, a| (a.x - b.x).abs() < NEAR && (a.y - b.y).abs() < NEAR);
+    let between = |a: f64, b: f64, c: f64| b >= a.min(c) && b <= a.max(c);
     let mut i = 1;
     while i + 1 < bends.len() {
         let (a, b, c) = (bends[i - 1], bends[i], bends[i + 1]);
         let level = (a.y - b.y).abs() < NEAR && (b.y - c.y).abs() < NEAR;
         let upright = (a.x - b.x).abs() < NEAR && (b.x - c.x).abs() < NEAR;
-        if level || upright {
+        if (level && between(a.x, b.x, c.x)) || (upright && between(a.y, b.y, c.y)) {
             bends.remove(i);
         } else {
             i += 1;

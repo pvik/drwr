@@ -60,36 +60,54 @@ pub(crate) struct Geometry {
 
 impl Model {
     /// Reads the cells of an `<mxGraphModel>`.
-    pub fn read(model: &Element) -> Self {
-        let cells = model.child("root").into_iter().flat_map(|root| {
-            root.elements()
-                .filter_map(|element| match element.local_name() {
-                    "mxCell" => Some(Cell::read(element, None)),
-                    // draw.io writes <UserObject> or <object>, but reads any.
-                    _ => Some(Cell::read(element.child("mxCell")?, Some(element))),
-                })
-        });
+    pub fn read(model: &Element) -> Result<Self, String> {
+        if model.local_name() != "mxGraphModel" {
+            return Err(format!("expected <mxGraphModel>, found <{}>", model.name));
+        }
+        let mut roots = model.children_named("root");
+        let root = roots.next().ok_or("missing <root> in <mxGraphModel>")?;
+        if roots.next().is_some() {
+            return Err("more than one <root> in <mxGraphModel>".to_owned());
+        }
+        let cells = root
+            .elements()
+            .filter_map(|element| match element.local_name() {
+                "mxCell" => Some(Cell::read(element, None)),
+                // draw.io writes <UserObject> or <object>, but reads any.
+                _ => Some(Cell::read(element.child("mxCell")?, Some(element))),
+            })
+            .collect::<Result<_, _>>()?;
         let grid_size = model.attr("gridSize").and_then(|v| v.trim().parse().ok());
-        Model {
-            cells: cells.collect(),
+        Ok(Model {
+            cells,
             grid_size: grid_size
                 .filter(|v: &f64| v.is_finite() && *v > 0.0)
                 .map_or(10.0, |v| v.max(1.0)),
-        }
+        })
     }
 }
 
 impl Cell {
-    fn read(cell: &Element, wrapper: Option<&Element>) -> Self {
+    fn read(cell: &Element, wrapper: Option<&Element>) -> Result<Self, String> {
         let attr = |name| cell.attr(name).map(str::to_owned);
         let mut properties = wrapper.map(|w| w.attributes.clone()).unwrap_or_default();
-        let id = properties.remove("id").or_else(|| attr("id"));
+        let id = properties
+            .remove("id")
+            .or_else(|| attr("id"))
+            .unwrap_or_default();
         let value = match wrapper {
             Some(_) => properties.remove("label"),
             None => attr("value"),
         };
-        Cell {
-            id: id.unwrap_or_default(),
+        let geometry = cell
+            .children_named("mxGeometry")
+            .find(|g| g.attr("as").is_none_or(|a| a == "geometry"))
+            .map(Geometry::read)
+            .transpose()
+            .map_err(|dimension| format!("cell {id:?} has negative {dimension}"))?
+            .unwrap_or_default();
+        Ok(Cell {
+            id,
             parent: attr("parent"),
             value: value.unwrap_or_default(),
             style: attr("style").unwrap_or_default(),
@@ -99,18 +117,22 @@ impl Cell {
             target: attr("target"),
             visible: cell.attr("visible") != Some("0"),
             collapsed: cell.attr("collapsed") == Some("1"),
-            geometry: cell
-                .children_named("mxGeometry")
-                .find(|g| g.attr("as").is_none_or(|a| a == "geometry"))
-                .map(Geometry::read)
-                .unwrap_or_default(),
+            geometry,
             properties,
-        }
+        })
     }
 }
 
 impl Geometry {
-    fn read(geometry: &Element) -> Self {
+    fn read(geometry: &Element) -> Result<Self, &'static str> {
+        let width = number(geometry, "width");
+        let height = number(geometry, "height");
+        if width < 0.0 {
+            return Err("width");
+        }
+        if height < 0.0 {
+            return Err("height");
+        }
         let named = |name: &str| {
             let found = geometry.children_named("mxPoint");
             found
@@ -122,17 +144,17 @@ impl Geometry {
             .children_named("Array")
             .find(|array| array.attr("as") == Some("points"))
             .map(|array| array.children_named("mxPoint").map(point).collect());
-        Geometry {
+        Ok(Geometry {
             x: number(geometry, "x"),
             y: number(geometry, "y"),
-            width: number(geometry, "width"),
-            height: number(geometry, "height"),
+            width,
+            height,
             relative: geometry.attr("relative") == Some("1"),
             points: points.unwrap_or_default(),
             source_point: named("sourcePoint"),
             target_point: named("targetPoint"),
             offset: named("offset"),
-        }
+        })
     }
 }
 

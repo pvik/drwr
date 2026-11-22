@@ -168,11 +168,7 @@ fn ensure_key(doc: &mut GraphMl, yfiles_type: &str, domain: KeyDomain) -> String
     if let Some(id) = find_key(doc, yfiles_type) {
         return id;
     }
-    // yEd numbers its keys d0, d1, …
-    let id = (0..)
-        .map(|n| format!("d{n}"))
-        .find(|id| doc.keys.iter().all(|key| key.id != *id))
-        .expect("the ids are endless");
+    let id = unused_key_id(doc);
     doc.keys.push(Key {
         id: id.clone(),
         domain,
@@ -180,6 +176,14 @@ fn ensure_key(doc: &mut GraphMl, yfiles_type: &str, domain: KeyDomain) -> String
         ..Key::default()
     });
     id
+}
+
+/// The first of yEd's key ids d0, d1, … that the document doesn't use.
+pub fn unused_key_id(doc: &GraphMl) -> String {
+    (0..)
+        .map(|n| format!("d{n}"))
+        .find(|id| doc.keys.iter().all(|key| key.id != *id))
+        .expect("the ids are endless")
 }
 
 fn graphics<'a>(data: &'a [Data], key: &Option<String>) -> Option<&'a Element> {

@@ -285,15 +285,7 @@ impl DrwrApp {
     /// Replaces the graph with `page` of the draw.io file at `path`, as
     /// GraphML, which has no file until it's saved.
     fn import(&mut self, page: &drawio::Page, path: PathBuf) {
-        let drawio::Import {
-            mut graphml,
-            corner_radii,
-            notes,
-        } = page.to_graphml();
-        // Before it's opened, so that it opens unmodified.
-        for (id, radius) in corner_radii {
-            document::set_corner_radius(&mut graphml, &id, radius);
-        }
+        let drawio::Import { graphml, notes } = page.to_graphml();
         self.config.add_recent_file(&path);
         self.replace_graph(graphml, None);
         if !notes.is_empty() {

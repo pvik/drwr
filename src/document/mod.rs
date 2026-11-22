@@ -1,23 +1,20 @@
 use std::collections::HashSet;
 
+use graphml::drwr::{
+    self, YED_CORNER_RADIUS, corner_radius_key, ensure_corner_radius_key, store_corner_radius,
+};
 use graphml::xml::{Element, XmlNode};
 use graphml::yed::{
     self, Arrow, Color, EdgeGraphics, Keys, Label, LabelPosition, NodeGraphics, NodeKind, Point,
     Rect, Route, ShapeType, Stroke,
 };
-use graphml::{AttrType, Data, Edge, Graph, GraphMl, Key, KeyDomain, Node, Port};
+use graphml::{Data, Edge, Graph, GraphMl, Node, Port};
 
 use crate::style::Style;
 
 mod clipboard;
 
 pub use clipboard::{copy, paste};
-
-/// The corner radius yEd draws every round rectangle with.
-const YED_CORNER_RADIUS: f64 = 4.0;
-/// The node attribute other corner radii are kept in. yEd keeps it, but
-/// draws its own radius.
-const CORNER_RADIUS: &str = "drwr.cornerRadius";
 
 /// A node of the top-level graph, by its id, or an edge, by its index.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -235,7 +232,7 @@ impl<'a> Reader<'a> {
     pub fn new(doc: &'a GraphMl) -> Self {
         Reader {
             keys: Keys::find(doc),
-            radius_key: radius_key(doc),
+            radius_key: corner_radius_key(doc),
         }
     }
 
@@ -243,7 +240,7 @@ impl<'a> Reader<'a> {
     /// box.
     pub fn node(&self, node: &Node) -> Option<(NodeGraphics, Option<f64>)> {
         let graphics = self.keys.node_graphics(node).ok().flatten()?;
-        let radius = box_corner_radius(&graphics, node, self.radius_key);
+        let radius = drwr::corner_radius(&graphics.kind, node, self.radius_key);
         Some((graphics, radius))
     }
 
@@ -274,7 +271,11 @@ pub fn edit_graphics(doc: &mut GraphMl, id: &str, edit: impl FnOnce(&mut NodeGra
 /// `None` if there's no such box. Boxes are yEd's rectangles, which have
 /// square corners, and its round rectangles.
 pub fn corner_radius(doc: &GraphMl, id: &str) -> Option<f64> {
-    box_corner_radius(&graphics_of(doc, id)?, node(doc, id)?, radius_key(doc))
+    drwr::corner_radius(
+        &graphics_of(doc, id)?.kind,
+        node(doc, id)?,
+        corner_radius_key(doc),
+    )
 }
 
 /// Rounds the corners of the top-level box with id `id` to `radius`, making
@@ -298,40 +299,18 @@ pub fn set_corner_radius(doc: &mut GraphMl, id: &str, radius: f64) {
     }
 }
 
-/// The corner radius of `node`, whose graphics are `graphics`, if it's a box.
-/// `key` is the one corner radii are kept under.
-fn box_corner_radius(graphics: &NodeGraphics, node: &Node, key: Option<&str>) -> Option<f64> {
-    match graphics.kind {
-        NodeKind::Shape(ShapeType::Rectangle) => Some(0.0),
-        NodeKind::Shape(ShapeType::RoundRectangle) => {
-            let kept = (node.data.iter())
-                .find(|data| Some(data.key.as_str()) == key)
-                .and_then(|data| data.text().trim().parse::<f64>().ok())
-                .filter(|radius| radius.is_finite() && *radius >= 0.0);
-            Some(kept.unwrap_or(YED_CORNER_RADIUS))
-        }
-        _ => None,
-    }
-}
-
 /// Keeps `radius` as the corner radius of the top-level node with id `id`.
 fn keep_corner_radius(doc: &mut GraphMl, id: &str, radius: f64) {
-    let key = ensure_radius_key(doc);
-    let Some(node) = node_mut(doc, id) else {
-        return;
-    };
-    // As yEd writes doubles, e.g. 10.0.
-    let text = format!("{radius:?}");
-    match node.data.iter_mut().find(|data| data.key == key) {
-        Some(data) => data.content = vec![XmlNode::Text(text)],
-        None => node.data.push(Data::from_text(key, text)),
+    let key = ensure_corner_radius_key(doc);
+    if let Some(node) = node_mut(doc, id) {
+        store_corner_radius(node, &key, radius);
     }
 }
 
 /// Drops the corner radius kept for the top-level node with id `id`, and the
 /// key too once no node keeps one.
 fn drop_corner_radius(doc: &mut GraphMl, id: &str) {
-    let Some(key) = radius_key(doc).map(str::to_owned) else {
+    let Some(key) = corner_radius_key(doc).map(str::to_owned) else {
         return;
     };
     if let Some(node) = node_mut(doc, id) {
@@ -342,7 +321,7 @@ fn drop_corner_radius(doc: &mut GraphMl, id: &str) {
 
 /// Drops the key corner radii are kept under, unless a node keeps one.
 fn drop_unused_radius_key(doc: &mut GraphMl) {
-    let Some(key) = radius_key(doc).map(str::to_owned) else {
+    let Some(key) = corner_radius_key(doc).map(str::to_owned) else {
         return;
     };
     let mut used = false;
@@ -354,35 +333,6 @@ fn drop_unused_radius_key(doc: &mut GraphMl) {
     if !used {
         doc.keys.retain(|declared| declared.id != key);
     }
-}
-
-/// The id of the key corner radii are kept under, if the document has it.
-fn radius_key(doc: &GraphMl) -> Option<&str> {
-    let key = doc.keys.iter().find(|key| {
-        key.domain == KeyDomain::Node && key.attr_name.as_deref() == Some(CORNER_RADIUS)
-    });
-    key.map(|key| key.id.as_str())
-}
-
-/// Like [`radius_key`], but declares the key first if it's missing.
-fn ensure_radius_key(doc: &mut GraphMl) -> String {
-    if let Some(id) = radius_key(doc) {
-        return id.to_owned();
-    }
-    let id = unused_key_id(doc);
-    doc.keys.push(Key {
-        id: id.clone(),
-        domain: KeyDomain::Node,
-        attr_name: Some(CORNER_RADIUS.to_owned()),
-        attr_type: Some(AttrType::Double),
-        ..Key::default()
-    });
-    id
-}
-
-/// The first of yEd's key ids d0, d1, … that no key in the document has.
-fn unused_key_id(doc: &GraphMl) -> String {
-    first_free("d", |id| doc.keys.iter().any(|key| key.id == id))
 }
 
 /// The top-level graph's node with id `id`.

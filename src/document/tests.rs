@@ -479,12 +479,12 @@ fn the_key_stays_while_any_node_keeps_a_corner_radius() {
     let second = add_node(&mut doc, &rectangle());
     set_corner_radius(&mut doc, &first, 10.0);
     set_corner_radius(&mut doc, &second, 20.0);
-    let key = radius_key(&doc).unwrap().to_owned();
+    let key = corner_radius_key(&doc).unwrap().to_owned();
     let declared = doc.keys.iter().filter(|declared| declared.id == key);
     assert_eq!(declared.count(), 1);
 
     set_corner_radius(&mut doc, &first, 0.0);
-    assert_eq!(radius_key(&doc), Some(key.as_str()));
+    assert_eq!(corner_radius_key(&doc), Some(key.as_str()));
     assert_eq!(corner_radius(&doc, &second), Some(20.0));
     // Even one in a group, which yEd could have moved there.
     let mut nested = Node::new("group::n0");
@@ -496,12 +496,12 @@ fn the_key_stays_while_any_node_keeps_a_corner_radius() {
     });
     doc.graphs[0].nodes.push(group);
     set_corner_radius(&mut doc, &second, 0.0);
-    assert_eq!(radius_key(&doc), Some(key.as_str()));
+    assert_eq!(corner_radius_key(&doc), Some(key.as_str()));
 
     doc.graphs[0].nodes.pop();
     set_corner_radius(&mut doc, &first, 10.0);
     set_corner_radius(&mut doc, &first, 4.0);
-    assert_eq!(radius_key(&doc), None);
+    assert_eq!(corner_radius_key(&doc), None);
 }
 
 #[test]
@@ -559,7 +559,7 @@ fn kept_corner_radii_are_read_however_written_else_yeds_is() {
     ] {
         let mut doc = yed::new_document();
         let id = add_node(&mut doc, &shape(ShapeType::RoundRectangle));
-        let key = ensure_radius_key(&mut doc);
+        let key = ensure_corner_radius_key(&mut doc);
         doc.graphs[0].nodes[0].data.push(Data::from_text(key, text));
         assert_eq!(corner_radius(&doc, &id), Some(radius), "{text:?}");
     }
