@@ -257,6 +257,15 @@ impl Harness {
         id
     }
 
+    /// Adds the boxes in [`NODE`] and [`SMALL`], and selects them both.
+    /// Returns their ids.
+    fn add_selected_pair(&mut self) -> (String, String) {
+        let node = self.add_box(NODE.min, NODE.max);
+        let small = self.add_box(SMALL.min, SMALL.max);
+        self.selected = nodes(&[&node, &small]);
+        (node, small)
+    }
+
     /// Edits the first label of the node with id `id`.
     fn edit(&mut self, id: &str) {
         let label = first_label(id);
@@ -389,6 +398,8 @@ const NODE: Rect = Rect::from_min_max(pos2(100.0, 50.0), pos2(250.0, 130.0));
 const OTHER: Rect = Rect::from_min_max(pos2(400.0, 50.0), pos2(550.0, 130.0));
 /// Below [`OTHER`].
 const THIRD: Rect = Rect::from_min_max(pos2(400.0, 250.0), pos2(550.0, 330.0));
+/// Smaller than [`NODE`], for tests of several nodes resized at once.
+const SMALL: Rect = Rect::from_min_max(pos2(400.0, 250.0), pos2(450.0, 290.0));
 
 fn first_label(node: &str) -> LabelRef {
     LabelRef {
@@ -3243,18 +3254,311 @@ fn escape_cancels_the_move_of_the_selection() {
 }
 
 #[test]
-fn several_selected_nodes_move_from_their_sides_rather_than_resize() {
+fn dragging_a_side_or_corner_of_one_selected_node_resizes_them_all_as_much() {
+    // NODE spans (100, 50) to (250, 130), and SMALL (400, 250) to (450, 290).
+    for (grab, node, small) in [
+        (
+            vec2(100.0, 90.0),
+            geometry(120.0, 50.0, 130.0, 80.0),
+            geometry(420.0, 250.0, 30.0, 40.0),
+        ),
+        (
+            vec2(250.0, 90.0),
+            geometry(100.0, 50.0, 170.0, 80.0),
+            geometry(400.0, 250.0, 70.0, 40.0),
+        ),
+        (
+            vec2(175.0, 50.0),
+            geometry(100.0, 60.0, 150.0, 70.0),
+            geometry(400.0, 260.0, 50.0, 30.0),
+        ),
+        (
+            vec2(175.0, 130.0),
+            geometry(100.0, 50.0, 150.0, 90.0),
+            geometry(400.0, 250.0, 50.0, 50.0),
+        ),
+        (
+            vec2(100.0, 50.0),
+            geometry(120.0, 60.0, 130.0, 70.0),
+            geometry(420.0, 260.0, 30.0, 30.0),
+        ),
+        (
+            vec2(250.0, 50.0),
+            geometry(100.0, 60.0, 170.0, 70.0),
+            geometry(400.0, 260.0, 70.0, 30.0),
+        ),
+        (
+            vec2(100.0, 130.0),
+            geometry(120.0, 50.0, 130.0, 90.0),
+            geometry(420.0, 250.0, 30.0, 50.0),
+        ),
+        (
+            vec2(250.0, 130.0),
+            geometry(100.0, 50.0, 170.0, 90.0),
+            geometry(400.0, 250.0, 70.0, 50.0),
+        ),
+    ] {
+        let mut harness = Harness::new(Tool::Cursor);
+        harness.add_selected_pair();
+        harness.drag(grab, grab + vec2(20.0, 10.0));
+        assert_eq!(harness.boxes(), [node, small], "{grab:?}");
+    }
+}
+
+#[test]
+fn a_smaller_selected_node_resizes_a_bigger_one_as_much() {
     let mut harness = Harness::new(Tool::Cursor);
-    let (node, other) = harness.add_two_boxes();
-    harness.selected = nodes(&[&node, &other]);
-    harness.drag(vec2(250.0, 90.0), vec2(270.0, 90.0));
+    harness.add_selected_pair();
+    // SMALL's bottom right corner.
+    harness.drag(vec2(450.0, 290.0), vec2(470.0, 300.0));
+    assert_eq!(
+        harness.boxes(),
+        [
+            geometry(100.0, 50.0, 170.0, 90.0),
+            geometry(400.0, 250.0, 70.0, 50.0),
+        ]
+    );
+}
+
+#[test]
+fn every_selected_node_is_resized_while_a_side_of_one_is_dragged() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    let painted = harness.drag_and_hold(vec2(250.0, 90.0), vec2(300.0, 90.0));
+
+    let widened = [NODE, SMALL].map(|rect| {
+        let rect = rect.translate(harness.origin.to_vec2());
+        rect.with_max_x(rect.max.x + 50.0)
+    });
+    assert_eq!(filled_rects(&painted, BOX_FILL), widened);
+    assert_eq!(
+        stroked_rects(&painted, SELECTION.color),
+        widened.map(|rect| rect.expand(SELECTION_GAP))
+    );
+    assert_eq!(harness.boxes(), [yed_rect(NODE), yed_rect(SMALL)]);
+}
+
+#[test]
+fn escape_cancels_the_resize_of_every_selected_node() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    let to = vec2(300.0, 90.0);
+    harness.drag_and_hold(vec2(250.0, 90.0), to);
+    let painted = harness.press(Modifiers::NONE, Key::Escape);
+    harness.frame(vec![button(harness.origin + to, false)]);
+
+    let origin = harness.origin.to_vec2();
+    assert_eq!(
+        filled_rects(&painted, BOX_FILL),
+        [NODE, SMALL].map(|rect| rect.translate(origin))
+    );
+    assert_eq!(harness.boxes(), [yed_rect(NODE), yed_rect(SMALL)]);
+}
+
+#[test]
+fn selected_nodes_shrink_as_far_as_the_dragged_one_but_keep_a_minimum_size() {
+    for (from, to, node, small) in [
+        // NODE's right side 100 left, which takes SMALL, 50 wide, down to 1.
+        (
+            vec2(250.0, 90.0),
+            vec2(150.0, 90.0),
+            geometry(100.0, 50.0, 50.0, 80.0),
+            geometry(400.0, 250.0, 1.0, 40.0),
+        ),
+        // NODE's left side 100 right.
+        (
+            vec2(100.0, 90.0),
+            vec2(200.0, 90.0),
+            geometry(200.0, 50.0, 50.0, 80.0),
+            geometry(449.0, 250.0, 1.0, 40.0),
+        ),
+        // SMALL's right side 100 left, which shrinks it, and NODE, by 49.
+        (
+            vec2(450.0, 270.0),
+            vec2(350.0, 270.0),
+            geometry(100.0, 50.0, 101.0, 80.0),
+            geometry(400.0, 250.0, 1.0, 40.0),
+        ),
+    ] {
+        let mut harness = Harness::new(Tool::Cursor);
+        harness.add_selected_pair();
+        harness.drag(from, to);
+        assert_eq!(harness.boxes(), [node, small], "{from:?}");
+    }
+}
+
+#[test]
+fn shift_keeps_every_selected_node_in_proportion() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    // NODE's bottom right corner 150 right and 80 down, to twice its size.
+    // The same drag of SMALL's corner takes it to four times its size, as far
+    // as its side dragged further.
+    harness.holding(Modifiers::SHIFT, |harness| {
+        harness.drag(vec2(250.0, 130.0), vec2(400.0, 210.0));
+    });
+    assert_eq!(
+        harness.boxes(),
+        [
+            geometry(100.0, 50.0, 300.0, 160.0),
+            geometry(400.0, 250.0, 200.0, 160.0),
+        ]
+    );
+}
+
+#[test]
+fn nodes_too_small_for_handles_among_others_move_them_and_are_resized_with_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let node = harness.add_box(NODE.min, NODE.max);
+    // 15 points across, too few for handles beside another selected node.
+    let tiny = harness.add_box(pos2(400.0, 250.0), pos2(415.0, 265.0));
+    harness.selected = nodes(&[&node, &tiny]);
+    // From 1 inside its right side.
+    harness.drag(vec2(414.0, 257.0), vec2(434.0, 257.0));
     assert_eq!(
         harness.boxes(),
         [
             geometry(120.0, 50.0, 150.0, 80.0),
-            geometry(420.0, 50.0, 150.0, 80.0),
+            geometry(420.0, 250.0, 15.0, 15.0),
         ]
     );
+    // NODE's right side.
+    harness.drag(vec2(270.0, 90.0), vec2(290.0, 90.0));
+    assert_eq!(
+        harness.boxes(),
+        [
+            geometry(120.0, 50.0, 170.0, 80.0),
+            geometry(420.0, 250.0, 35.0, 15.0),
+        ]
+    );
+}
+
+#[test]
+fn a_resize_goes_on_while_its_node_is_out_of_view() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    let to = vec2(270.0, 90.0);
+    harness.drag_and_hold(vec2(250.0, 90.0), to);
+    // Off the canvas, and back.
+    harness.canvas.pan_by(vec2(1000.0, 0.0));
+    harness.frame(vec![]);
+    harness.canvas.pan_by(vec2(-1000.0, 0.0));
+    harness.frame(vec![button(harness.origin + to, false)]);
+    assert_eq!(
+        harness.boxes(),
+        [
+            geometry(100.0, 50.0, 170.0, 80.0),
+            geometry(400.0, 250.0, 70.0, 40.0),
+        ]
+    );
+}
+
+#[test]
+fn a_small_node_selected_with_a_line_moves_them_rather_than_resize() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let small = harness.add_box(pos2(100.0, 50.0), pos2(108.0, 58.0));
+    let other = harness.add_box(OTHER.min, OTHER.max);
+    let edge = harness.add_edge(&small, &other, &[pos2(325.0, 250.0)]);
+    harness.selected = Selection::of([Item::Node(small), Item::Edge(edge)]);
+    // From its middle, 8 points across.
+    harness.drag(vec2(104.0, 54.0), vec2(124.0, 54.0));
+    assert_eq!(harness.boxes()[0], geometry(120.0, 50.0, 8.0, 8.0));
+    assert_eq!(harness.bends(edge), [point(345.0, 250.0)]);
+}
+
+#[test]
+fn clicks_on_handles_resize_nothing_even_beside_a_node_to_snap_to() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    // Its left side 3 right of NODE's right side, beside it.
+    harness.add_box(pos2(253.0, 50.0), pos2(300.0, 130.0));
+    // With SMALL selected too, then with NODE alone, as the click leaves it.
+    for _ in 0..2 {
+        harness.click(vec2(250.0, 90.0));
+        assert_eq!(harness.boxes()[..2], [yed_rect(NODE), yed_rect(SMALL)]);
+    }
+}
+
+#[test]
+fn presses_on_handles_that_barely_move_click_rather_than_resize() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_selected_pair();
+    let to = vec2(254.0, 90.0);
+    let held = harness.drag_and_hold(vec2(250.0, 90.0), to);
+    assert_eq!(filled_rects(&held, BOX_FILL)[0], harness.node());
+    harness.frame(vec![button(harness.origin + to, false)]);
+    assert_eq!(harness.boxes(), [yed_rect(NODE), yed_rect(SMALL)]);
+    assert_eq!(harness.selected, Selection::node(node));
+}
+
+#[test]
+fn handles_held_still_snap_nothing() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    harness.add_box(pos2(253.0, 50.0), pos2(300.0, 130.0));
+    let at = harness.origin + vec2(250.0, 90.0);
+    harness.frame(vec![Event::PointerMoved(at)]);
+    let mut held = vec![harness.frame(vec![button(at, true)])];
+    // Long past the 0.8 seconds a click may take.
+    for _ in 0..10 {
+        held.push(harness.frame(vec![]));
+    }
+    for shapes in &held {
+        assert_eq!(guides(shapes), []);
+        assert_eq!(filled_rects(shapes, BOX_FILL)[0], harness.node());
+    }
+    harness.frame(vec![button(at, false)]);
+    assert_eq!(harness.boxes()[..2], [yed_rect(NODE), yed_rect(SMALL)]);
+}
+
+#[test]
+fn clicks_on_a_handle_select_its_node_alone_or_with_ctrl_take_it_out() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, small) = harness.add_selected_pair();
+    // 3 inside NODE's right side.
+    harness.with_ctrl(|harness| harness.click(vec2(247.0, 90.0)));
+    assert_eq!(harness.selected, Selection::node(&small));
+    harness.selected = nodes(&[&node, &small]);
+    harness.click(vec2(247.0, 90.0));
+    assert_eq!(harness.selected, Selection::node(&node));
+}
+
+#[test]
+fn double_clicking_a_handle_asks_to_edit_its_nodes_label() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, _) = harness.add_selected_pair();
+    harness.double_click(vec2(247.0, 90.0));
+    assert_eq!(harness.actions, [Action::EditLabel]);
+    assert_eq!(harness.selected, Selection::node(&node));
+
+    // Not with Ctrl down for the second click, which takes the node out.
+    harness.actions.clear();
+    harness.time += 1.0;
+    let at = harness.origin + vec2(247.0, 90.0);
+    harness.frame(vec![button(at, true)]);
+    harness.frame(vec![button(at, false)]);
+    harness.frame(vec![Event::ModifiersChanged(CTRL), button(at, true)]);
+    harness.frame(vec![button(at, false)]);
+    assert_eq!(harness.actions, []);
+    assert!(harness.selected.is_empty());
+}
+
+#[test]
+fn nodes_selected_with_a_line_are_resized_from_their_sides_too() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
+    harness.selected = Selection::of([Item::Node(node), Item::Node(other), Item::Edge(0)]);
+    // NODE's bottom.
+    harness.drag(vec2(175.0, 130.0), vec2(175.0, 150.0));
+    assert_eq!(
+        harness.boxes(),
+        [
+            geometry(100.0, 50.0, 150.0, 100.0),
+            geometry(400.0, 50.0, 150.0, 100.0),
+        ]
+    );
+    assert_eq!(harness.bends(0), [point(325.0, 250.0)]);
 }
 
 #[test]
@@ -3285,7 +3589,7 @@ fn dragging_another_edge_selects_it_and_adds_a_bend() {
 }
 
 #[test]
-fn every_selected_node_and_edge_is_outlined_and_none_has_handles() {
+fn every_selected_node_and_edge_is_outlined_and_the_edge_has_no_handles() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
@@ -3755,6 +4059,40 @@ fn proportional_resizes_snap_by_the_side_that_moves_least() {
         .unwrap()
         .geometry;
     assert_eq!(resized, geometry(100.0, 50.0, 300.0, 160.0));
+}
+
+#[test]
+fn of_several_selected_nodes_only_the_dragged_one_snaps_and_the_rest_follow() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    harness.add_box(OTHER.min, OTHER.max);
+    // Its right side ends up 2 right of SMALL's, after 1 left before the snap.
+    harness.add_box(pos2(548.0, 400.0), pos2(598.0, 440.0));
+    // NODE's right side, to 3 short of touching OTHER.
+    let held = drag_by(&mut harness, pos2(250.0, 90.0), vec2(147.0, 0.0));
+    assert_eq!(guides(&held).len(), 1);
+    assert_eq!(
+        harness.boxes()[..2],
+        [
+            geometry(100.0, 50.0, 300.0, 80.0),
+            geometry(400.0, 250.0, 200.0, 40.0),
+        ]
+    );
+}
+
+#[test]
+fn resized_nodes_snap_to_none_of_the_nodes_resized_with_them() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_pair();
+    // NODE's right side to 3 short of SMALL's.
+    harness.drag(vec2(250.0, 90.0), vec2(447.0, 90.0));
+    assert_eq!(
+        harness.boxes(),
+        [
+            geometry(100.0, 50.0, 347.0, 80.0),
+            geometry(400.0, 250.0, 247.0, 40.0),
+        ]
+    );
 }
 
 #[test]

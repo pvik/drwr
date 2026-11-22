@@ -321,6 +321,22 @@ fn ctrl_arrows_move_everything_selected() {
 }
 
 #[test]
+fn dragging_a_side_resizes_everything_selected_in_one_step() {
+    let mut harness = Harness::new();
+    let graphml = harness.app.doc.graphml_mut();
+    let left = document::add_node(graphml, &new_box());
+    let right = document::add_node(graphml, &box_at(300.0, 0.0));
+    harness.app.selected = Selection::of([Item::Node(left.clone()), Item::Node(right.clone())]);
+    harness.drag(vec2(250.0, 90.0), vec2(300.0, 90.0));
+
+    let widths = |harness: &Harness| [&left, &right].map(|id| harness.graphics(id).geometry.width);
+    assert_eq!(widths(&harness), [200.0, 200.0]);
+    assert_eq!(rows(&harness.side_panel(), "Width"), ["200"]);
+    harness.press(CTRL, Key::Z);
+    assert_eq!(widths(&harness), [150.0, 150.0]);
+}
+
+#[test]
 fn delete_removes_everything_selected() {
     let mut harness = Harness::new();
     let graphml = harness.app.doc.graphml_mut();
