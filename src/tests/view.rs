@@ -97,6 +97,30 @@ fn middle_dragging_the_canvas_pans_it() {
 }
 
 #[test]
+fn ctrl_dragging_the_canvas_pans_it() {
+    // With Cmd on macOS.
+    for mut harness in [Harness::new(), Harness::mac()] {
+        let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());
+        let origin = canvas(&harness.run(vec![])).min;
+        let (from, to) = (origin + vec2(300.0, 300.0), origin + vec2(250.0, 280.0));
+        let command = harness.command();
+        harness.run(vec![
+            Event::ModifiersChanged(command),
+            Event::PointerMoved(from),
+        ]);
+        harness.run(vec![testing::button(from, true)]);
+        harness.run(vec![Event::PointerMoved(to)]);
+        harness.run(vec![testing::button(to, false)]);
+        harness.run(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+
+        // The box at (100, 50) shows 50 left and 20 up from there, unmoved.
+        harness.click_at(origin + vec2(60.0, 40.0));
+        assert_eq!(harness.app.selected, Selection::node(id.clone()));
+        assert_eq!(harness.graphics(&id).geometry, new_box().geometry);
+    }
+}
+
+#[test]
 fn arrows_pan_the_canvas() {
     let mut harness = Harness::new();
     let id = document::add_node(harness.app.doc.graphml_mut(), &new_box());

@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use egui::emath::TSTransform;
 use egui::{
-    Align, Align2, Color32, CursorIcon, Event, Id, Margin, PointerButton, Pos2, Rangef, Rect,
-    Response, Sense, Stroke, UiBuilder, Vec2, Visuals, vec2,
+    Align, Align2, Color32, CursorIcon, Event, Id, Margin, Modifiers, PointerButton, Pos2, Rangef,
+    Rect, Response, Sense, Stroke, UiBuilder, Vec2, Visuals, vec2,
 };
 use graphml::GraphMl;
 use graphml::yed::{
@@ -154,8 +154,9 @@ pub struct Canvas {
     shown_zoom: f32,
     /// The zoom labels are laid out at, which lags while the zoom changes.
     text_zoom: f32,
-    /// While the middle button pans the view, where the pointer was last.
-    panning: Option<Pos2>,
+    /// While a button pans the view: which one, and where the pointer was last.
+    panning: Option<(PointerButton, Pos2)>,
+    ctrl_press: Option<CtrlPress>,
     shape_drag: Option<ShapeDrag>,
     resize: Option<Resize>,
     move_drag: Option<MoveDrag>,
@@ -205,6 +206,16 @@ impl View {
     fn to_screen(self, rect: Rect) -> TSTransform {
         TSTransform::new(rect.min.to_vec2() + self.offset, self.zoom)
     }
+}
+
+/// A press of the primary button with Ctrl on the canvas, from the press to
+/// the frame it's released in. It pans the view once it's more than a click,
+/// unless the middle button does already, and starts no other drag.
+#[derive(Clone, Copy)]
+struct CtrlPress {
+    /// Where it was pressed, until it's more than a click.
+    from: Option<Pos2>,
+    released: bool,
 }
 
 /// A node being dragged out by the tool that draws it.
@@ -327,15 +338,16 @@ impl Canvas {
                 _ => Sense::click_and_drag(),
             };
             let (response, painter) = ui.allocate_painter(ui.available_size(), sense);
-            // Unlike a click, a drag leaves the focus in a label being typed,
-            // which would then stay open while the next node is drawn.
-            if response.drag_started_by(PointerButton::Primary) {
-                ui.memory_mut(|memory| memory.stop_text_input());
-            }
             let rect = response.rect;
             self.size = rect.size();
             self.zoom_with_wheel(ui, rect);
+            // First, so that a press with Ctrl starts no other drag.
             self.pan(ui, rect);
+            // Unlike a click, a drag leaves the focus in a label being typed,
+            // which would then stay open while the next node is drawn.
+            if self.drag_started(&response) {
+                ui.memory_mut(|memory| memory.stop_text_input());
+            }
             let to_screen = self.view.to_screen(rect);
             let text_zoom = self.text_zoom(ui.ctx());
             // Alt skips snapping, e.g. to place a node just beside a line.
@@ -363,12 +375,12 @@ impl Canvas {
             let mut drawn_edge = None;
             let drawing = match tool {
                 Tool::Cursor => {
-                    let ctrl = ui.input(|input| input.modifiers.command);
-                    select_clicked(&response, shown, selected, ctrl);
-                    self.start_drag(&response, shown, selected, ctrl);
+                    let modifiers = ui.input(|input| input.modifiers);
+                    select_clicked(&response, shown, selected, modifiers.command);
+                    self.start_drag(&response, shown, selected, modifiers.shift);
                     // Not with Ctrl, whose clicks only add to or take from the selection.
                     double_clicked = response.double_clicked_by(PointerButton::Primary)
-                        && !ctrl
+                        && !modifiers.command
                         && !selected.is_empty();
                     // Over anything a drag moves. The canvas counts as hovered
                     // while it's dragged, so not while it draws a box.
@@ -503,29 +515,64 @@ impl Canvas {
     }
 
     /// Pans the view while the middle button drags from the canvas at `rect`,
-    /// whatever on it the drag starts from.
+    /// whatever on it the drag starts from, or while the primary button
+    /// pressed there with Ctrl does, once it's more than a click. Only the
+    /// first of them pans, if both do.
     fn pan(&mut self, ui: &egui::Ui, rect: Rect) {
-        let (pressed, released, latest, down) = ui.input(|input| {
-            (
-                button_event(input, PointerButton::Middle, true),
-                button_event(input, PointerButton::Middle, false),
-                input.pointer.latest_pos(),
-                input.pointer.button_down(PointerButton::Middle),
-            )
+        // A press goes by where and with what it went down, as the pointer
+        // and modifiers can change after it in the same frame.
+        let on_canvas = |at: Pos2| {
+            ui.clip_rect().intersect(rect).contains(at)
+                && ui.ctx().layer_id_at(at) == Some(ui.layer_id())
+        };
+        let event = |button, pressed| ui.input(|input| button_event(input, button, pressed));
+        let down = |button| ui.input(|input| input.pointer.button_down(button));
+        let (latest, click) = ui.input(|input| {
+            let pointer = &input.pointer;
+            (pointer.latest_pos(), pointer.could_any_button_be_click())
         });
-        if pressed.is_some() && ui.rect_contains_pointer(rect) {
-            self.panning = pressed;
+
+        if let Some((at, _)) = event(PointerButton::Middle, true)
+            && on_canvas(at)
+            && self.panning.is_none()
+        {
+            self.panning = Some((PointerButton::Middle, at));
         }
-        let Some(last) = self.panning else {
+        self.ctrl_press.take_if(|press| press.released);
+        if let Some((at, modifiers)) = event(PointerButton::Primary, true) {
+            self.ctrl_press = (modifiers.command && on_canvas(at)).then_some(CtrlPress {
+                from: Some(at),
+                released: false,
+            });
+        }
+        if let Some(press) = &mut self.ctrl_press {
+            // From where it was pressed, so that point stays under the pointer.
+            if !click
+                && let Some(from) = press.from.take()
+                && self.panning.is_none()
+            {
+                self.panning = Some((PointerButton::Primary, from));
+            }
+            press.released = !down(PointerButton::Primary);
+        }
+
+        let Some((button, last)) = self.panning else {
             return;
         };
+        let released = event(button, false).map(|(at, _)| at);
         if let Some(to) = released.or(latest) {
             self.view.offset += to - last;
-            self.panning = Some(to);
+            self.panning = Some((button, to));
         }
-        if released.is_some() || !down {
+        if released.is_some() || !down(button) {
             self.panning = None;
         }
+    }
+
+    /// Whether a drag of the primary button starts on `response` this frame,
+    /// which one pressed with Ctrl never does, as it pans the view.
+    fn drag_started(&self, response: &Response) -> bool {
+        response.drag_started_by(PointerButton::Primary) && self.ctrl_press.is_none()
     }
 
     /// Edits `label`, whose text is `text`, over where it's painted.
@@ -643,7 +690,7 @@ impl Canvas {
         let shape = tool.node_shape()?;
         let response = response.on_hover_cursor(CursorIcon::Crosshair);
         let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
-        if response.drag_started_by(PointerButton::Primary) {
+        if self.drag_started(&response) {
             let from = response.ctx.input(|i| i.pointer.press_origin());
             self.shape_drag = from.map(|from| ShapeDrag {
                 tool,
@@ -817,10 +864,11 @@ impl Canvas {
         // Its node may have gone, e.g. by Delete.
         self.edge_draw
             .take_if(|draw| scene.node(&draw.source).is_none());
-        let released = (response.clicked_by(PointerButton::Primary)
-            || response.drag_stopped_by(PointerButton::Primary))
-        .then(|| response.ctx.input(primary_release))
-        .flatten();
+        // Not where a pan with Ctrl stops.
+        let dragged = response.drag_stopped_by(PointerButton::Primary) && self.ctrl_press.is_none();
+        let released = (response.clicked_by(PointerButton::Primary) || dragged)
+            .then(|| response.ctx.input(primary_release))
+            .flatten();
         // Where a release off the nodes adds a bend, lined up with a node or
         // with the bend or node before.
         let bend = released.filter(|&pos| shown.node_at(pos, None).is_none());
@@ -831,7 +879,7 @@ impl Canvas {
         });
         match &mut self.edge_draw {
             None => {
-                let start = if response.drag_started_by(PointerButton::Primary) {
+                let start = if self.drag_started(&response) {
                     response.ctx.input(|input| input.pointer.press_origin())
                 } else {
                     released
@@ -953,13 +1001,13 @@ impl Canvas {
             .chain(ends)
             .collect();
         for (part, response) in &parts {
+            let drag_started = self.drag_started(response);
             if let Some(EdgePart::Bend(bend)) = part
-                && (response.clicked_by(PointerButton::Primary)
-                    || response.drag_started_by(PointerButton::Primary))
+                && (response.clicked_by(PointerButton::Primary) || drag_started)
             {
                 selection.select_bend(*bend);
             }
-            if response.drag_started_by(PointerButton::Primary) {
+            if drag_started {
                 // Like drawing a box, this applies a label being typed.
                 ui.memory_mut(|memory| memory.stop_text_input());
                 let from = ui.input(|input| input.pointer.press_origin());
@@ -1098,15 +1146,10 @@ impl Canvas {
     /// from another item it selects that one first. From the empty canvas it
     /// draws a box, which selects the nodes and edges inside.
     /// [`Self::drag_edge`] takes drags of the line or labels of the only
-    /// selected edge. `ctrl` adds to the selection rather than replacing it.
-    fn start_drag(
-        &mut self,
-        canvas: &Response,
-        shown: Shown,
-        selected: &mut Selection,
-        ctrl: bool,
-    ) {
-        if !canvas.drag_started_by(PointerButton::Primary) {
+    /// selected edge. With `add`, the box adds to the selection rather than
+    /// replacing it.
+    fn start_drag(&mut self, canvas: &Response, shown: Shown, selected: &mut Selection, add: bool) {
+        if !self.drag_started(canvas) {
             return;
         }
         let Some(from) = canvas.ctx.input(|input| input.pointer.press_origin()) else {
@@ -1117,17 +1160,13 @@ impl Canvas {
         if item.is_none() {
             item = shown.item_at(from, None);
             if let Some(item) = &item {
-                if ctrl {
-                    selected.add(item.clone());
-                } else {
-                    *selected = Selection::of([item.clone()]);
-                }
+                *selected = Selection::of([item.clone()]);
             }
         }
         match item {
             None => {
                 let from = shown.to_screen.inverse() * from;
-                self.box_drag = Some(BoxDrag { from, add: ctrl });
+                self.box_drag = Some(BoxDrag { from, add });
             }
             Some(Item::Edge(_)) if selected.single().is_some() => {}
             Some(_) => {
@@ -1274,6 +1313,9 @@ impl Canvas {
         let among_others = selected.items().len() > 1;
         let to_graph = |pos: Pos2| graph_point(shown.to_screen, pos);
         let visible = shown.painter.clip_rect();
+        // A press with Ctrl pans rather than resizes, but its click is still
+        // one on the node.
+        let pans = self.ctrl_press.is_some();
         let mut dragged = None;
         for &index in &nodes {
             let id = &scene.nodes[index].id;
@@ -1294,7 +1336,9 @@ impl Canvas {
                     )
                     .on_hover_cursor(resize_cursor(handle));
                 if response.drag_started_by(PointerButton::Primary) {
-                    ui.memory_mut(|memory| memory.stop_text_input());
+                    if !pans {
+                        ui.memory_mut(|memory| memory.stop_text_input());
+                    }
                     let from = ui.input(|input| input.pointer.press_origin());
                     self.resize = from.map(|from| Resize {
                         node: id.clone(),
@@ -1321,7 +1365,7 @@ impl Canvas {
         if !response.drag_stopped() {
             let click = ui.input(|input| input.pointer.could_any_button_be_click());
             let to = response.interact_pointer_pos().map(to_graph);
-            let Some(to) = to.filter(moved).filter(|_| !click) else {
+            let Some(to) = to.filter(moved).filter(|_| !click && !pans) else {
                 return (Vec::new(), false);
             };
             let resized;
@@ -1347,7 +1391,8 @@ impl Canvas {
             // Ctrl's double clicks edit no label, as on the canvas.
             return (Vec::new(), double_clicked && !ctrl);
         }
-        if let Some(to) = ui.input(primary_release).map(to_graph).filter(moved) {
+        let released = ui.input(primary_release).filter(|_| !pans);
+        if let Some(to) = released.map(to_graph).filter(moved) {
             let (resized, _) = self.snap_resize(shown, &nodes, node, &drag, to, keep);
             for (index, new) in resized {
                 if new != shown.geometry(index) {
@@ -1626,19 +1671,24 @@ fn new_edge(arrows: Arrows, bends: &[yed::Point], style: &Style) -> EdgeGraphics
 /// Where the primary button was released this frame. A drag that stops
 /// without a release was stopped by Escape, which cancels it.
 fn primary_release(input: &egui::InputState) -> Option<Pos2> {
-    button_event(input, PointerButton::Primary, false)
+    button_event(input, PointerButton::Primary, false).map(|(pos, _)| pos)
 }
 
-/// Where `button` was pressed, or released, this frame. The pointer may have
-/// moved on since, in the same frame.
-fn button_event(input: &egui::InputState, button: PointerButton, pressed: bool) -> Option<Pos2> {
+/// Where `button` was pressed, or released, this frame, and the modifiers
+/// held then. The pointer and modifiers may have changed since, in the same
+/// frame.
+fn button_event(
+    input: &egui::InputState,
+    button: PointerButton,
+    pressed: bool,
+) -> Option<(Pos2, Modifiers)> {
     input.events.iter().find_map(|event| match *event {
         Event::PointerButton {
             pos,
             button: b,
             pressed: p,
-            ..
-        } if b == button && p == pressed => Some(pos),
+            modifiers,
+        } if b == button && p == pressed => Some((pos, modifiers)),
         _ => None,
     })
 }

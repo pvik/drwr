@@ -37,6 +37,8 @@ struct Harness {
     max_texture_side: Option<usize>,
     /// The canvas's top-left corner on screen.
     origin: Pos2,
+    /// The modifiers held since the last frame.
+    modifiers: Modifiers,
 }
 
 impl Harness {
@@ -57,6 +59,7 @@ impl Harness {
             time: 0.0,
             max_texture_side: None,
             origin: Pos2::ZERO,
+            modifiers: Modifiers::NONE,
         };
         let shapes = harness.frame(vec![]);
         harness.origin = filled_rects(&shapes, BACKGROUND)[0].min;
@@ -64,7 +67,8 @@ impl Harness {
     }
 
     /// Runs a frame with `events`, returning what it painted.
-    fn frame(&mut self, events: Vec<Event>) -> Vec<Shape> {
+    fn frame(&mut self, mut events: Vec<Event>) -> Vec<Shape> {
+        testing::hold_modifiers(&mut self.modifiers, &mut events);
         self.time += 0.1;
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
@@ -136,6 +140,28 @@ impl Harness {
         self.frame(vec![middle_button(from, true)]);
         self.frame(vec![Event::PointerMoved(to)]);
         self.frame(vec![middle_button(to, false)])
+    }
+
+    /// Like [`Self::drag`], with Ctrl held.
+    fn ctrl_drag(&mut self, from: Vec2, to: Vec2) -> Vec<Shape> {
+        self.with_ctrl(|harness| harness.drag(from, to))
+    }
+
+    /// Drags between two points relative to the canvas as `pan` says,
+    /// returning what the frames with the pointer moved and with the release
+    /// painted.
+    fn pan_drag(&mut self, pan: PanDrag, from: Vec2, to: Vec2) -> [Vec<Shape>; 2] {
+        let (from, to) = (self.origin + from, self.origin + to);
+        let (press, modifiers) = pan.button();
+        self.frame(vec![
+            Event::ModifiersChanged(modifiers),
+            Event::PointerMoved(from),
+        ]);
+        self.frame(vec![press(from, true)]);
+        let moved = self.frame(vec![Event::PointerMoved(to)]);
+        let released = self.frame(vec![press(to, false)]);
+        self.frame(vec![Event::ModifiersChanged(Modifiers::NONE)]);
+        [moved, released]
     }
 
     /// Turns the wheel by `lines` notches over a point relative to the
@@ -2104,67 +2130,259 @@ fn the_view_follows_the_pointer_while_panning() {
     }
 }
 
-#[test]
-fn middle_drags_pan_whatever_they_start_on() {
-    // On the empty canvas, where primary drags would draw a selection box;
-    // inside the selected node and on its right side, where they would move
-    // or resize it; on the other node, which they would select; and where
-    // the other tools would draw.
-    for (tool, from) in [
-        (Tool::Cursor, vec2(400.0, 300.0)),
-        (Tool::Cursor, vec2(175.0, 90.0)),
-        (Tool::Cursor, vec2(250.0, 90.0)),
-        (Tool::Cursor, vec2(475.0, 90.0)),
-        (Tool::Box, vec2(400.0, 300.0)),
-        (Tool::Circle, vec2(400.0, 300.0)),
-        (Tool::Line, vec2(175.0, 90.0)),
-    ] {
-        let mut harness = Harness::new(tool);
-        let id = harness.add_selected_box();
-        harness.add_box(OTHER.min, OTHER.max);
-        let moved = vec2(30.0, 20.0);
-        let painted = harness.middle_drag(from, from + moved);
+/// A drag that pans the view.
+#[derive(Clone, Copy, Debug)]
+enum PanDrag {
+    Middle,
+    /// Of the primary button, with Ctrl held.
+    Ctrl,
+}
 
-        let panned = [NODE, OTHER].map(|rect| rect.translate(harness.origin.to_vec2() + moved));
-        assert_eq!(
-            filled_rects(&painted, BOX_FILL),
-            panned,
-            "{tool:?} {from:?}"
-        );
-        assert_eq!(
-            harness.boxes(),
-            [yed_rect(NODE), yed_rect(OTHER)],
-            "{tool:?} {from:?}"
-        );
-        assert_eq!(harness.ellipses(), [], "{tool:?} {from:?}");
-        assert_eq!(harness.selected, Selection::node(id), "{tool:?} {from:?}");
-        assert!(harness.canvas.edge_draw.is_none(), "{tool:?} {from:?}");
+impl PanDrag {
+    /// Its button going down, or up, at a point, and the modifiers held.
+    fn button(self) -> (fn(Pos2, bool) -> Event, Modifiers) {
+        match self {
+            PanDrag::Middle => (middle_button, Modifiers::NONE),
+            PanDrag::Ctrl => (button, CTRL),
+        }
     }
 }
 
 #[test]
-fn middle_drags_from_off_the_canvas_pan_nothing() {
+fn middle_and_ctrl_drags_pan_whatever_they_start_on() {
+    // On the empty canvas, where primary drags would draw a selection box;
+    // inside the selected node and on its right side, where they would move
+    // or resize it; on the other node, which they would select; and where
+    // the other tools would draw.
+    for pan in [PanDrag::Middle, PanDrag::Ctrl] {
+        for (tool, from) in [
+            (Tool::Cursor, vec2(400.0, 300.0)),
+            (Tool::Cursor, vec2(175.0, 90.0)),
+            (Tool::Cursor, vec2(250.0, 90.0)),
+            (Tool::Cursor, vec2(475.0, 90.0)),
+            (Tool::Box, vec2(400.0, 300.0)),
+            (Tool::Circle, vec2(400.0, 300.0)),
+            (Tool::Line, vec2(175.0, 90.0)),
+        ] {
+            let mut harness = Harness::new(tool);
+            let id = harness.add_selected_box();
+            harness.add_box(OTHER.min, OTHER.max);
+            let moved = vec2(30.0, 20.0);
+            let frames = harness.pan_drag(pan, from, from + moved);
+
+            let case = format!("{pan:?} {tool:?} {from:?}");
+            let panned = [NODE, OTHER].map(|rect| rect.translate(harness.origin.to_vec2() + moved));
+            // Showing no box, move or resize on the way either.
+            for painted in frames {
+                assert_eq!(filled_rects(&painted, BOX_FILL), panned, "{case}");
+                assert_eq!(filled_rects(&painted, SELECTION_BOX_FILL), [], "{case}");
+            }
+            assert_eq!(harness.boxes(), [yed_rect(NODE), yed_rect(OTHER)], "{case}");
+            assert_eq!(harness.ellipses(), [], "{case}");
+            assert_eq!(harness.selected, Selection::node(id), "{case}");
+            assert!(harness.canvas.edge_draw.is_none(), "{case}");
+        }
+    }
+}
+
+#[test]
+fn middle_and_ctrl_drags_pan_only_from_the_canvas() {
+    // From the margin round the canvas, as from the side panel, they pan
+    // nothing, and from the canvas into the margin they pan, by where the
+    // button went down, even with the pointer moved on in the same frame.
+    for pan in [PanDrag::Middle, PanDrag::Ctrl] {
+        for (from, to, pans) in [
+            (vec2(-4.0, -4.0), vec2(30.0, 20.0), false),
+            (vec2(10.0, 10.0), vec2(-4.0, -4.0), true),
+        ] {
+            let mut harness = Harness::new(Tool::Cursor);
+            harness.add_box(NODE.min, NODE.max);
+            let (press, modifiers) = pan.button();
+            let (from, to) = (harness.origin + from, harness.origin + to);
+            harness.frame(vec![
+                Event::ModifiersChanged(modifiers),
+                Event::PointerMoved(from),
+            ]);
+            harness.frame(vec![press(from, true), Event::PointerMoved(to)]);
+            let painted = harness.frame(vec![press(to, false)]);
+            let moved = if pans { to - from } else { Vec2::ZERO };
+            assert_eq!(
+                filled_rects(&painted, BOX_FILL),
+                [harness.node().translate(moved)],
+                "{pan:?} {from:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn holding_both_pan_buttons_pans_only_as_far_as_the_pointer_moves() {
     let mut harness = Harness::new(Tool::Cursor);
     harness.add_box(NODE.min, NODE.max);
-    // From the margin round the canvas, as from the side panel.
-    let painted = harness.middle_drag(vec2(-4.0, -4.0), vec2(100.0, 100.0));
-    assert_eq!(filled_rects(&painted, BOX_FILL), [harness.node()]);
+    let (from, moved) = (harness.origin + vec2(400.0, 300.0), vec2(30.0, 20.0));
+    // A press with Ctrl while the middle button pans pans no further.
+    harness.frame(vec![
+        Event::ModifiersChanged(CTRL),
+        Event::PointerMoved(from),
+    ]);
+    harness.frame(vec![middle_button(from, true)]);
+    harness.frame(vec![button(from, true)]);
+    let painted = harness.frame(vec![Event::PointerMoved(from + moved)]);
+    let panned = harness.node().translate(moved);
+    assert_eq!(filled_rects(&painted, BOX_FILL), [panned]);
+    let from = from + moved;
+    harness.frame(vec![button(from, false), middle_button(from, false)]);
+
+    // Nor does the middle button while a drag with Ctrl pans.
+    harness.frame(vec![button(from, true)]);
+    harness.frame(vec![Event::PointerMoved(from + moved)]);
+    harness.frame(vec![middle_button(from + moved, true)]);
+    let painted = harness.frame(vec![Event::PointerMoved(from + moved * 2.0)]);
+    assert_eq!(
+        filled_rects(&painted, BOX_FILL),
+        [panned.translate(moved * 2.0)]
+    );
 }
 
 #[test]
 fn panning_keeps_the_label_being_typed() {
-    let mut harness = Harness::new(Tool::Cursor);
-    let id = harness.add_labelled_box(vec![Label::new("Start")]);
-    harness.edit(&id);
-    harness.type_text("Stop");
-    let moved = vec2(30.0, 20.0);
-    let shapes = harness.middle_drag(vec2(400.0, 300.0), vec2(400.0, 300.0) + moved);
+    // From the empty canvas, and from the bottom side of the node, which is
+    // selected, where Ctrl's press goes to a resize handle.
+    for pan in [PanDrag::Middle, PanDrag::Ctrl] {
+        for from in [vec2(400.0, 300.0), vec2(175.0, 132.0)] {
+            let mut harness = Harness::new(Tool::Cursor);
+            let id = harness.add_labelled_box(vec![Label::new("Start")]);
+            harness.selected = Selection::node(&id);
+            harness.edit(&id);
+            harness.type_text("Stop");
+            let moved = vec2(30.0, 20.0);
+            let [_, shapes] = harness.pan_drag(pan, from, from + moved);
 
-    // Still in its editor, which moved with the node.
-    let text = painted(&shapes, "Stop").unwrap();
-    assert_near(text.center(), harness.node().center() + moved);
-    assert_eq!(harness.actions, []);
-    assert!(harness.canvas.editor.is_some());
+            // Still in its editor, which moved with the node.
+            let case = format!("{pan:?} {from:?}");
+            let text = painted(&shapes, "Stop").expect(&case);
+            assert_near(text.center(), harness.node().center() + moved);
+            assert_eq!(harness.actions, [], "{case}");
+            assert!(harness.canvas.editor.is_some(), "{case}");
+            assert_eq!(harness.boxes(), [yed_rect(NODE)], "{case}");
+        }
+    }
+}
+
+#[test]
+fn ctrl_drags_pan_once_more_than_a_click_from_where_they_were_pressed() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    let from = harness.origin + vec2(400.0, 300.0);
+    harness.frame(vec![
+        Event::ModifiersChanged(CTRL),
+        Event::PointerMoved(from),
+    ]);
+    harness.frame(vec![button(from, true)]);
+    // Within egui's click distance of the press, it may still be a click.
+    let painted = harness.frame(vec![Event::PointerMoved(from + vec2(4.0, 3.0))]);
+    assert_eq!(filled_rects(&painted, BOX_FILL), [harness.node()]);
+    assert_ne!(harness.cursor, CursorIcon::Grabbing);
+    for step in 1..=3 {
+        let moved = vec2(10.0, 5.0) * step as f32;
+        let painted = harness.frame(vec![Event::PointerMoved(from + moved)]);
+        assert_eq!(
+            filled_rects(&painted, BOX_FILL),
+            [harness.node().translate(moved)]
+        );
+        assert_eq!(harness.cursor, CursorIcon::Grabbing);
+    }
+    harness.frame(vec![button(from + vec2(30.0, 15.0), false)]);
+    assert_ne!(harness.cursor, CursorIcon::Grabbing);
+}
+
+#[test]
+fn ctrl_presses_moved_less_than_a_click_toggle_rather_than_pan() {
+    let mut harness = Harness::new(Tool::Cursor);
+    let (node, other) = harness.add_two_boxes();
+    harness.selected = Selection::node(&node);
+    let painted = harness.ctrl_drag(vec2(475.0, 90.0), vec2(479.0, 93.0));
+    assert_eq!(harness.selected, nodes(&[&node, &other]));
+    assert_eq!(filled_rects(&painted, BOX_FILL)[0], harness.node());
+}
+
+#[test]
+fn whether_ctrl_is_down_as_the_button_goes_down_decides_if_a_drag_pans() {
+    // Even when it changes in the same frame, right after.
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_selected_box();
+    let (from, moved) = (harness.origin + vec2(175.0, 90.0), vec2(30.0, 20.0));
+    // Let go of, Ctrl still pans rather than moves the node pressed.
+    harness.frame(vec![
+        Event::ModifiersChanged(CTRL),
+        Event::PointerMoved(from),
+    ]);
+    harness.frame(vec![
+        button(from, true),
+        Event::ModifiersChanged(Modifiers::NONE),
+    ]);
+    harness.frame(vec![Event::PointerMoved(from + moved)]);
+    let painted = harness.frame(vec![button(from + moved, false)]);
+    let panned = harness.node().translate(moved);
+    assert_eq!(filled_rects(&painted, BOX_FILL), [panned]);
+    assert_eq!(harness.boxes(), [yed_rect(NODE)]);
+
+    // Held down, it leaves the drag to move the node.
+    let from = from + moved;
+    harness.frame(vec![button(from, true), Event::ModifiersChanged(CTRL)]);
+    harness.frame(vec![Event::PointerMoved(from + moved)]);
+    let painted = harness.frame(vec![button(from + moved, false)]);
+    assert_eq!(filled_rects(&painted, BOX_FILL), [panned.translate(moved)]);
+    assert_eq!(harness.boxes(), [yed_rect(NODE.translate(moved))]);
+}
+
+#[test]
+fn ctrl_drags_from_the_selected_edge_pan_rather_than_drag_it() {
+    // From its bend's handle, its source port's handle and its line.
+    for from in [vec2(325.0, 250.0), vec2(175.0, 90.0), vec2(250.0, 170.0)] {
+        let mut harness = Harness::new(Tool::Cursor);
+        let (node, other) = harness.add_two_boxes();
+        harness.add_edge(&node, &other, &[pos2(325.0, 250.0)]);
+        harness.selected = Selection::edge(0);
+        let edges = harness.edges();
+        let moved = vec2(30.0, 20.0);
+        let painted = harness.ctrl_drag(from, from + moved);
+
+        let panned = [NODE, OTHER].map(|rect| rect.translate(harness.origin.to_vec2() + moved));
+        assert_eq!(filled_rects(&painted, BOX_FILL), panned, "{from:?}");
+        assert_eq!(harness.edges(), edges, "{from:?}");
+        assert_eq!(harness.selected, Selection::edge(0), "{from:?}");
+    }
+}
+
+#[test]
+fn ctrl_drags_pan_while_a_line_is_drawn_by_clicks_adding_no_bend() {
+    let mut harness = Harness::new(Tool::Line);
+    let (node, other) = harness.add_two_boxes();
+    harness.click(vec2(175.0, 90.0));
+    let moved = vec2(-100.0, 0.0);
+    harness.ctrl_drag(vec2(300.0, 300.0), vec2(300.0, 300.0) + moved);
+    harness.click(vec2(475.0, 90.0) + moved);
+
+    let edges = harness.edges();
+    let [(source, target, graphics)] = &edges[..] else {
+        panic!("expected one edge: {edges:?}");
+    };
+    assert_eq!((source, target), (&node, &other));
+    assert_eq!(graphics.path.points, []);
+}
+
+#[test]
+fn on_macos_cmd_drags_pan_and_ctrl_drags_do_not() {
+    let mut harness = Harness::new(Tool::Cursor);
+    harness.add_box(NODE.min, NODE.max);
+    let (from, moved) = (vec2(400.0, 300.0), vec2(30.0, 20.0));
+    let painted = harness.holding(testing::CMD, |harness| harness.drag(from, from + moved));
+    let panned = harness.node().translate(moved);
+    assert_eq!(filled_rects(&painted, BOX_FILL), [panned]);
+    // Ctrl as egui-winit reports it there, where Ctrl+click is a right click.
+    let painted = harness.holding(Modifiers::CTRL, |harness| harness.drag(from, from + moved));
+    assert_eq!(filled_rects(&painted, BOX_FILL), [panned]);
 }
 
 #[test]
@@ -3109,15 +3327,16 @@ fn the_box_shows_what_it_selects_while_it_is_dragged_out() {
 }
 
 #[test]
-fn ctrl_drags_add_the_nodes_and_edges_in_the_box_to_the_selection() {
+fn shift_drags_add_the_nodes_and_edges_in_the_box_to_the_selection() {
     let mut harness = Harness::new(Tool::Cursor);
     let (node, other) = harness.add_two_boxes();
     harness.add_edge(&node, &other, &[]);
     harness.add_edge(&node, &node, &[pos2(150.0, 170.0), pos2(200.0, 170.0)]);
     harness.add_edge(&node, &other, &[pos2(275.0, 170.0)]);
     harness.selected = Selection::of([Item::Node(other.clone()), Item::Edge(0)]);
-    let shapes =
-        harness.with_ctrl(|harness| harness.drag_and_hold(vec2(50.0, 20.0), vec2(300.0, 200.0)));
+    let shapes = harness.holding(Modifiers::SHIFT, |harness| {
+        harness.drag_and_hold(vec2(50.0, 20.0), vec2(300.0, 200.0))
+    });
     let outlined = |node: Rect| {
         node.translate(harness.origin.to_vec2())
             .expand(SELECTION_GAP)
@@ -3126,7 +3345,7 @@ fn ctrl_drags_add_the_nodes_and_edges_in_the_box_to_the_selection() {
     assert_eq!(outlines[..2], [outlined(NODE), outlined(OTHER)]);
     // Under the selected edge, and the loop in the box.
     assert_eq!(lines(&shapes, HALO.color).len(), 2);
-    harness.with_ctrl(|harness| {
+    harness.holding(Modifiers::SHIFT, |harness| {
         harness.frame(vec![button(harness.origin + vec2(300.0, 200.0), false)])
     });
     // Not the last edge, whose other node is selected, but not by the box.
@@ -3577,22 +3796,6 @@ fn nodes_selected_with_a_line_are_resized_from_their_sides_too() {
         ]
     );
     assert_eq!(harness.bends(0), [point(325.0, 250.0)]);
-}
-
-#[test]
-fn ctrl_dragging_another_node_adds_it_and_moves_them_all() {
-    let mut harness = Harness::new(Tool::Cursor);
-    let (node, other) = harness.add_two_boxes();
-    harness.selected = Selection::node(&node);
-    harness.with_ctrl(|harness| harness.drag(vec2(475.0, 90.0), vec2(475.0, 120.0)));
-    assert_eq!(harness.selected, nodes(&[&node, &other]));
-    assert_eq!(
-        harness.boxes(),
-        [
-            geometry(100.0, 80.0, 150.0, 80.0),
-            geometry(400.0, 80.0, 150.0, 80.0),
-        ]
-    );
 }
 
 #[test]
