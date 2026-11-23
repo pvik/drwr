@@ -45,6 +45,18 @@ fn pointer_button(button: PointerButton, pos: Pos2, pressed: bool) -> Event {
     }
 }
 
+/// Puts the modifiers held on each pointer button event in `events`, as
+/// egui-winit does, with `held` following the modifier changes among them.
+pub fn hold_modifiers(held: &mut Modifiers, events: &mut [Event]) {
+    for event in events {
+        match event {
+            Event::ModifiersChanged(modifiers) => *held = *modifiers,
+            Event::PointerButton { modifiers, .. } => *modifiers = *held,
+            _ => {}
+        }
+    }
+}
+
 /// The wheel turning by `lines` notches, up if positive.
 pub fn wheel(lines: f32) -> Event {
     Event::MouseWheel {

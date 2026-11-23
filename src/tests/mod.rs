@@ -52,6 +52,8 @@ struct Harness {
     /// Holds the copy of the fixture opened, so that saves can't reach the
     /// original.
     fixture: Option<ScratchDir>,
+    /// The modifiers held since the last frame.
+    modifiers: Modifiers,
 }
 
 impl Harness {
@@ -80,6 +82,7 @@ impl Harness {
             frame: eframe::Frame::_new_kittest(),
             app,
             fixture: None,
+            modifiers: Modifiers::NONE,
         };
         harness.run(vec![]);
         harness
@@ -96,7 +99,8 @@ impl Harness {
     }
 
     /// Runs a frame with `input`, as eframe does.
-    fn run_input(&mut self, input: RawInput) -> egui::FullOutput {
+    fn run_input(&mut self, mut input: RawInput) -> egui::FullOutput {
+        testing::hold_modifiers(&mut self.modifiers, &mut input.events);
         self.ctx.run_ui(input, |ui| {
             self.app.logic(ui.ctx(), &mut self.frame);
             self.app.ui(ui, &mut self.frame);
